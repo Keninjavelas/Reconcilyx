@@ -1,0 +1,23 @@
+{
+	"name": "Reconcilyx Operator Dev Container",
+	"image": "mcr.microsoft.com/devcontainers/go:1.23",
+	"features": {
+		"ghcr.io/devcontainers/features/docker-in-docker:2": {}
+	},
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"golang.Go",
+				"ms-azuretools.vscode-docker",
+				"redhat.vscode-yaml"
+			],
+			"settings": {
+				"go.toolsManagement.checkForUpdates": "local",
+				"go.useLanguageServer": true,
+				"go.gopath": "/go"
+			}
+		}
+	},
+	"postCreateCommand": "curl -L -o kubebuilder https://go.kubebuilder.io/dl/latest/$(go env GOOS)/$(go env GOARCH) && chmod +x kubebuilder && sudo mv kubebuilder /usr/local/bin/",
+	"remoteUser": "vscode"
+}

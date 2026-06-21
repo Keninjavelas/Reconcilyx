@@ -1,0 +1,29 @@
+Name:         cpu-hog-reduction
+Namespace:    reconcilyx-demo
+Labels:       <none>
+Annotations:  <none>
+API Version:  optimization.reconcilyx.io/v1alpha1
+Kind:         OptimizationProposal
+Metadata:
+  Creation Timestamp:  2026-06-21T05:29:00Z
+  Generation:          1
+  Resource Version:    159450
+Spec:
+  Target Workload:
+    Kind:       Deployment
+    Name:       cpu-hog
+  Recommendation:  ReduceCPURequest
+Status:
+  Phase:           Completed
+  Approval State:  Approved
+  Execution State: Verified
+  Policy Applied:  strict-efficiency-policy
+Events:
+  Type    Reason              Age   From                             Message
+  ----    ------              ----  ----                             -------
+  Normal  PolicyMatched       2m    optimizationproposal-controller  Governed by policy: strict-efficiency-policy
+  Normal  ProposalApproved    2m    optimizationproposal-controller  Policy Engine approved proposal
+  Normal  ExecutionStarted    1m    optimizationproposal-controller  Acquired lock and captured execution snapshot
+  Normal  ExecutionApplied    1m    optimizationproposal-controller  Server-Side Apply patch submitted
+  Normal  ExecutionVerified   55s   optimizationproposal-controller  Mutation matches intended state
+  Normal  ExecutionCompleted  25s   optimizationproposal-controller  Workload stabilized

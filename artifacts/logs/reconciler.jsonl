@@ -1,0 +1,6 @@
+{"level":"info","ts":"2026-06-21T05:30:00.100Z","logger":"optimizationproposal-controller","msg":"Proposal Evaluated","Proposal":"reconcilyx-demo/cpu-hog-reduction","Decision":"Approved","Reason":"Confidence score meets policy threshold and risk is acceptable"}
+{"level":"info","ts":"2026-06-21T05:30:05.105Z","logger":"optimizationproposal-controller","msg":"JIT Validation Passed","Proposal":"reconcilyx-demo/cpu-hog-reduction","KillSwitch":"disabled","WorkloadHealth":"healthy"}
+{"level":"info","ts":"2026-06-21T05:30:05.150Z","logger":"actuator","msg":"Acquired lock and captured execution snapshot","Proposal":"reconcilyx-demo/cpu-hog-reduction","Target":"reconcilyx-demo/cpu-hog"}
+{"level":"info","ts":"2026-06-21T05:30:05.300Z","logger":"actuator","msg":"Server-Side Apply patch submitted","Proposal":"reconcilyx-demo/cpu-hog-reduction","FieldManager":"reconcilyx-optimizer","Target":"reconcilyx-demo/cpu-hog"}
+{"level":"info","ts":"2026-06-21T05:30:10.500Z","logger":"optimizationproposal-controller","msg":"ExecutionVerified: Mutation matches intended state","Proposal":"reconcilyx-demo/cpu-hog-reduction"}
+{"level":"info","ts":"2026-06-21T05:30:40.000Z","logger":"optimizationproposal-controller","msg":"Workload stabilized","Proposal":"reconcilyx-demo/cpu-hog-reduction","Phase":"Completed"}

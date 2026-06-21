@@ -1,0 +1,5 @@
+## Append samples of your project ##
+resources:
+- optimization_v1alpha1_optimizationpolicy.yaml
+- optimization_v1alpha1_optimizationproposal.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

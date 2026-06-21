@@ -1,0 +1,5 @@
+# ADR 008: Optimization CRD API Redesign
+
+* **Context**: The MVP implementations of `OptimizationPolicy` and `OptimizationProposal` utilized primitive string fields for optimization recommendations, states, and workload references. This "stringly-typed" design makes the controller actuation logic fragile, error-prone, and difficult to extend for multi-strategy optimizations (e.g., memory optimization, scale-to-zero).
+* **Decision**: We refactored both CRDs to adhere to platform-grade Kubernetes API conventions. We introduced native `corev1.ObjectReference` for targeting, `corev1.ResourceRequirements` for patching, and strict enums for tracking states and strategies. We also standardized status tracking using `[]metav1.Condition`.
+* **Rationale**: Moving from arbitrary strings to native Kubernetes abstractions allows the `OptimizationProposalReconciler` to apply changes directly via Kubernetes JSON patch semantics without string parsing or reflection logic. It also brings the API up to Staff-level production standards and sets the foundation for graduating the APIs from `v1alpha1` to `v1`.

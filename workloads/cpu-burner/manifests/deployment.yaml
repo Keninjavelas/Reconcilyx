@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cpu-burner
+  namespace: reconcilyx-system
+  labels:
+    app: cpu-burner
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cpu-burner
+  template:
+    metadata:
+      labels:
+        app: cpu-burner
+    spec:
+      containers:
+      - name: cpu-burner
+        image: reconcilyx/cpu-burner:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+          name: http
+        resources:
+          requests:
+            cpu: 500m
+            memory: 128Mi
+          limits:
+            cpu: 1000m
+            memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cpu-burner
+  namespace: reconcilyx-system
+  labels:
+    app: cpu-burner
+spec:
+  ports:
+  - port: 8080
+    targetPort: http
+    name: http
+  selector:
+    app: cpu-burner

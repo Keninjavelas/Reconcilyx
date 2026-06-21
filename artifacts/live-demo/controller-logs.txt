@@ -1,0 +1,8 @@
+2026-06-21T11:48:27+05:30	INFO	setup	Starting manager
+2026-06-21T11:48:27+05:30	INFO	starting server	{"name": "health probe", "addr": "[::]:8081"}
+2026-06-21T11:48:27+05:30	INFO	Starting EventSource	{"controller": "optimizationpolicy", "controllerGroup": "optimization.reconcilyx.io", "controllerKind": "OptimizationPolicy", "source": "kind source: *v1alpha1.OptimizationPolicy"}
+2026-06-21T11:48:27+05:30	INFO	Starting EventSource	{"controller": "optimizationproposal", "controllerGroup": "optimization.reconcilyx.io", "controllerKind": "OptimizationProposal", "source": "kind source: *v1alpha1.OptimizationProposal"}
+2026-06-21T11:48:27+05:30	INFO	Starting Controller	{"controller": "optimizationpolicy", "controllerGroup": "optimization.reconcilyx.io", "controllerKind": "OptimizationPolicy"}
+2026-06-21T11:48:27+05:30	INFO	Starting workers	{"controller": "optimizationpolicy", "controllerGroup": "optimization.reconcilyx.io", "controllerKind": "OptimizationPolicy", "worker count": 1}
+2026-06-21T11:48:27+05:30	INFO	Starting Controller	{"controller": "optimizationproposal", "controllerGroup": "optimization.reconcilyx.io", "controllerKind": "OptimizationProposal"}
+2026-06-21T11:48:27+05:30	INFO	Starting workers	{"controller": "optimizationproposal", "controllerGroup": "optimization.reconcilyx.io", "controllerKind": "OptimizationProposal", "worker count": 1}

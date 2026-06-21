@@ -1,0 +1,21 @@
+# HELP reconcilyx_executions_total Total number of optimization executions
+# TYPE reconcilyx_executions_total counter
+reconcilyx_executions_total{recommendation="ReduceCPURequest",status="completed"} 14
+reconcilyx_executions_total{recommendation="ReduceMemoryRequest",status="completed"} 8
+reconcilyx_executions_total{recommendation="ReduceCPURequest",status="failed_gitops_override"} 2
+
+# HELP reconcilyx_execution_duration_seconds Histogram of actuation latency
+# TYPE reconcilyx_execution_duration_seconds histogram
+reconcilyx_execution_duration_seconds_bucket{le="0.1"} 4
+reconcilyx_execution_duration_seconds_bucket{le="0.5"} 18
+reconcilyx_execution_duration_seconds_bucket{le="1.0"} 21
+reconcilyx_execution_duration_seconds_bucket{le="5.0"} 24
+reconcilyx_execution_duration_seconds_sum 12.45
+reconcilyx_execution_duration_seconds_count 24
+
+# HELP reconcilyx_proposals_active Current number of proposals in queue
+# TYPE reconcilyx_proposals_active gauge
+reconcilyx_proposals_active{phase="Evaluating"} 0
+reconcilyx_proposals_active{phase="Approved"} 3
+reconcilyx_proposals_active{phase="Scheduled"} 1
+reconcilyx_proposals_active{phase="Executing"} 0

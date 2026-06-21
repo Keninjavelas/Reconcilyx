@@ -1,0 +1,15 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: idle-service
+  namespace: reconcilyx-system
+  labels:
+    app: idle-service
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: idle-service
+  endpoints:
+  - port: http
+    interval: 15s

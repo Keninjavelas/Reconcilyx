@@ -1,0 +1,38 @@
+apiVersion: optimization.reconcilyx.io/v1alpha1
+kind: OptimizationPolicy
+metadata:
+  name: strict-efficiency-policy
+  namespace: default
+spec:
+  objective: Efficiency
+  mode: AutoApply
+  targetSelectors:
+    namespaceSelector:
+      matchLabels: {}
+    workloadSelector:
+      matchLabels: {}
+  safetyConstraints:
+    riskTolerance: 50
+    confidenceRequirement: 80
+    cooldownPeriod: 5m
+  workloadProtection:
+    excludedContainers:
+      - istio-proxy
+      - linkerd-proxy
+  recommendationGovernance:
+    allowedRecommendations:
+      - ReduceCPURequest
+      - ReduceMemoryRequest
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: reconcilyx-system
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: reconcilyx-config
+  namespace: reconcilyx-system
+data:
+  actuation_paused: "false"

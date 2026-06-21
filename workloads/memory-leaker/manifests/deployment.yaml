@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: memory-leaker
+  namespace: reconcilyx-system
+  labels:
+    app: memory-leaker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: memory-leaker
+  template:
+    metadata:
+      labels:
+        app: memory-leaker
+    spec:
+      containers:
+      - name: memory-leaker
+        image: reconcilyx/memory-leaker:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+          name: http
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 200m
+            memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: memory-leaker
+  namespace: reconcilyx-system
+  labels:
+    app: memory-leaker
+spec:
+  ports:
+  - port: 8080
+    targetPort: http
+    name: http
+  selector:
+    app: memory-leaker

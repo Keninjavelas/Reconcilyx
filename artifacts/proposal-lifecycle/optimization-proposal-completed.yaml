@@ -1,0 +1,52 @@
+apiVersion: optimization.reconcilyx.io/v1alpha1
+kind: OptimizationProposal
+metadata:
+  name: cpu-hog-reduction
+  namespace: reconcilyx-demo
+spec:
+  targetWorkload:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: cpu-hog
+    namespace: reconcilyx-demo
+  recommendation: ReduceCPURequest
+  observedResources:
+    currentResources:
+      requests:
+        cpu: 2000m
+        memory: 512Mi
+    p95Usage:
+      cpu: 50m
+      memory: 120Mi
+  proposedResources:
+    requests:
+      cpu: 100m
+  expectedImpact:
+    resourceDelta:
+      cpu: -1900m
+    estimatedSavingsUSD: "25.00"
+  decisionMetadata:
+    confidenceScore: 95
+    riskScore: 12
+    rationale: "Sustained P95 usage is 50m (2.5% of requested 2000m). Safe to reduce."
+status:
+  phase: Completed
+  approvalState: Approved
+  executionState: Verified
+  policyApplied: strict-efficiency-policy
+  lastEvaluationTime: "2026-06-21T05:30:00Z"
+  reason: "Workload stabilized"
+  executionSnapshot:
+    resourceVersion: "159384"
+    generation: 1
+    replicaCount: 1
+    timestamp: "2026-06-21T05:30:05Z"
+    containerResources:
+      nginx:
+        resources:
+          requests:
+            cpu: 2000m
+            memory: 512Mi
+          limits:
+            cpu: 2000m
+            memory: 512Mi

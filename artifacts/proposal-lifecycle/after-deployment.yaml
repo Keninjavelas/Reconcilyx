@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cpu-hog
+  namespace: reconcilyx-demo
+  labels:
+    app: cpu-hog
+  annotations:
+    reconcilyx.io/last-action: "execute"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cpu-hog
+  template:
+    metadata:
+      labels:
+        app: cpu-hog
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:latest
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "512Mi"
+          limits:
+            cpu: "2000m"
+            memory: "512Mi"

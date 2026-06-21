@@ -1,0 +1,21 @@
+apiVersion: optimization.reconcilyx.io/v1alpha1
+kind: OptimizationProposal
+metadata:
+  name: opt-cpu-hog
+  namespace: reconcilyx-demo
+spec:
+  targetWorkload:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: cpu-hog
+    namespace: reconcilyx-demo
+  recommendation: ReduceCPURequest
+  proposedResources:
+    requests:
+      cpu: 100m
+  expectedImpact:
+    estimatedSavingsUSD: "50"
+  decisionMetadata:
+    confidenceScore: 98
+    riskScore: 10
+    rationale: "Workload has utilized < 1% of requested CPU over the last 7 days."

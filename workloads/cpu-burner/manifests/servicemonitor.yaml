@@ -1,0 +1,15 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: cpu-burner
+  namespace: reconcilyx-system
+  labels:
+    app: cpu-burner
+    release: prometheus # standard label matched by kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app: cpu-burner
+  endpoints:
+  - port: http
+    interval: 15s
