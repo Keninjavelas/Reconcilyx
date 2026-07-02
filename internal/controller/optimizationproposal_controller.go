@@ -18,11 +18,14 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -31,6 +34,7 @@ import (
 
 	optimizationv1alpha1 "github.com/reconcilyx/operator/api/v1alpha1"
 	"github.com/reconcilyx/operator/internal/policy"
+	"github.com/reconcilyx/operator/internal/telemetry"
 )
 
 // OptimizationProposalReconciler reconciles a OptimizationProposal object
@@ -42,6 +46,7 @@ type OptimizationProposalReconciler struct {
 	Evaluator     policy.Evaluator
 	ExecutionGate ExecutionGate
 	Actuator      Actuator
+	RollbackManager RollbackManager
 }
 
 // +kubebuilder:rbac:groups=optimization.reconcilyx.io,resources=optimizationproposals,verbs=get;list;watch;create;update;patch;delete
@@ -137,13 +142,20 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	// Execution Flow
+	// Execution Flow (Local Actuation Only)
 	if proposal.Status.Phase == optimizationv1alpha1.PhaseApproved {
 		proposal.Status.Phase = optimizationv1alpha1.PhaseScheduled
 		if err := r.Status().Update(ctx, proposal); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{Requeue: true}, nil
+	}
+
+	// If the proposal is targeted for a Spoke cluster, the Hub stops processing here.
+	// The Spoke Agent's remote_reconciler will pick it up and drive the execution phases.
+	if proposal.Spec.TargetClusterName != "" {
+		logger.V(1).Info("Delegating execution to Spoke Agent", "cluster", proposal.Spec.TargetClusterName)
+		return ctrl.Result{}, nil
 	}
 
 	if proposal.Status.Phase == optimizationv1alpha1.PhaseScheduled {
@@ -205,19 +217,19 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 
 		r.Recorder.Event(proposal, "Normal", "ExecutionStarted", "Acquired lock and captured execution snapshot")
 
-		// 3. Apply Server-Side Apply Patch
+		// 3. Apply In-Place Pod Resize
 		if err := r.Actuator.ApplyMutation(ctx, proposal); err != nil {
 			logger.Error(err, "Actuation failed")
 			proposal.Status.Phase = optimizationv1alpha1.PhaseFailed
 			proposal.Status.ExecutionState = optimizationv1alpha1.ExecutionFailed
-			proposal.Status.Reason = "Server-Side Apply Failed: " + err.Error()
+			proposal.Status.Reason = "In-Place Pod Resize Failed: " + err.Error()
 			_ = r.Status().Update(ctx, proposal)
 			r.Recorder.Event(proposal, "Warning", "ExecutionFailed", proposal.Status.Reason)
 			_ = r.Actuator.ReleaseLock(ctx, proposal)
 			return ctrl.Result{}, nil
 		}
 
-		r.Recorder.Event(proposal, "Normal", "ExecutionApplied", "Server-Side Apply patch submitted")
+		r.Recorder.Event(proposal, "Normal", "PodResize", "In-Place Pod Resize patch applied successfully")
 
 		proposal.Status.Phase = optimizationv1alpha1.PhaseVerifying
 		proposal.Status.ExecutionState = optimizationv1alpha1.ExecutionStabilizing
@@ -228,7 +240,39 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 	}
 
 	if proposal.Status.Phase == optimizationv1alpha1.PhaseVerifying {
-		// TODO: Implement GitOps check
+		dep := &appsv1.Deployment{}
+		if err := r.Client.Get(ctx, types.NamespacedName{
+			Name:      proposal.Spec.TargetWorkload.Name,
+			Namespace: proposal.Spec.TargetWorkload.Namespace,
+		}, dep); err != nil {
+			return ctrl.Result{}, err
+		}
+
+		if proposal.Status.ExecutionSnapshot != nil && dep.Generation != proposal.Status.ExecutionSnapshot.Generation {
+			proposal.Status.YieldCount++
+			
+			backoffDuration := 5 * time.Minute
+			if proposal.Status.YieldCount == 2 {
+				backoffDuration = 30 * time.Minute
+			} else if proposal.Status.YieldCount >= 3 {
+				backoffDuration = 24 * time.Hour
+				r.Recorder.Event(proposal, "Warning", "GitOpsConflict", "Execution reverted 3 times. Yielding for 24h.")
+			} else {
+				r.Recorder.Event(proposal, "Warning", "GitOpsConflict", fmt.Sprintf("Execution reverted %d times. Yielding for %v.", proposal.Status.YieldCount, backoffDuration))
+			}
+
+			logger.Info("GitOps conflict detected, yielding", "yieldCount", proposal.Status.YieldCount, "backoff", backoffDuration)
+			
+			proposal.Status.Phase = optimizationv1alpha1.PhaseExecuting
+			proposal.Status.ExecutionState = optimizationv1alpha1.ExecutionPending
+			proposal.Status.ExecutionSnapshot = nil
+			
+			if err := r.Status().Update(ctx, proposal); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{RequeueAfter: backoffDuration}, nil
+		}
+
 		proposal.Status.Phase = optimizationv1alpha1.PhaseStabilizing
 		if err := r.Status().Update(ctx, proposal); err != nil {
 			return ctrl.Result{}, err
@@ -238,7 +282,32 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 	}
 
 	if proposal.Status.Phase == optimizationv1alpha1.PhaseStabilizing {
-		// TODO: Wait for error rate / health check. For Phase 3A, mark completed.
+		// Wait for 5 minutes monitoring window.
+		if time.Since(proposal.Status.ExecutionSnapshot.Timestamp.Time) < 5*time.Minute {
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		}
+
+		shouldRollback, err := r.RollbackManager.CheckMonitoringWindow(ctx, proposal)
+		if err != nil {
+			logger.Error(err, "Rollback check encountered an error, extending stabilization phase")
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		}
+
+		if shouldRollback {
+			logger.Info("Executing 3-Strike Rollback")
+			if err := r.RollbackManager.ExecuteRollback(ctx, proposal); err != nil {
+				return ctrl.Result{}, err
+			}
+			proposal.Status.Phase = optimizationv1alpha1.PhaseRolledBack
+			proposal.Status.ExecutionState = optimizationv1alpha1.ExecutionReverted
+			if err := r.Status().Update(ctx, proposal); err != nil {
+				return ctrl.Result{}, err
+			}
+			r.Recorder.Event(proposal, "Warning", "ExecutionReverted", "3-Strike Rollback Triggered due to workload stress")
+			_ = r.Actuator.ReleaseLock(ctx, proposal)
+			return ctrl.Result{}, nil
+		}
+
 		proposal.Status.Phase = optimizationv1alpha1.PhaseCompleted
 		proposal.Status.ExecutionState = optimizationv1alpha1.ExecutionVerified
 		if err := r.Status().Update(ctx, proposal); err != nil {
@@ -261,6 +330,14 @@ func (r *OptimizationProposalReconciler) SetupWithManager(mgr ctrl.Manager) erro
 	r.Evaluator = policy.NewEvaluator()
 	r.ExecutionGate = NewExecutionGate(NewActuationControl(mgr.GetClient(), "reconcilyx-system"), NewWorkloadHealthGate())
 	r.Actuator = NewActuator(mgr.GetClient())
+	
+	// Create a default telemetry provider for the rollback manager
+	promClient, err := telemetry.NewPrometheusClient("http://prometheus-operated.monitoring.svc.cluster.local:9090")
+	if err != nil {
+		return err
+	}
+	telemetryProvider := telemetry.NewTelemetryProvider(promClient)
+	r.RollbackManager = NewRollbackManager(mgr.GetClient(), telemetryProvider)
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&optimizationv1alpha1.OptimizationProposal{}).

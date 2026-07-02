@@ -3,7 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.21.0
+    controller-gen.kubebuilder.io/version: v0.17.1
   name: optimizationproposals.optimization.reconcilyx.io
 spec:
   group: optimization.reconcilyx.io
@@ -234,12 +234,14 @@ spec:
                     type: object
                 type: object
               recommendation:
-                description: Recommendation defines the type of action to take.
+                description: Recommendation defines the optimization strategy
                 enum:
                 - RightSize
                 - ScaleToZero
-                - ReduceCPURequest
-                - ReduceMemoryRequest
+                type: string
+              targetClusterName:
+                description: TargetClusterName defines which spoke cluster should
+                  execute this proposal.
                 type: string
               targetWorkload:
                 description: TargetWorkload references the resource to be optimized
@@ -505,6 +507,11 @@ spec:
                 description: Reason explains the rationale behind the approval or
                   rejection
                 type: string
+              yieldCount:
+                description: YieldCount tracks how many times the execution was reverted
+                  by external controllers.
+                format: int32
+                type: integer
             type: object
         required:
         - spec

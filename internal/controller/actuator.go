@@ -2,7 +2,6 @@ package controller
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/reconcilyx/operator/api/v1alpha1"
@@ -10,7 +9,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -135,81 +133,64 @@ func (a *defaultActuator) ApplyMutation(ctx context.Context, proposal *v1alpha1.
 		return fmt.Errorf("forbidden recommendation type: %s", proposal.Spec.Recommendation)
 	}
 
-	// We use unstructured to ensure we only send EXACTLY the fields we want to own.
-	patch := &unstructured.Unstructured{}
-	patch.SetAPIVersion("apps/v1")
-	patch.SetKind("Deployment")
-	patch.SetName(proposal.Spec.TargetWorkload.Name)
-	patch.SetNamespace(proposal.Spec.TargetWorkload.Namespace)
-
-	// Annotations
-	annotations := map[string]string{
-		LastActionAnnotation: "execute",
-	}
-	patch.SetAnnotations(annotations)
-
-	// Build the minimal pod template spec for the containers we are mutating
-	var containers []interface{}
-
 	if proposal.Status.ExecutionSnapshot == nil || len(proposal.Status.ExecutionSnapshot.ContainerResources) == 0 {
 		return fmt.Errorf("no execution snapshot available or it contains no containers")
 	}
 
-	requests := map[string]interface{}{}
-	if proposal.Spec.Recommendation == v1alpha1.RecommendationReduceCPURequest {
-		if cpu, ok := proposal.Spec.ProposedResources.Requests[corev1.ResourceCPU]; ok {
-			requests["cpu"] = cpu.String()
-		}
-	} else if proposal.Spec.Recommendation == v1alpha1.RecommendationReduceMemoryRequest {
-		if mem, ok := proposal.Spec.ProposedResources.Requests[corev1.ResourceMemory]; ok {
-			requests["memory"] = mem.String()
-		}
+	// 1. Get the Deployment to find its Pod selector
+	dep := &appsv1.Deployment{}
+	if err := a.client.Get(ctx, types.NamespacedName{
+		Name:      proposal.Spec.TargetWorkload.Name,
+		Namespace: proposal.Spec.TargetWorkload.Namespace,
+	}, dep); err != nil {
+		return fmt.Errorf("failed to get target deployment: %w", err)
 	}
 
-	if len(requests) == 0 {
-		return fmt.Errorf("no requests formulated for SSA payload")
-	}
-
-	// Apply the patch dynamically to all containers tracked in the snapshot
-	for containerName := range proposal.Status.ExecutionSnapshot.ContainerResources {
-		container := map[string]interface{}{
-			"name": containerName,
-			"resources": map[string]interface{}{
-				"requests": requests,
-			},
-		}
-		containers = append(containers, container)
-	}
-
-	templateSpec := map[string]interface{}{
-		"containers": containers,
-	}
-	
-	template := map[string]interface{}{
-		"spec": templateSpec,
-	}
-
-	spec := map[string]interface{}{
-		"template": template,
-	}
-
-	err := unstructured.SetNestedMap(patch.Object, spec, "spec")
+	selector, err := metav1.LabelSelectorAsSelector(dep.Spec.Selector)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to parse deployment selector: %w", err)
 	}
 
-	// Apply using Server-Side Apply
-	// Force=false guarantees we don't overwrite manual human edits
-	patchOpts := &client.PatchOptions{
-		FieldManager: FieldManagerName,
-		Force:        func() *bool { b := true; return &b }(),
+	// 2. List all running Pods belonging to the Deployment
+	podList := &corev1.PodList{}
+	if err := a.client.List(ctx, podList, client.InNamespace(dep.Namespace), client.MatchingLabelsSelector{Selector: selector}); err != nil {
+		return fmt.Errorf("failed to list pods: %w", err)
 	}
 
-	// Marshal unstructured object to JSON to apply
-	data, err := json.Marshal(patch.Object)
-	if err != nil {
-		return err
+	// 3. Patch each Pod directly in-place (InPlacePodVerticalScaling)
+	for _, p := range podList.Items {
+		pod := p // copy loop variable
+		patch := client.MergeFrom(pod.DeepCopy())
+		mutated := false
+
+		// Apply the resources from the proposal to the pod's containers
+		for i := range pod.Spec.Containers {
+			c := &pod.Spec.Containers[i]
+			// Only mutate containers that were tracked in the execution snapshot
+			if _, tracked := proposal.Status.ExecutionSnapshot.ContainerResources[c.Name]; tracked {
+				if c.Resources.Requests == nil {
+					c.Resources.Requests = corev1.ResourceList{}
+				}
+				if proposal.Spec.Recommendation == v1alpha1.RecommendationReduceCPURequest {
+					if cpu, ok := proposal.Spec.ProposedResources.Requests[corev1.ResourceCPU]; ok {
+						c.Resources.Requests[corev1.ResourceCPU] = cpu
+						mutated = true
+					}
+				} else if proposal.Spec.Recommendation == v1alpha1.RecommendationReduceMemoryRequest {
+					if mem, ok := proposal.Spec.ProposedResources.Requests[corev1.ResourceMemory]; ok {
+						c.Resources.Requests[corev1.ResourceMemory] = mem
+						mutated = true
+					}
+				}
+			}
+		}
+
+		if mutated {
+			if err := a.client.Patch(ctx, &pod, patch); err != nil {
+				return fmt.Errorf("failed to execute in-place resize on pod %s: %w", pod.Name, err)
+			}
+		}
 	}
 
-	return a.client.Patch(ctx, patch, client.RawPatch(types.ApplyPatchType, data), patchOpts)
+	return nil
 }

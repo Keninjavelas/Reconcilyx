@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/reconcilyx/operator/api/v1alpha1"
+	"github.com/reconcilyx/operator/internal/engine/forecasting"
 	"github.com/reconcilyx/operator/internal/telemetry"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -32,18 +34,31 @@ type defaultAnalyzer struct {
 	telemetryProvider telemetry.TelemetryProvider
 	registry          RuleRegistry
 	scorer            Scorer
+	predictor         forecasting.Predictor
 }
 
 // NewAnalyzer creates the core optimization engine.
-func NewAnalyzer(provider telemetry.TelemetryProvider, registry RuleRegistry, scorer Scorer) Analyzer {
+func NewAnalyzer(provider telemetry.TelemetryProvider, registry RuleRegistry, scorer Scorer, predictor forecasting.Predictor) Analyzer {
 	return &defaultAnalyzer{
 		telemetryProvider: provider,
 		registry:          registry,
 		scorer:            scorer,
+		predictor:         predictor,
 	}
 }
 
 func (a *defaultAnalyzer) Analyze(ctx context.Context, ref corev1.ObjectReference, currentResources map[string]corev1.ResourceRequirements) (*v1alpha1.OptimizationProposal, error) {
+	startTime := time.Now()
+	defer func() {
+		telemetry.OptimizationLatency.Observe(time.Since(startTime).Seconds())
+	}()
+
+	// 0. Forecasting Check (Hybrid Predictive ML Stub)
+	prediction, _ := a.predictor.Forecast(ctx, ref)
+	if prediction != nil && prediction.Confidence > 80 {
+		// Example implementation of how the ML engine overrides the rules
+	}
+
 	// 1. Collect Telemetry
 	metrics, err := a.telemetryProvider.GetWorkloadMetrics(ctx, ref)
 	if err != nil && err != telemetry.ErrPartialTelemetry {

@@ -1,0 +1,1 @@
+{"spec":{"containers":[{"name":"nginx","resources":{"requests":{"cpu":"1000m"}}}]}}

@@ -96,6 +96,9 @@ type DecisionMetadata struct {
 
 // OptimizationProposalSpec defines the desired state of OptimizationProposal
 type OptimizationProposalSpec struct {
+	// TargetClusterName defines which spoke cluster should execute this proposal.
+	TargetClusterName string `json:"targetClusterName,omitempty"`
+
 	// TargetWorkload references the resource to be optimized
 	TargetWorkload corev1.ObjectReference `json:"targetWorkload"`
 
@@ -219,6 +222,10 @@ type OptimizationProposalStatus struct {
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// YieldCount tracks how many times the execution was reverted by external controllers.
+	// +optional
+	YieldCount int32 `json:"yieldCount,omitempty"`
 }
 
 // +kubebuilder:object:root=true

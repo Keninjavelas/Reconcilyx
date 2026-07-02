@@ -6,6 +6,7 @@ import (
 
 	"github.com/reconcilyx/operator/api/v1alpha1"
 	"github.com/reconcilyx/operator/internal/engine"
+	"github.com/reconcilyx/operator/internal/engine/forecasting"
 	"github.com/reconcilyx/operator/internal/engine/rules"
 	"github.com/reconcilyx/operator/internal/telemetry"
 	"github.com/stretchr/testify/assert"
@@ -48,7 +49,7 @@ func TestAnalyzer_Analyze(t *testing.T) {
 			},
 		}
 
-		analyzer := engine.NewAnalyzer(provider, registry, scorer)
+		analyzer := engine.NewAnalyzer(provider, registry, scorer, forecasting.NewPredictor())
 
 		currentResources := map[string]corev1.ResourceRequirements{
 			"app": {
@@ -88,7 +89,7 @@ func TestAnalyzer_Analyze(t *testing.T) {
 			},
 		}
 
-		analyzer := engine.NewAnalyzer(provider, registry, scorer)
+		analyzer := engine.NewAnalyzer(provider, registry, scorer, forecasting.NewPredictor())
 		currentResources := map[string]corev1.ResourceRequirements{
 			"app": {
 				Requests: corev1.ResourceList{
