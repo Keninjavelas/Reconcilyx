@@ -1,64 +1,43 @@
-<div align="center">
-  
-# Reconcilyx
+# Reconcilyx v4.0.0-beta
 
-**Autonomous, Safety-First Kubernetes Workload Optimization**
+Reconcilyx is an open-source Kubernetes optimization project for evaluating cost, carbon, and workload right-sizing decisions.
 
-[![Go Report Card](https://goreportcard.com/badge/github.com/reconcilyx/operator)](https://goreportcard.com/report/github.com/reconcilyx/operator)
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+## Beta Status
 
-*Reconcilyx safely closes the loop between Kubernetes observability and actuation using a strictly governed, Server-Side Apply policy engine.*
+Reconcilyx is in active beta hardening. It is not production-ready and should not mutate production workloads without an independent security review, a non-production rollout, and environment-specific validation.
 
-</div>
+| Category | Evidence-backed status |
+|---|---|
+| Build and automated tests | Locally verified; repeat in your environment |
+| Dashboard | Buildable React UI; can be embedded with the Hub or served from GitHub Pages |
+| API, CLI, controller, and integrations | Implemented areas remain beta until end-to-end production-like validation |
+| eBPF and node consolidation | Explicitly deferred to v5.0 planning |
 
----
+The conservative inventory is [FEATURE_MATRIX.md](FEATURE_MATRIX.md). It records `0 Verified`, `72 Partial`, and `30 Missing/Stubbed` at the audit baseline. [STATUS.md](STATUS.md) and [GITHUB_ISSUES.md](GITHUB_ISSUES.md) are the release and remediation sources of truth.
 
-## 1. What is Reconcilyx?
-Reconcilyx is the first operator to leverage Kubernetes **In-Place Pod Resizing** to reduce cloud costs without a single pod restart. 
+## Deployment Options
 
-Unlike VPA, which relies on rolling updates (restarts), Reconcilyx patches the running pod's resource allocation directly using the `InPlacePodVerticalScaling` feature gate. It uses predictive ML to forecast usage 24 hours ahead, automatically rolls back changes the moment a workload shows stress, and yields gracefully to GitOps tools using exponential backoff. 
+- **Local development:** run the UI against a locally running Hub at `http://localhost:8082`.
+- **Kubernetes:** use the Helm chart in [charts/reconcilyx](charts/reconcilyx) after reviewing its RBAC and deployment values.
+- **Static UI:** GitHub Pages can host only the browser dashboard. Operators deploy and secure their own API/control plane, then configure its URL in **Settings**.
+- **Kind + ngrok:** an evaluation-only option that tunnels a locally port-forwarded Hub over temporary HTTPS. See the deployment guide; do not use it as a production architecture.
 
-If it cannot predict safely, it does nothing—because saving money is worthless if you break production.
+See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for beta deployment guidance, including the CORS and authentication requirements for a hosted UI.
 
-## 3. Architecture
+## Commercial Use
 
-```mermaid
-flowchart LR
-    subgraph Data Plane
-      Prometheus[(Prometheus)]
-    end
-    
-    subgraph Intelligence Plane
-      Engine[Optimization Engine]
-      Engine -->|Generates| Proposal[OptimizationProposal CRD]
-    end
-    
-    subgraph Governance Plane
-      Policy[Policy Engine]
-      Policy -->|Approves/Rejects| Proposal
-    end
+Reconcilyx is licensed under the [Apache License 2.0](LICENSE). The license permits commercial use, modification, distribution, and sublicensing subject to its terms and notice requirements.
 
-    subgraph Control Plane
-      Reconciler[Actuation Reconciler]
-      Gate[JIT Execution Gate]
-      SSA[Server-Side Apply]
-    end
+The project does not provide a hosted control plane, an SLA, a security certification, or a warranty. Do not interpret the license as a claim of production suitability or compliance certification.
 
-    Prometheus -.-> Engine
-    Proposal --> Reconciler
-    Reconciler --> Gate
-    Gate --> SSA
-    SSA --> Target[Target Workload]
+## Development
+
+```powershell
+go build ./...
+go test ./...
+Set-Location ui
+npm ci
+npm run build
 ```
 
-## 4. Core Innovations
-- **Decoupled Evaluation:** Telemetry collection, risk scoring, policy approval, and actuation are completely isolated states.
-- **GitOps Yielding:** Reconcilyx never fights ArgoCD. If an external tool reverts an optimization, Reconcilyx detects the mismatch and permanently yields, preventing API Server ping-pong thrashing.
-- **Optimistic Execution Locks:** Prevents concurrent controllers from corrupting workload state via the `reconcilyx.io/execution-lock` annotation.
-
-## 5. Safety Mechanisms
-1. **Execution Snapshots:** Precisely 1 millisecond before mutating a workload, Reconcilyx takes a deep copy of the `Generation` and `ResourceVersion`. This guarantees mathematically perfect rollbacks that do not accidentally erase manual edits.
-2. **Server-Side Apply Granularity:** The Actuator constructs raw, unstructured JSON payloads targeting *only* `requests.cpu` and `requests.memory`. It is physically incapable of mutating images, limits, or labels.
-3. **Global Kill-Switch:** A dedicated `reconcilyx-config` ConfigMap can instantly freeze all cluster mutations (`actuation_paused: "true"`), downgrading Reconcilyx to a read-only Dry Run mode.
-
-## 🚀 The 15-Minute Test Harness (Phase 5 Demo)
+For UI development, `npm run dev` proxies API requests to `http://localhost:8082` by default. Override that proxy with `VITE_API_BASE` or `RECONCILYX_API_URL`.

@@ -1,0 +1,125 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/reconcilyx/operator
+  pullPolicy: IfNotPresent
+  tag: "v3.0.0"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: "reconcilyx-controller-manager"
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: true
+
+service:
+  type: ClusterIP
+  metricsPort: 8080
+  apiPort: 8082
+
+api:
+  # Leave empty only for local development. The UI sends this value as X-API-Key.
+  key: ""
+  # Comma-separated browser origins allowed to call the API, for example:
+  # https://keninjavelas.github.io
+  corsOrigins: ""
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+config:
+  logLevel: "info"
+  enableInPlaceResizing: true
+  enableGitOpsPR: true
+  enableCarbonAwareness: true
+  prometheusUrl: "http://prometheus-k8s.monitoring.svc:9090"
+  gridLocation: "us-east-1"
+  defaultCostWeight: 0.6
+  defaultCarbonWeight: 0.4
+
+# BYOK LLM Provider Configuration
+llm:
+  provider: "ollama"  # Options: ollama, openai, anthropic, groq, cohere
+  ollama:
+    baseURL: "http://localhost:11434"
+    model: "llama3.2:3b"
+  openai:
+    apiKey: ""
+    model: "gpt-4o-mini"
+  anthropic:
+    apiKey: ""
+    model: "claude-3-5-haiku-20241022"
+  groq:
+    apiKey: ""
+    model: "llama-3.3-70b-versatile"
+  cohere:
+    apiKey: ""
+    model: "command-r-plus"
+
+# Carbon Footprint Intensity Configuration
+carbon:
+  provider: "static" # Options: static, electricitymaps, watttime
+  cacheTTLHours: 1
+  static:
+    fallbackIntensity: 385 # gCO2/kWh
+  electricitymaps:
+    apiKey: ""
+    baseURL: "https://api.electricitymap.org/v3/carbon-intensity/latest"
+  watttime:
+    apiKey: ""
+    username: ""
+    password: ""
+    baseURL: "https://api.watttime.org/api/v3"
+
+# Multi-Cloud Pricing Provider Configuration
+pricing:
+  cacheTTLHours: 1
+  providers:
+    aws:
+      enabled: true
+      region: "us-east-1"
+      # Credentials — if set, live AWS Price List API is used (otherwise static fallback).
+      accessKeyId: ""
+      secretAccessKey: ""
+    gcp:
+      enabled: true
+      region: "us-central1"
+      # Cloud Billing Catalog API key. Empty = static fallback.
+      apiKey: ""
+    azure:
+      enabled: true
+      region: "eastus"
+      # Subscription ID. Empty = static fallback (Azure Retail Prices API is public, but sub id enriches data).
+      subscriptionId: ""
+
+# Federated Learning Collective Brain Configuration
+federated:
+  enabled: true
+  role: "hub" # Options: hub, spoke
+  hubURL: ""
+  byzantineTrimRatio: 0.10
+  stabilityThreshold: 0.005
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

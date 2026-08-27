@@ -1,0 +1,92 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  min-height: 100vh;
+}
+
+body {
+  background:
+    radial-gradient(900px 500px at 10% -10%, rgba(52, 211, 153, 0.06), transparent 60%),
+    radial-gradient(700px 400px at 100% 0%, rgba(245, 158, 11, 0.05), transparent 60%),
+    linear-gradient(180deg, #0b0f14 0%, #080b0f 100%);
+  background-attachment: fixed;
+}
+
+.bg-grain::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+  background-size: 3px 3px;
+  mix-blend-mode: overlay;
+  opacity: 0.5;
+}
+
+@layer components {
+  .panel {
+    @apply relative rounded-2xl border border-white/5 bg-ink-900/60 backdrop-blur-sm shadow-card overflow-hidden;
+  }
+  .panel-header {
+    @apply flex items-center justify-between px-6 py-5 border-b border-white/5;
+  }
+  .panel-title {
+    @apply font-display text-xl text-ink-50 tracking-tight;
+  }
+  .eyebrow {
+    @apply text-[11px] uppercase tracking-[0.18em] text-mint-400/80 font-semibold;
+  }
+  .kpi-value {
+    @apply font-display text-4xl md:text-5xl tracking-tight text-ink-50;
+  }
+  .btn {
+    @apply inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors;
+  }
+  .btn-primary {
+    @apply btn bg-mint-500 text-ink-950 hover:bg-mint-400;
+  }
+  .btn-ghost {
+    @apply btn bg-white/5 text-ink-100 hover:bg-white/10 border border-white/10;
+  }
+  .btn-danger {
+    @apply btn bg-ember-500/90 text-white hover:bg-ember-500;
+  }
+  .chip {
+    @apply inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium;
+  }
+  .data-table {
+    @apply w-full border-collapse text-sm;
+  }
+  .data-table th {
+    @apply text-left text-xs uppercase tracking-wider text-ink-500 px-4 py-3 border-b border-white/5;
+  }
+  .data-table td {
+    @apply px-4 py-3 border-b border-white/5 text-ink-100;
+  }
+  .data-table tbody tr:hover td {
+    @apply bg-white/[0.02];
+  }
+  .input {
+    @apply w-full rounded-lg bg-ink-800/60 border border-white/10 text-ink-100 placeholder-ink-500 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-mint-500/40 focus:border-mint-500/40;
+  }
+  .slider {
+    @apply accent-mint-500 w-full;
+  }
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+}

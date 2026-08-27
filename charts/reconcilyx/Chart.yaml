@@ -1,0 +1,18 @@
+apiVersion: v2
+name: reconcilyx
+description: Reconcilyx v4.0.0-beta Kubernetes optimization control plane
+type: application
+version: 4.0.0-beta
+appVersion: "v4.0.0-beta"
+keywords:
+  - kubernetes
+  - finops
+  - carbon
+  - optimization
+  - operator
+  - rl
+maintainers:
+  - name: Reconcilyx Maintainers
+    email: maintainers@reconcilyx.io
+annotations:
+  reconcilyx.io/release-stage: beta

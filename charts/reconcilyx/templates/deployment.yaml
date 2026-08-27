@@ -1,0 +1,113 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "reconcilyx.fullname" . }}-controller-manager
+  labels:
+    {{- include "reconcilyx.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "reconcilyx.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "reconcilyx.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "reconcilyx.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: manager
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /manager
+          args:
+            - --health-probe-bind-address=:8081
+            - --metrics-bind-address=:8080
+            - --leader-elect
+          ports:
+            - name: metrics
+              containerPort: 8080
+              protocol: TCP
+            - name: api-ui
+              containerPort: 8082
+              protocol: TCP
+          env:
+            - name: RECONCILYX_PROMETHEUS_URL
+              value: {{ .Values.config.prometheusUrl | quote }}
+            - name: RECONCILYX_GRID_LOCATION
+              value: {{ .Values.config.gridLocation | quote }}
+            - name: RECONCILYX_ENABLE_INPLACE
+              value: {{ .Values.config.enableInPlaceResizing | quote }}
+            - name: RECONCILYX_ENABLE_GITOPS
+              value: {{ .Values.config.enableGitOpsPR | quote }}
+            - name: RECONCILYX_CORS_ORIGINS
+              value: {{ .Values.api.corsOrigins | quote }}
+            {{- if .Values.api.key }}
+            - name: RECONCILYX_API_KEY
+              value: {{ .Values.api.key | quote }}
+            {{- end }}
+            # --- Carbon Intensity Provider ---
+            - name: RECONCILYX_CARBON_PROVIDER
+              value: {{ .Values.carbon.provider | quote }}
+            - name: RECONCILYX_CARBON_CACHE_TTL_HOURS
+              value: {{ .Values.carbon.cacheTTLHours | quote }}
+            - name: RECONCILYX_CARBON_STATIC_FALLBACK
+              value: {{ .Values.carbon.static.fallbackIntensity | quote }}
+            {{- if .Values.carbon.electricitymaps.apiKey }}
+            - name: RECONCILYX_EM_API_KEY
+              value: {{ .Values.carbon.electricitymaps.apiKey | quote }}
+            {{- end }}
+            - name: RECONCILYX_EM_BASE_URL
+              value: {{ .Values.carbon.electricitymaps.baseURL | quote }}
+            {{- if .Values.carbon.watttime.apiKey }}
+            - name: RECONCILYX_WT_API_KEY
+              value: {{ .Values.carbon.watttime.apiKey | quote }}
+            {{- end }}
+            {{- if .Values.carbon.watttime.username }}
+            - name: WATTTIME_USERNAME
+              value: {{ .Values.carbon.watttime.username | quote }}
+            {{- end }}
+            {{- if .Values.carbon.watttime.password }}
+            - name: WATTTIME_PASSWORD
+              value: {{ .Values.carbon.watttime.password | quote }}
+            {{- end }}
+            - name: RECONCILYX_WT_BASE_URL
+              value: {{ .Values.carbon.watttime.baseURL | quote }}
+            # --- Multi-Cloud Pricing Providers ---
+            - name: RECONCILYX_PRICING_CACHE_TTL_HOURS
+              value: {{ .Values.pricing.cacheTTLHours | quote }}
+            - name: RECONCILYX_PRICING_AWS_ENABLED
+              value: {{ .Values.pricing.providers.aws.enabled | quote }}
+            - name: RECONCILYX_PRICING_AWS_REGION
+              value: {{ .Values.pricing.providers.aws.region | quote }}
+            {{- if .Values.pricing.providers.aws.accessKeyId }}
+            - name: AWS_ACCESS_KEY_ID
+              value: {{ .Values.pricing.providers.aws.accessKeyId | quote }}
+            {{- end }}
+            {{- if .Values.pricing.providers.aws.secretAccessKey }}
+            - name: AWS_SECRET_ACCESS_KEY
+              value: {{ .Values.pricing.providers.aws.secretAccessKey | quote }}
+            {{- end }}
+            - name: RECONCILYX_PRICING_GCP_ENABLED
+              value: {{ .Values.pricing.providers.gcp.enabled | quote }}
+            - name: RECONCILYX_PRICING_GCP_REGION
+              value: {{ .Values.pricing.providers.gcp.region | quote }}
+            {{- if .Values.pricing.providers.gcp.apiKey }}
+            - name: RECONCILYX_PRICING_GCP_API_KEY
+              value: {{ .Values.pricing.providers.gcp.apiKey | quote }}
+            {{- end }}
+            - name: RECONCILYX_PRICING_AZURE_ENABLED
+              value: {{ .Values.pricing.providers.azure.enabled | quote }}
+            - name: RECONCILYX_PRICING_AZURE_REGION
+              value: {{ .Values.pricing.providers.azure.region | quote }}
+            {{- if .Values.pricing.providers.azure.subscriptionId }}
+            - name: RECONCILYX_PRICING_AZURE_SUB_ID
+              value: {{ .Values.pricing.providers.azure.subscriptionId | quote }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}

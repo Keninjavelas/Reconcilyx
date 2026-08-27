@@ -1,0 +1,50 @@
+{{- if .Values.serviceAccount.create -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "reconcilyx.serviceAccountName" . }}
+  labels:
+    {{- include "reconcilyx.labels" . | nindent 4 }}
+  {{- with .Values.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "reconcilyx.fullname" . }}-manager-role
+  labels:
+    {{- include "reconcilyx.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["pods", "nodes", "configmaps", "services"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  - apiGroups: ["reconcilyx.io"]
+    resources: ["optimizationpolicies", "optimizationproposals", "clusterregistrations"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["reconcilyx.io"]
+    resources: ["optimizationpolicies/status", "optimizationproposals/status", "clusterregistrations/status"]
+    verbs: ["get", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "reconcilyx.fullname" . }}-manager-rolebinding
+  labels:
+    {{- include "reconcilyx.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "reconcilyx.fullname" . }}-manager-role
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "reconcilyx.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
