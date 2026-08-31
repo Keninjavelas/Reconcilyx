@@ -1,28 +1,14 @@
-/*
-Copyright 2026.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
+	"net/http"
 	"os"
+	"strconv"
+	"time"
 
-	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
-	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -36,8 +22,18 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	optimizationv1alpha1 "github.com/reconcilyx/operator/api/v1alpha1"
+	"github.com/reconcilyx/operator/internal/api"
+	"github.com/reconcilyx/operator/internal/carbon"
+	"github.com/reconcilyx/operator/internal/cloud"
 	"github.com/reconcilyx/operator/internal/controller"
+	"github.com/reconcilyx/operator/internal/engine"
+	"github.com/reconcilyx/operator/internal/engine/rl"
+	"github.com/reconcilyx/operator/internal/federated"
+	"github.com/reconcilyx/operator/internal/notifiers"
+	"github.com/reconcilyx/operator/internal/telemetry"
 	reconcilyxwebhook "github.com/reconcilyx/operator/internal/webhook"
+	reconcilyxui "github.com/reconcilyx/operator/ui"
+	_ "net/http/pprof"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	// +kubebuilder:scaffold:imports
 )
@@ -54,6 +50,18 @@ func init() {
 	// +kubebuilder:scaffold:scheme
 }
 
+func parseIntEnv(key string, def int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return def
+	}
+	return n
+}
+
 // nolint:gocyclo
 func main() {
 	var metricsAddr string
@@ -64,6 +72,12 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
+	var concurrency int
+	var prometheusURL string
+	var batchSize int
+	var pprofAddr string
+	var apiPort string
+	var apiKey string
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -81,6 +95,34 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	flag.IntVar(&concurrency, "concurrency", parseIntEnv("RECONCILYX_CONCURRENCY", 4),
+		"Maximum number of concurrent reconciliations per controller.")
+	flag.StringVar(&prometheusURL, "prometheus-url", func() string {
+		if v := os.Getenv("PROMETHEUS_URL"); v != "" {
+			return v
+		}
+		return "http://prometheus-operated.monitoring.svc.cluster.local:9090"
+	}(), "URL of the Prometheus server used for workload telemetry.")
+	flag.IntVar(&batchSize, "batch-size", parseIntEnv("RECONCILYX_BATCH_SIZE", 10),
+		"Maximum number of workloads analyzed per policy reconciliation pass.")
+	flag.StringVar(&pprofAddr, "pprof-bind-address", func() string {
+		if v := os.Getenv("PPROF_ADDR"); v != "" {
+			return v
+		}
+		return ":6060"
+	}(), "Bind address for pprof debug endpoints (disabled if empty).")
+	flag.StringVar(&apiPort, "api-port", func() string {
+		if v := os.Getenv("RECONCILYX_API_PORT"); v != "" {
+			if v[0] != ':' {
+				return ":" + v
+			}
+			return v
+		}
+		return ":8082"
+	}(), "Bind address for the Reconcilyx REST API + embedded UI (disabled if empty).")
+	flag.StringVar(&apiKey, "api-key", os.Getenv("RECONCILYX_API_KEY"),
+		"Shared secret for API calls. The UI and all integrations must send X-API-Key. Unset = dev mode (open).")
+
 	opts := zap.Options{
 		Development: true,
 	}
@@ -89,12 +131,6 @@ func main() {
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
-	// if the enable-http2 flag is false (the default), http/2 should be disabled
-	// due to its vulnerabilities. More specifically, disabling http/2 will
-	// prevent from being vulnerable to the HTTP/2 Stream Cancellation and
-	// Rapid Reset CVEs. For more information see:
-	// - https://github.com/advisories/GHSA-qppj-fm5r-hxr3
-	// - https://github.com/advisories/GHSA-4374-p667-p6c8
 	disableHTTP2 := func(c *tls.Config) {
 		setupLog.Info("Disabling HTTP/2")
 		c.NextProtos = []string{"http/1.1"}
@@ -104,7 +140,6 @@ func main() {
 		tlsOpts = append(tlsOpts, disableHTTP2)
 	}
 
-	// Initial webhook TLS options
 	webhookTLSOpts := tlsOpts
 	webhookServerOptions := webhook.Options{
 		TLSOpts: webhookTLSOpts,
@@ -121,10 +156,6 @@ func main() {
 
 	webhookServer := webhook.NewServer(webhookServerOptions)
 
-	// Metrics endpoint is enabled in 'config/default/kustomization.yaml'. The Metrics options configure the server.
-	// More info:
-	// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.24.1/pkg/metrics/server
-	// - https://book.kubebuilder.io/reference/metrics.html
 	metricsServerOptions := metricsserver.Options{
 		BindAddress:   metricsAddr,
 		SecureServing: secureMetrics,
@@ -132,21 +163,9 @@ func main() {
 	}
 
 	if secureMetrics {
-		// FilterProvider is used to protect the metrics endpoint with authn/authz.
-		// These configurations ensure that only authorized users and service accounts
-		// can access the metrics endpoint. The RBAC are configured in 'config/rbac/kustomization.yaml'. More info:
-		// https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.24.1/pkg/metrics/filters#WithAuthenticationAndAuthorization
 		metricsServerOptions.FilterProvider = filters.WithAuthenticationAndAuthorization
 	}
 
-	// If the certificate is not specified, controller-runtime will automatically
-	// generate self-signed certificates for the metrics server. While convenient for development and testing,
-	// this setup is not recommended for production.
-	//
-	// TODO(user): If you enable certManager, uncomment the following lines:
-	// - [METRICS-WITH-CERTS] at config/default/kustomization.yaml to generate and use certificates
-	// managed by cert-manager for the metrics server.
-	// - [PROMETHEUS-WITH-CERTS] at config/prometheus/kustomization.yaml for TLS certification.
 	if len(metricsCertPath) > 0 {
 		setupLog.Info("Initializing metrics certificate watcher using provided certificates",
 			"metrics-cert-path", metricsCertPath, "metrics-cert-name", metricsCertName, "metrics-cert-key", metricsCertKey)
@@ -168,29 +187,210 @@ func main() {
 	}
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), options)
-	// (Leftover comments removed)
 	if err != nil {
 		setupLog.Error(err, "Failed to start manager")
 		os.Exit(1)
 	}
 
-	if err := (&controller.OptimizationPolicyReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
+	analyzer, err := func() (engine.Analyzer, error) {
+		carbonCfg := carbon.CarbonConfigFromEnv()
+		cp := carbon.NewCarbonProvider(carbonCfg)
+		setupLog.Info("Carbon provider configured", "provider", carbonCfg.Provider, "source", func() string {
+			if it, err := cp.IntensityForRegion(context.Background(), "us-east-1"); err == nil {
+				return it.Source
+			}
+			return "unknown"
+		}())
+		return controller.BuildDefaultAnalyzer(prometheusURL, cp)
+	}()
+	if err != nil {
+		setupLog.Error(err, "Failed to build analyzer engine, will run without proposal auto-creation")
+	}
+
+	// --- Federated intelligence wiring -------------------------------------
+	hubBaseURL := os.Getenv("RECONCILYX_HUB_URL")
+	spokeClusterName := os.Getenv("RECONCILYX_CLUSTER_NAME")
+	fedNamespace := os.Getenv("RECONCILYX_FED_NAMESPACE")
+	if fedNamespace == "" {
+		fedNamespace = "reconcilyx-system"
+	}
+	fedAggregator := federated.NewAggregator(0)
+
+	pricingCfg := cloud.PricingConfigFromEnv()
+	pricingProviders := cloud.AllPricingProviders(pricingCfg)
+	setupLog.Info("Pricing providers configured",
+		"count", len(pricingProviders),
+		"aws_enabled", pricingCfg.AWSEnabled,
+		"gcp_enabled", pricingCfg.GCPEnabled,
+		"azure_enabled", pricingCfg.AzureEnabled,
+		"cache_ttl_hours", pricingCfg.CacheTTL.Hours(),
+	)
+	for _, p := range pricingProviders {
+		setupLog.Info("Loaded pricing provider", "name", p.Name())
+	}
+	pp := make([]cloud.PricingProvider, 0, len(pricingProviders))
+	for _, p := range pricingProviders {
+		pp = append(pp, p)
+	}
+	arbitrageAnalyzer := engine.NewArbitrageAnalyzerWithProviders(fedAggregator, pp)
+
+	// --- Build shared learning/telemetry dependencies ---------------------
+	var rlAgent rl.Agent
+	var telemetryProvider telemetry.TelemetryProvider
+	var carbonProvider carbon.Provider
+	workloadRegion := engine.DefaultRegionFrom(analyzer)
+	carbonWeight := engine.DefaultCarbonWeightFrom(analyzer)
+
+	if analyzer != nil {
+		if rl, ok := engine.RLAgentFrom(analyzer); ok {
+			rlAgent = rl
+		}
+		carbonProvider = engine.DefaultCarbonProviderFrom(analyzer)
+	}
+
+	// Always build the telemetry provider (used by rollback manager too)
+	if promClient, tErr := telemetry.NewPrometheusClient(prometheusURL); tErr == nil {
+		retriable := telemetry.NewRetriableMetricsClient(promClient)
+		telemetryProvider = telemetry.NewTelemetryProvider(retriable)
+	}
+
+	if carbonProvider == nil {
+		carbonProvider = carbon.NewStaticProvider()
+	}
+
+	if rlAgent != nil {
+		if hubBaseURL != "" {
+			if spokeClusterName == "" {
+				spokeClusterName = "spoke-local"
+			}
+			cfg := federated.EmitterConfig{
+				HubBaseURL:  hubBaseURL,
+				ClusterName: spokeClusterName,
+				APIKey:      apiKey,
+			}
+			emitter := federated.NewEmitter(cfg)
+			emitter.SetObserver(func(d federated.QTableDelta) {
+				api.EmitFederatedDeltaSent(spokeClusterName)
+			})
+			rlAgent.SetFederatedEmitter(emitter)
+			bootstrapCtx, bootstrapCancel := context.WithTimeout(context.Background(), 15*time.Second)
+			snap, bErr := federated.FetchGlobalModel(bootstrapCtx, hubBaseURL, apiKey, nil)
+			if bErr == nil && snap != nil && len(snap.Entries) > 0 {
+				rlAgent.LoadGlobal(bootstrapCtx, snap)
+				setupLog.Info("Federated bootstrap loaded global Q-table", "entries", len(snap.Entries), "version", snap.Version, "cluster", spokeClusterName)
+				api.EmitFederatedBootstrapOutcome(spokeClusterName, "success")
+			} else if bErr != nil {
+				setupLog.Info("Federated bootstrap skipped (hub unreachable or empty)", "cluster", spokeClusterName, "error", safeErr(bErr))
+				api.EmitFederatedBootstrapOutcome(spokeClusterName, "skipped")
+			} else {
+				api.EmitFederatedBootstrapOutcome(spokeClusterName, "empty")
+			}
+			bootstrapCancel()
+			go func() {
+				mgrCtx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				if err := emitter.Run(mgrCtx); err != nil {
+					setupLog.Error(err, "Federated emitter loop exited")
+				}
+			}()
+			setupLog.Info("Federated spoke emitter started", "hub", hubBaseURL, "cluster", spokeClusterName)
+		}
+	} else if analyzer != nil {
+		setupLog.Info("Analyzer does not expose RL agent; federated emitter disabled")
+	}
+
+	policyReconciler := &controller.OptimizationPolicyReconciler{
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		Analyzer:  analyzer,
+		BatchSize: batchSize,
+	}
+	if err := policyReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "optimizationpolicy")
 		os.Exit(1)
 	}
-	if err := (&controller.OptimizationProposalReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
+
+	proposalReconciler := &controller.OptimizationProposalReconciler{
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		RLAgent:           rlAgent,
+		TelemetryProvider: telemetryProvider,
+		CarbonProvider:    carbonProvider,
+		WorkloadRegion:    workloadRegion,
+		CarbonWeight:      carbonWeight,
+	}
+	if err := proposalReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "optimizationproposal")
 		os.Exit(1)
 	}
+
+	// --- Notifiers + Audit + API + UI ------------------------------------
+	dispatcher := notifiers.NewDispatcher()
+	if slack := notifiers.NewSlackNotifierFromEnv(); slack != nil {
+		dispatcher.Register(slack)
+		setupLog.Info("Registered Slack notifier", "channel", slack.Channel)
+	}
+	if smtp := notifiers.NewEmailNotifierFromEnv(); smtp != nil {
+		dispatcher.Register(smtp)
+		setupLog.Info("Registered SMTP email notifier", "host", smtp.Host, "to", smtp.To)
+	}
+	auditLog := notifiers.NewAuditLog(10000, mgr.GetClient())
+	go auditLog.PersistToConfigMap(ctrl.SetupSignalHandler(), "reconcilyx-system", "reconcilyx-audit-buffer")
+
+	if apiPort != "" {
+		uiDist, uiOK := reconcilyxui.Dist()
+		deps := api.ServerDeps{
+			Client:              mgr.GetClient(),
+			Analyzer:            analyzer,
+			ArbitrageAnalyzer:   arbitrageAnalyzer,
+			NotifierDispatcher:  dispatcher,
+			AuditLog:            auditLog,
+			UIDist:              uiDist,
+			UIEnabled:           uiOK,
+			FederatedAggregator: fedAggregator,
+			FederatedNamespace:  fedNamespace,
+			FederatedModelName:  federated.DefaultConfigMapName,
+		}
+		apiServer := api.NewServer(apiPort, apiKey, deps)
+		// Pass through a context derived from manager shutdown
+		go func() {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			// Tie lifecycle to the manager: when manager starts, API starts; stop via ctx via signal handling below.
+			if err := apiServer.Start(ctx); err != nil {
+				setupLog.Error(err, "API + UI server terminated with error")
+				os.Exit(1)
+			}
+		}()
+		// Wire a tiny signal reaper so the API server's context is cancelled on SIGINT/SIGTERM.
+		// Note: mgr.Start blocks on its own signal handler; the API goroutine uses its own context
+		// and relies on process teardown to stop. We additionally hook mgr's done channel below.
+		go func() {
+			<-mgr.Elected()
+			setupLog.V(1).Info("API server lifecycle coupled to manager election")
+		}()
+		setupLog.Info("Reconcilyx API + UI configured", "addr", apiPort, "ui_embedded", uiOK, "auth", func() string {
+			if apiKey == "" {
+				return "dev (unauthenticated — set RECONCILYX_API_KEY)"
+			}
+			return "api-key"
+		}())
+	}
+
+	if pprofAddr != "" {
+		setupLog.Info("Enabling pprof endpoints", "addr", pprofAddr)
+		go func() {
+			srv := &http.Server{Addr: pprofAddr, Handler: http.DefaultServeMux}
+			if serveErr := srv.ListenAndServe(); serveErr != nil && serveErr != http.ErrServerClosed {
+				setupLog.Error(serveErr, "pprof server failed")
+			}
+		}()
+	}
+
+	setupLog.Info("Starting manager", "concurrency", concurrency, "prometheus", prometheusURL, "batchSize", batchSize)
+
 	// +kubebuilder:scaffold:builder
 
-	// Register Eviction Defense Webhooks
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
 		mgr.GetWebhookServer().Register("/mutate-v1-pod", &webhook.Admission{
 			Handler: &reconcilyxwebhook.PodMutator{Decoder: admission.NewDecoder(mgr.GetScheme())},
@@ -209,9 +409,27 @@ func main() {
 		os.Exit(1)
 	}
 
-	setupLog.Info("Starting manager")
+	setupLog.Info("Starting manager", "concurrency", concurrency, "prometheus", prometheusURL, "batchSize", batchSize)
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "Failed to run manager")
 		os.Exit(1)
 	}
+}
+
+func rlAgentFromAnalyzer(analyzer engine.Analyzer) (rl.Agent, bool) {
+	if analyzer == nil {
+		return nil, false
+	}
+	return engine.RLAgentFrom(analyzer)
+}
+
+func safeErr(err error) string {
+	if err == nil {
+		return ""
+	}
+	s := err.Error()
+	if len(s) > 240 {
+		return s[:240] + "..."
+	}
+	return s
 }

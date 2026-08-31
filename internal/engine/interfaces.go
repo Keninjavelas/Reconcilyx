@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/reconcilyx/operator/api/v1alpha1"
+	"github.com/reconcilyx/operator/internal/engine/rl"
 	"github.com/reconcilyx/operator/internal/telemetry"
 	corev1 "k8s.io/api/core/v1"
 )
@@ -31,4 +32,9 @@ type RuleRegistry interface {
 // Scorer calculates risk and confidence based on telemetry health.
 type Scorer interface {
 	Score(metrics *telemetry.WorkloadMetrics, isPartial bool) (confidence int32, risk int32)
+}
+
+// RLAgentProvider provides access to the reinforcement learning optimization agent.
+type RLAgentProvider interface {
+	Agent() rl.Agent
 }

@@ -37,7 +37,8 @@ var _ = Describe("OptimizationPolicy Controller", func() {
 						Namespace: resourceNamespace,
 					},
 					Spec: optimizationv1alpha1.OptimizationPolicySpec{
-						Mode: optimizationv1alpha1.ModeObserve,
+						Objective: optimizationv1alpha1.ObjectiveEfficiency,
+						Mode:      optimizationv1alpha1.ModeObserve,
 					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())

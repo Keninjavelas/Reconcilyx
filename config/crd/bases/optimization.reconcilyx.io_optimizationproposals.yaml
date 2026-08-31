@@ -83,6 +83,13 @@ spec:
               expectedImpact:
                 description: ExpectedImpact tracks estimated savings and deltas
                 properties:
+                  carbonSavedGramsCO2:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: Estimated monthly CO2 reduction in grams.
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
                   estimatedSavingsUSD:
                     anyOf:
                     - type: integer

@@ -34,18 +34,20 @@ var _ = Describe("OptimizationProposal Controller", func() {
 			proposal := &optimizationv1alpha1.OptimizationProposal{}
 			_ = k8sClient.Get(ctx, typeNamespacedName, proposal)
 			_ = k8sClient.Delete(ctx, proposal)
-			
+
 			pol := &optimizationv1alpha1.OptimizationPolicy{}
-			_ = k8sClient.Get(ctx, types.NamespacedName{Name: "test-policy"}, pol)
+			_ = k8sClient.Get(ctx, types.NamespacedName{Name: "test-policy", Namespace: resourceNamespace}, pol)
 			_ = k8sClient.Delete(ctx, pol)
 
 			// Create a generic policy that will match globally
 			policyResource := &optimizationv1alpha1.OptimizationPolicy{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-policy",
+					Name:      "test-policy",
+					Namespace: resourceNamespace,
 				},
 				Spec: optimizationv1alpha1.OptimizationPolicySpec{
-					Mode: optimizationv1alpha1.ModeAutoApply,
+					Objective: optimizationv1alpha1.ObjectiveEfficiency,
+					Mode:      optimizationv1alpha1.ModeAutoApply,
 					RecommendationGovernance: optimizationv1alpha1.RecommendationGovernance{
 						AllowedRecommendations: []optimizationv1alpha1.RecommendationType{
 							optimizationv1alpha1.RecommendationRightSize,
@@ -102,8 +104,8 @@ var _ = Describe("OptimizationProposal Controller", func() {
 					Namespace: resourceNamespace,
 				},
 				Spec: optimizationv1alpha1.OptimizationProposalSpec{
-					TargetWorkload: corev1.ObjectReference{Kind: "Deployment", Name: "test-deployment", APIVersion: "apps/v1"},
-					Recommendation: optimizationv1alpha1.RecommendationScaleZero, // Not allowed by test-policy
+					TargetWorkload:   corev1.ObjectReference{Kind: "Deployment", Name: "test-deployment", APIVersion: "apps/v1"},
+					Recommendation:   optimizationv1alpha1.RecommendationScaleZero, // Not allowed by test-policy
 					DecisionMetadata: optimizationv1alpha1.DecisionMetadata{RiskScore: 10, ConfidenceScore: 90},
 				},
 			}
@@ -142,6 +144,7 @@ var _ = Describe("OptimizationProposal Controller", func() {
 
 			// Artificially expire the proposal
 			proposal.Status.ExpirationTime = &metav1.Time{Time: time.Now().Add(-1 * time.Hour)}
+			proposal.Status.ApprovalState = optimizationv1alpha1.ApprovalPending
 			Expect(k8sClient.Status().Update(ctx, proposal)).To(Succeed())
 
 			reconciler := &OptimizationProposalReconciler{
@@ -161,7 +164,7 @@ var _ = Describe("OptimizationProposal Controller", func() {
 			Expect(updated.Status.ApprovalState).To(Equal(optimizationv1alpha1.ApprovalRejected))
 			Expect(updated.Status.Reason).To(ContainSubstring("TTL"))
 		})
-		
+
 		It("should ignore terminal proposals gracefully", func() {
 			proposal := &optimizationv1alpha1.OptimizationProposal{
 				ObjectMeta: metav1.ObjectMeta{
@@ -175,7 +178,8 @@ var _ = Describe("OptimizationProposal Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, proposal)).To(Succeed())
 
-			proposal.Status.Phase = optimizationv1alpha1.PhaseApproved
+			proposal.Status.Phase = optimizationv1alpha1.PhaseRejected
+			proposal.Status.ApprovalState = optimizationv1alpha1.ApprovalRejected
 			Expect(k8sClient.Status().Update(ctx, proposal)).To(Succeed())
 
 			reconciler := &OptimizationProposalReconciler{
@@ -186,15 +190,15 @@ var _ = Describe("OptimizationProposal Controller", func() {
 				Evaluator: policy.NewEvaluator(),
 			}
 
-			// Calling reconcile should do nothing since it's already terminal for Phase 1
+			// Calling reconcile should do nothing since it's already terminal
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.Requeue).To(BeFalse())
-			
+
 			var updated optimizationv1alpha1.OptimizationProposal
 			Expect(k8sClient.Get(ctx, typeNamespacedName, &updated)).To(Succeed())
 			// Should remain unmodified
-			Expect(updated.Status.Phase).To(Equal(optimizationv1alpha1.PhaseApproved))
+			Expect(updated.Status.Phase).To(Equal(optimizationv1alpha1.PhaseRejected))
 			Expect(updated.Status.PolicyApplied).To(BeEmpty()) // it didn't run eval
 		})
 	})

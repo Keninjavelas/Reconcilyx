@@ -7,12 +7,52 @@ import (
 	"time"
 
 	"github.com/reconcilyx/operator/api/v1alpha1"
+	"github.com/reconcilyx/operator/internal/carbon"
+	"github.com/reconcilyx/operator/internal/engine/anomaly"
 	"github.com/reconcilyx/operator/internal/engine/forecasting"
+	"github.com/reconcilyx/operator/internal/engine/rl"
 	"github.com/reconcilyx/operator/internal/telemetry"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+const (
+	kWhPerMilliCPUMonth  = 0.288
+	kWhPerGBMemMonth     = 0.36
+	bytesPerGB           = 1024 * 1024 * 1024
+	gramsCO2PerKGFactor  = 1.0
+	defaultRegion        = ""
+	defaultCarbonWeight  = 0.0
+	usdPerMilliCPUMonth  = 0.0365
+	usdPerGBMemMonth     = 7.30
+)
+
+func ComputeCostSavedUSDPerMonth(cpuDeltaMilli, memDeltaBytes int64, replicas int32) float64 {
+	if replicas <= 0 {
+		replicas = 1
+	}
+	usd := (float64(cpuDeltaMilli) * usdPerMilliCPUMonth) + (float64(memDeltaBytes)/float64(bytesPerGB))*usdPerGBMemMonth
+	return usd * float64(replicas)
+}
+
+func ComputeCarbonSavedGramsPerMonth(cpuDeltaMilli, memDeltaBytes int64, replicas int32, intensityGCO2PerKWh float64) float64 {
+	if intensityGCO2PerKWh <= 0 || replicas <= 0 {
+		if replicas <= 0 {
+			replicas = 1
+		}
+		if intensityGCO2PerKWh <= 0 {
+			return 0
+		}
+	}
+	cpuKWh := float64(cpuDeltaMilli) * kWhPerMilliCPUMonth
+	memKWh := (float64(memDeltaBytes) / float64(bytesPerGB)) * kWhPerGBMemMonth
+	totalKWh := (cpuKWh + memKWh) * float64(replicas)
+	if totalKWh <= 0 {
+		return 0
+	}
+	return totalKWh * intensityGCO2PerKWh * gramsCO2PerKGFactor
+}
 
 type defaultRuleRegistry struct {
 	rules []Rule
@@ -35,16 +75,50 @@ type defaultAnalyzer struct {
 	registry          RuleRegistry
 	scorer            Scorer
 	predictor         forecasting.Predictor
+	rlAgent           rl.Agent
+	anomalyDetector   anomaly.Detector
+	carbonProvider    carbon.Provider
+	workloadRegion    string
+	carbonWeight      float64
 }
 
-// NewAnalyzer creates the core optimization engine.
-func NewAnalyzer(provider telemetry.TelemetryProvider, registry RuleRegistry, scorer Scorer, predictor forecasting.Predictor) Analyzer {
-	return &defaultAnalyzer{
+func defaultCarbonProvider() carbon.Provider {
+	return carbon.NewStaticProvider()
+}
+
+func NewAnalyzer(provider telemetry.TelemetryProvider, registry RuleRegistry, scorer Scorer, predictor forecasting.Predictor, opts ...AnalyzerOption) Analyzer {
+	a := &defaultAnalyzer{
 		telemetryProvider: provider,
 		registry:          registry,
 		scorer:            scorer,
 		predictor:         predictor,
+		rlAgent:           rl.NewSimpleQAgent(),
+		anomalyDetector:   anomaly.NewZScoreDetector(3.0),
+		carbonProvider:    defaultCarbonProvider(),
+		workloadRegion:    defaultRegion,
+		carbonWeight:      defaultCarbonWeight,
 	}
+	for _, opt := range opts {
+		opt(a)
+	}
+	return a
+}
+
+func NewAnalyzerWithRL(provider telemetry.TelemetryProvider, registry RuleRegistry, scorer Scorer, predictor forecasting.Predictor, agent rl.Agent, opts ...AnalyzerOption) Analyzer {
+	allOpts := append([]AnalyzerOption{WithRLAgent(agent)}, opts...)
+	return NewAnalyzer(provider, registry, scorer, predictor, allOpts...)
+}
+
+func collectHistoricalSeries(containerMetrics *telemetry.ContainerMetrics) ([]float64, []float64) {
+	cpuHist := make([]float64, 0, len(containerMetrics.CPU.HistoricalCores))
+	for _, s := range containerMetrics.CPU.HistoricalCores {
+		cpuHist = append(cpuHist, s)
+	}
+	memHist := make([]float64, 0, len(containerMetrics.Memory.HistoricalWorkingSetBytes))
+	for _, s := range containerMetrics.Memory.HistoricalWorkingSetBytes {
+		memHist = append(memHist, float64(s))
+	}
+	return cpuHist, memHist
 }
 
 func (a *defaultAnalyzer) Analyze(ctx context.Context, ref corev1.ObjectReference, currentResources map[string]corev1.ResourceRequirements) (*v1alpha1.OptimizationProposal, error) {
@@ -52,14 +126,16 @@ func (a *defaultAnalyzer) Analyze(ctx context.Context, ref corev1.ObjectReferenc
 	defer func() {
 		telemetry.OptimizationLatency.Observe(time.Since(startTime).Seconds())
 	}()
+	workload := ref.Name
+	ns := ref.Namespace
 
-	// 0. Forecasting Check (Hybrid Predictive ML Stub)
 	prediction, _ := a.predictor.Forecast(ctx, ref)
-	if prediction != nil && prediction.Confidence > 80 {
-		// Example implementation of how the ML engine overrides the rules
+	if prediction != nil {
+		telemetry.ForecastConfidence.WithLabelValues(workload, ns).Set(float64(prediction.Confidence))
+		telemetry.ForecastCPU.WithLabelValues(workload, ns).Set(float64(prediction.MaxCPU.MilliValue()) / 1000.0)
+		telemetry.ForecastMemory.WithLabelValues(workload, ns).Set(float64(prediction.MaxMemory.Value()))
 	}
 
-	// 1. Collect Telemetry
 	metrics, err := a.telemetryProvider.GetWorkloadMetrics(ctx, ref)
 	if err != nil && err != telemetry.ErrPartialTelemetry {
 		return nil, fmt.Errorf("failed to get telemetry: %w", err)
@@ -67,24 +143,107 @@ func (a *defaultAnalyzer) Analyze(ctx context.Context, ref corev1.ObjectReferenc
 
 	isPartial := err == telemetry.ErrPartialTelemetry
 
-	// 2. Score
 	confidence, risk := a.scorer.Score(metrics, isPartial)
 
-	// 3. Evaluate Rules
 	var allFindings []*Finding
 	proposedReqs := make(map[string]corev1.ResourceList)
 
 	for containerName, containerMetrics := range metrics.Containers {
 		currentRes, ok := currentResources[containerName]
 		if !ok {
-			continue // No existing resources to optimize
+			continue
 		}
 
-		// Keep original requests to start with
 		containerReqs := make(corev1.ResourceList)
 		if currentRes.Requests != nil {
 			for k, v := range currentRes.Requests {
 				containerReqs[k] = v.DeepCopy()
+			}
+		}
+
+		cpuHist, memHist := collectHistoricalSeries(containerMetrics)
+		cpuAnomaly, _ := a.anomalyDetector.Detect(cpuHist, containerMetrics.CPU.UsageCores)
+		memAnomaly, _ := a.anomalyDetector.Detect(memHist, float64(containerMetrics.Memory.WorkingSetBytes))
+
+		if cpuAnomaly != nil {
+			telemetry.AnomalySeverity.WithLabelValues(workload, ns, "cpu").Set(cpuAnomaly.Severity)
+			if cpuAnomaly.Type != anomaly.AnomalyNone {
+				sevLabel := "low"
+				if cpuAnomaly.Severity > 0.5 {
+					sevLabel = "high"
+				} else if cpuAnomaly.Severity > 0.2 {
+					sevLabel = "medium"
+				}
+				telemetry.AnomalyEventsTotal.WithLabelValues(workload, ns, "cpu", sevLabel).Inc()
+			}
+		}
+		if memAnomaly != nil {
+			telemetry.AnomalySeverity.WithLabelValues(workload, ns, "memory").Set(memAnomaly.Severity)
+			if memAnomaly.Type != anomaly.AnomalyNone {
+				sevLabel := "low"
+				if memAnomaly.Severity > 0.5 {
+					sevLabel = "high"
+				} else if memAnomaly.Severity > 0.2 {
+					sevLabel = "medium"
+				}
+				telemetry.AnomalyEventsTotal.WithLabelValues(workload, ns, "memory", sevLabel).Inc()
+			}
+		}
+
+		hasHighAnomaly := (cpuAnomaly != nil && cpuAnomaly.Severity > 0.7) || (memAnomaly != nil && memAnomaly.Severity > 0.7)
+
+		jvmHeapMB := int64(containerMetrics.JVM.XmxBytes / (1024 * 1024))
+		hasGPU := containerMetrics.GPU.GPUCount > 0
+
+		state := &rl.WorkloadState{
+			CPUUsageCores:         containerMetrics.CPU.UsageCores,
+			CPUThrottledSecs:      containerMetrics.CPU.ThrottledSecs,
+			MemoryWorkingSetBytes: float64(containerMetrics.Memory.WorkingSetBytes),
+			OOMCount:              containerMetrics.Memory.OOMCount,
+			CurrentCPURequest:     currentRes.Requests.Cpu().DeepCopy(),
+			CurrentMemoryRequest:  currentRes.Requests.Memory().DeepCopy(),
+			Region:                a.workloadRegion,
+			CarbonWeight:          &a.carbonWeight,
+			JVMBucket:             rl.DetermineJVMBucket(jvmHeapMB, containerMetrics.JVM.IsJVMWorkload),
+			GPUBucket:             rl.DetermineGPUBucket(containerMetrics.GPU.GPUUtilizationPct, hasGPU),
+		}
+		rlResult, rlErr := a.rlAgent.Recommend(ctx, state)
+		actionType := "none"
+		if rlErr == nil && rlResult != nil && rlResult.Action != nil {
+			cpuAdj := rlResult.Action.Adjustment[string(corev1.ResourceCPU)].Percentage
+			memAdj := rlResult.Action.Adjustment[string(corev1.ResourceMemory)].Percentage
+			switch {
+			case cpuAdj < 0 || memAdj < 0:
+				actionType = "downscale"
+			case cpuAdj > 0 || memAdj > 0:
+				actionType = "upscale"
+			default:
+				actionType = "hold"
+			}
+		}
+		telemetry.RLRecommendationsTotal.WithLabelValues(workload, ns, actionType).Inc()
+
+		if !hasHighAnomaly && rlErr == nil && rlResult != nil && rlResult.Action != nil {
+			for resourceName, adj := range rlResult.Action.Adjustment {
+				resName := corev1.ResourceName(resourceName)
+				if adj.NewRequest.IsZero() && adj.Percentage != 0 {
+					current := currentRes.Requests[resName]
+					milli := current.MilliValue()
+					newMilli := int64(float64(milli) * (1 + adj.Percentage/100))
+					adj.NewRequest = resource.MustParse(fmt.Sprintf("%dm", newMilli))
+				}
+				if !adj.NewRequest.IsZero() {
+					containerReqs[resName] = adj.NewRequest.DeepCopy()
+				}
+			}
+		}
+
+		if !hasHighAnomaly && prediction != nil && prediction.Confidence > 80 {
+			if !prediction.MaxCPU.IsZero() {
+				containerReqs[corev1.ResourceCPU] = prediction.MaxCPU.DeepCopy()
+			}
+			if !prediction.MaxMemory.IsZero() {
+				containerReqs[corev1.ResourceMemory] = prediction.MaxMemory.DeepCopy()
 			}
 		}
 
@@ -95,8 +254,6 @@ func (a *defaultAnalyzer) Analyze(ctx context.Context, ref corev1.ObjectReferenc
 			}
 			if finding != nil {
 				allFindings = append(allFindings, finding)
-				
-				// Overlay finding proposals
 				if finding.ProposedRequest != nil {
 					for k, v := range *finding.ProposedRequest {
 						containerReqs[k] = v.DeepCopy()
@@ -105,16 +262,28 @@ func (a *defaultAnalyzer) Analyze(ctx context.Context, ref corev1.ObjectReferenc
 			}
 		}
 
-		if len(containerReqs) > 0 {
+		changed := false
+		for k, v := range containerReqs {
+			if current, ok := currentRes.Requests[k]; !ok || !current.Equal(v) {
+				changed = true
+				break
+			}
+		}
+		for k := range currentRes.Requests {
+			if _, ok := containerReqs[k]; !ok {
+				changed = true
+				break
+			}
+		}
+		if changed {
 			proposedReqs[containerName] = containerReqs
 		}
 	}
 
-	if len(allFindings) == 0 {
-		return nil, nil // No optimizations needed
+	if len(allFindings) == 0 && len(proposedReqs) == 0 {
+		return nil, nil
 	}
 
-	// 4. Calculate Expected Impact
 	var cpuDeltaMilli int64
 	var memDeltaBytes int64
 
@@ -132,14 +301,22 @@ func (a *defaultAnalyzer) Analyze(ctx context.Context, ref corev1.ObjectReferenc
 		}
 	}
 
-	// Calculate rough monthly savings
-	// $0.05 per CPU/hr -> $36.5/mo per CPU = $0.0365 per milliCPU
-	// $0.01 per GB/hr -> $7.30/mo per GB
-	monthlySavingsUSD := (float64(cpuDeltaMilli) * 0.0365) + (float64(memDeltaBytes) / (1024*1024*1024) * 7.30)
-	// Apply replicas multiplier
-	monthlySavingsUSD = monthlySavingsUSD * float64(metrics.Replicas)
+	monthlySavingsUSD := ComputeCostSavedUSDPerMonth(cpuDeltaMilli, memDeltaBytes, metrics.Replicas)
 
-	// Build Proposal
+	telemetry.OptimizationSavingsUSD.WithLabelValues(workload, ns).Set(monthlySavingsUSD)
+
+	effectiveRegion := a.workloadRegion
+	if effectiveRegion == "" {
+		effectiveRegion = defaultRegion
+	}
+
+	var carbonSavedGramsCO2 *resource.Quantity
+	if carbonSaved, carbonErr := a.computeCarbonSaved(ctx, cpuDeltaMilli, memDeltaBytes, metrics.Replicas, effectiveRegion); carbonErr == nil && carbonSaved > 0 {
+		q := resource.MustParse(fmt.Sprintf("%d", int64(carbonSaved)))
+		carbonSavedGramsCO2 = &q
+		telemetry.OptimizationCarbonSavedGrams.WithLabelValues(workload, ns).Set(carbonSaved)
+	}
+
 	var rationales []string
 	var primaryRec = v1alpha1.RecommendationRightSize
 
@@ -150,12 +327,12 @@ func (a *defaultAnalyzer) Analyze(ctx context.Context, ref corev1.ObjectReferenc
 		}
 	}
 
+	if prediction != nil && prediction.Confidence > 80 {
+		rationales = append(rationales, fmt.Sprintf("Forecasted resource needs (confidence: %d%%)", prediction.Confidence))
+	}
+
 	savingsQuantity := resource.MustParse(fmt.Sprintf("%d", int(monthlySavingsUSD)))
 
-	// Aggregate all proposed resources for the Proposal CR (flattened for MVP presentation, though API only holds one set)
-	// Note: API `proposedResources` is a single struct, so for MVP we just sum them up or take the primary container.
-	// Actually, the API might need to be container-aware too in the future.
-	// For now, we sum the map to fit the existing API `ProposedResources`.
 	totalProposedReqs := make(corev1.ResourceList)
 	for _, reqs := range proposedReqs {
 		for k, v := range reqs {
@@ -166,6 +343,22 @@ func (a *defaultAnalyzer) Analyze(ctx context.Context, ref corev1.ObjectReferenc
 				totalProposedReqs[k] = v.DeepCopy()
 			}
 		}
+	}
+
+	resourceDelta := make(corev1.ResourceList)
+	if cpuDeltaMilli != 0 {
+		resourceDelta[corev1.ResourceCPU] = *resource.NewMilliQuantity(cpuDeltaMilli, resource.DecimalSI)
+	}
+	if memDeltaBytes != 0 {
+		resourceDelta[corev1.ResourceMemory] = *resource.NewQuantity(memDeltaBytes, resource.BinarySI)
+	}
+
+	expectedImpact := v1alpha1.ExpectedImpact{
+		EstimatedSavingsUSD: &savingsQuantity,
+		ResourceDelta:       resourceDelta,
+	}
+	if carbonSavedGramsCO2 != nil {
+		expectedImpact.CarbonSavedGramsCO2 = carbonSavedGramsCO2
 	}
 
 	proposal := &v1alpha1.OptimizationProposal{
@@ -179,9 +372,7 @@ func (a *defaultAnalyzer) Analyze(ctx context.Context, ref corev1.ObjectReferenc
 			ProposedResources: corev1.ResourceRequirements{
 				Requests: totalProposedReqs,
 			},
-			ExpectedImpact: v1alpha1.ExpectedImpact{
-				EstimatedSavingsUSD: &savingsQuantity,
-			},
+			ExpectedImpact: expectedImpact,
 			DecisionMetadata: v1alpha1.DecisionMetadata{
 				ConfidenceScore: confidence,
 				RiskScore:       risk,
@@ -191,4 +382,15 @@ func (a *defaultAnalyzer) Analyze(ctx context.Context, ref corev1.ObjectReferenc
 	}
 
 	return proposal, nil
+}
+
+func (a *defaultAnalyzer) computeCarbonSaved(ctx context.Context, cpuDeltaMilli, memDeltaBytes int64, replicas int32, region string) (float64, error) {
+	if a.carbonProvider == nil {
+		return 0, nil
+	}
+	intensity, err := a.carbonProvider.IntensityForRegion(ctx, region)
+	if err != nil {
+		return 0, err
+	}
+	return ComputeCarbonSavedGramsPerMonth(cpuDeltaMilli, memDeltaBytes, replicas, intensity.Value), nil
 }

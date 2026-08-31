@@ -41,3 +41,5 @@ npm run build
 ```
 
 For UI development, `npm run dev` proxies API requests to `http://localhost:8082` by default. Override that proxy with `VITE_API_BASE` or `RECONCILYX_API_URL`.
+
+<!-- Hermes autonomy check: 2026-08-31 14:18:03 -->

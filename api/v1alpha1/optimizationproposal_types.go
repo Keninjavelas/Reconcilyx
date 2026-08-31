@@ -30,11 +30,23 @@ import (
 type RecommendationType string
 
 const (
-	RecommendationRightSize         RecommendationType = "RightSize"
-	RecommendationScaleZero         RecommendationType = "ScaleToZero"
-	RecommendationReduceCPURequest  RecommendationType = "ReduceCPURequest"
+	RecommendationRightSize           RecommendationType = "RightSize"
+	RecommendationScaleZero           RecommendationType = "ScaleToZero"
+	RecommendationReduceCPURequest    RecommendationType = "ReduceCPURequest"
 	RecommendationReduceMemoryRequest RecommendationType = "ReduceMemoryRequest"
+	RecommendationMigrateCloud        RecommendationType = "MigrateCloud"
 )
+
+// MigrationPlan specifies target cloud provider, region, instance type, and migration script.
+type MigrationPlan struct {
+	SourceCluster    string  `json:"sourceCluster,omitempty"`
+	TargetCloud      string  `json:"targetCloud"`
+	TargetRegion     string  `json:"targetRegion"`
+	TargetInstance   string  `json:"targetInstance"`
+	CostDeltaUSD     float64 `json:"costDeltaUSD"`
+	CarbonSavedGrams float64 `json:"carbonSavedGrams"`
+	MigrationScript  string  `json:"migrationScript,omitempty"`
+}
 
 // ApprovalState represents the state of approval for the proposal.
 type ApprovalState string
@@ -75,6 +87,9 @@ type ExpectedImpact struct {
 	// Estimated monthly savings in USD.
 	// +optional
 	EstimatedSavingsUSD *resource.Quantity `json:"estimatedSavingsUSD,omitempty"`
+	// Estimated monthly CO2 reduction in grams.
+	// +optional
+	CarbonSavedGramsCO2 *resource.Quantity `json:"carbonSavedGramsCO2,omitempty"`
 }
 
 // DecisionMetadata tracks the reasoning behind the proposal.
@@ -121,27 +136,32 @@ type OptimizationProposalSpec struct {
 	// DecisionMetadata provides context and confidence for the decision
 	// +optional
 	DecisionMetadata DecisionMetadata `json:"decisionMetadata,omitempty"`
+
+	// MigrationPlan specifies target cloud details and migration script for cross-cloud arbitrage
+	// +optional
+	MigrationPlan *MigrationPlan `json:"migrationPlan,omitempty"`
 }
 
 // OptimizationProposalPhase represents the current phase of the proposal lifecycle.
 type OptimizationProposalPhase string
 
 const (
-	PhaseDetected             OptimizationProposalPhase = "Detected"
-	PhaseEvaluating           OptimizationProposalPhase = "Evaluating"
-	PhaseApproved             OptimizationProposalPhase = "Approved"
-	PhaseRejected             OptimizationProposalPhase = "Rejected"
-	PhaseExpired              OptimizationProposalPhase = "Expired"
-	PhaseScheduled            OptimizationProposalPhase = "Scheduled"
-	PhaseExecuting            OptimizationProposalPhase = "Executing"
-	PhaseVerifying            OptimizationProposalPhase = "Verifying"
-	PhaseStabilizing          OptimizationProposalPhase = "Stabilizing"
-	PhaseCompleted            OptimizationProposalPhase = "Completed"
-	PhaseFailed               OptimizationProposalPhase = "Failed"
-	PhaseRollbackRequired     OptimizationProposalPhase = "RollbackRequired"
-	PhaseRollingBack          OptimizationProposalPhase = "RollingBack"
-	PhaseRollbackVerification OptimizationProposalPhase = "RollbackVerification"
-	PhaseRolledBack           OptimizationProposalPhase = "RolledBack"
+	PhaseDetected                 OptimizationProposalPhase = "Detected"
+	PhaseEvaluating               OptimizationProposalPhase = "Evaluating"
+	PhaseApproved                 OptimizationProposalPhase = "Approved"
+	PhaseAwaitingExternalApproval OptimizationProposalPhase = "AwaitingExternalApproval"
+	PhaseRejected                 OptimizationProposalPhase = "Rejected"
+	PhaseExpired                  OptimizationProposalPhase = "Expired"
+	PhaseScheduled                OptimizationProposalPhase = "Scheduled"
+	PhaseExecuting                OptimizationProposalPhase = "Executing"
+	PhaseVerifying                OptimizationProposalPhase = "Verifying"
+	PhaseStabilizing              OptimizationProposalPhase = "Stabilizing"
+	PhaseCompleted                OptimizationProposalPhase = "Completed"
+	PhaseFailed                   OptimizationProposalPhase = "Failed"
+	PhaseRollbackRequired         OptimizationProposalPhase = "RollbackRequired"
+	PhaseRollingBack              OptimizationProposalPhase = "RollingBack"
+	PhaseRollbackVerification     OptimizationProposalPhase = "RollbackVerification"
+	PhaseRolledBack               OptimizationProposalPhase = "RolledBack"
 )
 
 // ContainerResourceState holds the exact resource state for a single container.
@@ -226,6 +246,10 @@ type OptimizationProposalStatus struct {
 	// YieldCount tracks how many times the execution was reverted by external controllers.
 	// +optional
 	YieldCount int32 `json:"yieldCount,omitempty"`
+
+	// ExternalPRID is the ID of an external GitOps pull/merge request created for this proposal.
+	// +optional
+	ExternalPRID string `json:"externalPRID,omitempty"`
 }
 
 // +kubebuilder:object:root=true

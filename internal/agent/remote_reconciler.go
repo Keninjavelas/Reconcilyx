@@ -186,7 +186,7 @@ func (r *RemoteReconciler) executeResize(ctx context.Context, proposal *optimiza
 
 	if err := r.LocalClient.SubResource("resize").Patch(ctx, updated, client.MergeFrom(pod)); err != nil {
 		if apierrors.IsConflict(err) {
-			telemetry.SSAConflictsTotal.Inc()
+			telemetry.SSAConflictsTotal.WithLabelValues(proposal.Spec.TargetWorkload.Name, proposal.Spec.TargetWorkload.Namespace).Inc()
 		}
 		return fmt.Errorf("failed to apply pod resize via merge patch (subresource resize): %w", err)
 	}

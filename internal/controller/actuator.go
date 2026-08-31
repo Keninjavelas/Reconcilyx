@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/reconcilyx/operator/api/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -16,8 +17,14 @@ import (
 const (
 	ExecutionLockAnnotation = "reconcilyx.io/execution-lock"
 	LastActionAnnotation    = "reconcilyx.io/last-action"
-	FieldManagerName        = "reconcilyx-optimizer"
+	FieldManagerName        = "reconcilyx-operator"
 )
+
+// ResizeFieldOwner is the stable field manager used for all Server-Side Apply
+// patches against the pods/resize subresource. Keeping this value fixed
+// ensures field ownership conflicts are detected between Reconcilyx and any
+// other actor (VPA, HPA, Argo CD, human kubectl apply, etc.).
+const ResizeFieldOwner = FieldManagerName
 
 // Actuator executes safe mutations on workloads.
 type Actuator interface {
@@ -36,7 +43,6 @@ func NewActuator(client client.Client) Actuator {
 }
 
 func (a *defaultActuator) AcquireLock(ctx context.Context, proposal *v1alpha1.OptimizationProposal) (bool, error) {
-	// Only supports Deployments for now
 	if proposal.Spec.TargetWorkload.Kind != "Deployment" {
 		return false, fmt.Errorf("unsupported workload kind: %s", proposal.Spec.TargetWorkload.Kind)
 	}
@@ -45,23 +51,20 @@ func (a *defaultActuator) AcquireLock(ctx context.Context, proposal *v1alpha1.Op
 	err := a.client.Get(ctx, types.NamespacedName{Name: proposal.Spec.TargetWorkload.Name, Namespace: proposal.Spec.TargetWorkload.Namespace}, dep)
 	if err != nil {
 		if errors.IsNotFound(err) {
-			return false, nil // Target deleted
+			return false, nil
 		}
 		return false, err
 	}
 
-	// Check if lock exists
 	if dep.Annotations != nil {
 		lockVal, exists := dep.Annotations[ExecutionLockAnnotation]
 		if exists && lockVal != proposal.Name {
-			// Another proposal holds the lock
 			return false, nil
 		}
 	} else {
 		dep.Annotations = make(map[string]string)
 	}
 
-	// Acquire lock
 	dep.Annotations[ExecutionLockAnnotation] = proposal.Name
 	if err := a.client.Update(ctx, dep); err != nil {
 		return false, err
@@ -127,9 +130,80 @@ func (a *defaultActuator) CaptureSnapshot(ctx context.Context, proposal *v1alpha
 	return snapshot, nil
 }
 
+// applyPodResizeSSA builds and applies a Server-Side Apply patch against the
+// pods/resize subresource. The patch object carries only the containers
+// explicitly listed in desiredByContainer, preserving field ownership for
+// every other field on the Pod. This helper is shared by the actuation and
+// rollback paths.
+func applyPodResizeSSA(
+	ctx context.Context,
+	c client.Client,
+	podName, namespace string,
+	desiredByContainer map[string]corev1.ResourceRequirements,
+) error {
+	if len(desiredByContainer) == 0 {
+		return nil
+	}
+
+	containers := make([]corev1.Container, 0, len(desiredByContainer))
+	for name, resources := range desiredByContainer {
+		containers = append(containers, corev1.Container{
+			Name:      name,
+			Resources: resources,
+		})
+	}
+
+	patch := &corev1.Pod{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "v1",
+			Kind:       "Pod",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      podName,
+			Namespace: namespace,
+		},
+		Spec: corev1.PodSpec{
+			Containers: containers,
+		},
+	}
+
+	if err := c.SubResource("resize").Patch(ctx, patch,
+		client.Apply,
+		client.ForceOwnership,
+		client.FieldOwner(ResizeFieldOwner),
+	); err != nil {
+		return wrapResizeError(err, podName, namespace)
+	}
+	return nil
+}
+
+// wrapResizeError enriches errors returned from the /resize subresource with a
+// feature-gate hint when they look like the cluster does not support in-place
+// pod vertical scaling (InPlacePodVerticalScaling).
+func wrapResizeError(err error, podName, namespace string) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	lower := strings.ToLower(msg)
+	featureGateHint := ""
+	switch {
+	case errors.IsNotFound(err),
+		strings.Contains(lower, "the server could not find the requested resource"),
+		strings.Contains(lower, "subresource \"resize\""),
+		strings.Contains(lower, "not supported"),
+		strings.Contains(lower, "resize") && strings.Contains(lower, "unknown"):
+		featureGateHint = " (hint: ensure InPlacePodVerticalScaling feature gate is enabled on kube-apiserver and kubelet, and the cluster version supports in-place pod resource updates)"
+	}
+	return fmt.Errorf("failed to apply in-place resize to pod %s/%s via /resize subresource: %w%s", namespace, podName, err, featureGateHint)
+}
+
 func (a *defaultActuator) ApplyMutation(ctx context.Context, proposal *v1alpha1.OptimizationProposal) error {
-	if proposal.Spec.Recommendation != v1alpha1.RecommendationReduceCPURequest &&
-		proposal.Spec.Recommendation != v1alpha1.RecommendationReduceMemoryRequest {
+	switch proposal.Spec.Recommendation {
+	case v1alpha1.RecommendationRightSize,
+		v1alpha1.RecommendationReduceCPURequest,
+		v1alpha1.RecommendationReduceMemoryRequest:
+	default:
 		return fmt.Errorf("forbidden recommendation type: %s", proposal.Spec.Recommendation)
 	}
 
@@ -137,7 +211,6 @@ func (a *defaultActuator) ApplyMutation(ctx context.Context, proposal *v1alpha1.
 		return fmt.Errorf("no execution snapshot available or it contains no containers")
 	}
 
-	// 1. Get the Deployment to find its Pod selector
 	dep := &appsv1.Deployment{}
 	if err := a.client.Get(ctx, types.NamespacedName{
 		Name:      proposal.Spec.TargetWorkload.Name,
@@ -151,44 +224,56 @@ func (a *defaultActuator) ApplyMutation(ctx context.Context, proposal *v1alpha1.
 		return fmt.Errorf("failed to parse deployment selector: %w", err)
 	}
 
-	// 2. List all running Pods belonging to the Deployment
 	podList := &corev1.PodList{}
 	if err := a.client.List(ctx, podList, client.InNamespace(dep.Namespace), client.MatchingLabelsSelector{Selector: selector}); err != nil {
 		return fmt.Errorf("failed to list pods: %w", err)
 	}
 
-	// 3. Patch each Pod directly in-place (InPlacePodVerticalScaling)
 	for _, p := range podList.Items {
-		pod := p // copy loop variable
-		patch := client.MergeFrom(pod.DeepCopy())
-		mutated := false
+		pod := p
+		desired := make(map[string]corev1.ResourceRequirements)
 
-		// Apply the resources from the proposal to the pod's containers
 		for i := range pod.Spec.Containers {
 			c := &pod.Spec.Containers[i]
-			// Only mutate containers that were tracked in the execution snapshot
-			if _, tracked := proposal.Status.ExecutionSnapshot.ContainerResources[c.Name]; tracked {
-				if c.Resources.Requests == nil {
-					c.Resources.Requests = corev1.ResourceList{}
+			snapState, tracked := proposal.Status.ExecutionSnapshot.ContainerResources[c.Name]
+			if !tracked {
+				continue
+			}
+			requests := corev1.ResourceList{}
+			for k, v := range snapState.Resources.Requests {
+				requests[k] = v.DeepCopy()
+			}
+			limits := corev1.ResourceList{}
+			for k, v := range snapState.Resources.Limits {
+				limits[k] = v.DeepCopy()
+			}
+
+			switch proposal.Spec.Recommendation {
+			case v1alpha1.RecommendationRightSize:
+				if cpu, ok := proposal.Spec.ProposedResources.Requests[corev1.ResourceCPU]; ok {
+					requests[corev1.ResourceCPU] = cpu
 				}
-				if proposal.Spec.Recommendation == v1alpha1.RecommendationReduceCPURequest {
-					if cpu, ok := proposal.Spec.ProposedResources.Requests[corev1.ResourceCPU]; ok {
-						c.Resources.Requests[corev1.ResourceCPU] = cpu
-						mutated = true
-					}
-				} else if proposal.Spec.Recommendation == v1alpha1.RecommendationReduceMemoryRequest {
-					if mem, ok := proposal.Spec.ProposedResources.Requests[corev1.ResourceMemory]; ok {
-						c.Resources.Requests[corev1.ResourceMemory] = mem
-						mutated = true
-					}
+				if mem, ok := proposal.Spec.ProposedResources.Requests[corev1.ResourceMemory]; ok {
+					requests[corev1.ResourceMemory] = mem
 				}
+			case v1alpha1.RecommendationReduceCPURequest:
+				if cpu, ok := proposal.Spec.ProposedResources.Requests[corev1.ResourceCPU]; ok {
+					requests[corev1.ResourceCPU] = cpu
+				}
+			case v1alpha1.RecommendationReduceMemoryRequest:
+				if mem, ok := proposal.Spec.ProposedResources.Requests[corev1.ResourceMemory]; ok {
+					requests[corev1.ResourceMemory] = mem
+				}
+			}
+
+			desired[c.Name] = corev1.ResourceRequirements{
+				Requests: requests,
+				Limits:   limits,
 			}
 		}
 
-		if mutated {
-			if err := a.client.Patch(ctx, &pod, patch); err != nil {
-				return fmt.Errorf("failed to execute in-place resize on pod %s: %w", pod.Name, err)
-			}
+		if err := applyPodResizeSSA(ctx, a.client, pod.Name, pod.Namespace, desired); err != nil {
+			return err
 		}
 	}
 

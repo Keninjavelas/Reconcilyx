@@ -18,8 +18,11 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -90,11 +93,15 @@ var _ = AfterSuite(func() {
 	By("tearing down the test environment")
 	cancel()
 	Eventually(func() error {
-		return testEnv.Stop()
+		err := testEnv.Stop()
+		if isIgnorableWindowsEnvTestStopError(err) {
+			return nil
+		}
+		return err
 	}, time.Minute, time.Second).Should(Succeed())
 })
 
-// getFirstFoundEnvTestBinaryDir locates the first binary in the specified path.
+// getFirstFoundEnvTestBinaryDir locates the first directory containing envtest binaries.
 // ENVTEST-based tests depend on specific binaries, usually located in paths set by
 // controller-runtime. When running tests directly (e.g., via an IDE) without using
 // Makefile targets, the 'BinaryAssetsDirectory' must be explicitly configured.
@@ -104,15 +111,58 @@ var _ = AfterSuite(func() {
 // properly set up, run 'make setup-envtest' beforehand.
 func getFirstFoundEnvTestBinaryDir() string {
 	basePath := filepath.Join("..", "..", "bin", "k8s")
-	entries, err := os.ReadDir(basePath)
+	var found string
+	err := filepath.WalkDir(basePath, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		if hasEnvTestBinaries(path) {
+			found = path
+			return filepath.SkipAll
+		}
+		return nil
+	})
 	if err != nil {
 		logf.Log.Error(err, "Failed to read directory", "path", basePath)
 		return ""
 	}
-	for _, entry := range entries {
-		if entry.IsDir() {
-			return filepath.Join(basePath, entry.Name())
+	return found
+}
+
+func hasEnvTestBinaries(dir string) bool {
+	required := []string{"etcd", "kube-apiserver", "kubectl"}
+	for _, name := range required {
+		if _, err := os.Stat(filepath.Join(dir, envTestBinaryName(name))); err != nil {
+			return false
 		}
 	}
-	return ""
+	return true
+}
+
+func envTestBinaryName(name string) string {
+	if runtime.GOOS == "windows" {
+		return name + ".exe"
+	}
+	return name
+}
+
+func isIgnorableWindowsEnvTestStopError(err error) bool {
+	if err == nil || runtime.GOOS != "windows" {
+		return false
+	}
+
+	var errs interface{ Unwrap() []error }
+	if errors.As(err, &errs) {
+		for _, inner := range errs.Unwrap() {
+			if !strings.Contains(inner.Error(), "not supported by windows") {
+				return false
+			}
+		}
+		return len(errs.Unwrap()) > 0
+	}
+
+	return strings.Contains(err.Error(), "not supported by windows")
 }

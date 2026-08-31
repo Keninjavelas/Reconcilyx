@@ -1,19 +1,3 @@
-/*
-Copyright 2026.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
 package controller
 
 import (
@@ -33,20 +17,33 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	optimizationv1alpha1 "github.com/reconcilyx/operator/api/v1alpha1"
+	"github.com/reconcilyx/operator/internal/carbon"
+	"github.com/reconcilyx/operator/internal/engine"
+	"github.com/reconcilyx/operator/internal/engine/rl"
+	"github.com/reconcilyx/operator/internal/gitops"
 	"github.com/reconcilyx/operator/internal/policy"
 	"github.com/reconcilyx/operator/internal/telemetry"
+	corev1 "k8s.io/api/core/v1"
 )
 
-// OptimizationProposalReconciler reconciles a OptimizationProposal object
 type OptimizationProposalReconciler struct {
 	client.Client
-	Scheme        *runtime.Scheme
-	Recorder      record.EventRecorder
-	Matcher       policy.Matcher
-	Evaluator     policy.Evaluator
-	ExecutionGate ExecutionGate
-	Actuator      Actuator
+	Scheme          *runtime.Scheme
+	Recorder        record.EventRecorder
+	Matcher         policy.Matcher
+	Evaluator       policy.Evaluator
+	ExecutionGate   ExecutionGate
+	Actuator        Actuator
 	RollbackManager RollbackManager
+	GitFactory      *gitops.ProviderFactory
+	// RL Learning Loop dependencies
+	RLAgent           rl.Agent
+	TelemetryProvider telemetry.TelemetryProvider
+	CarbonProvider    carbon.Provider
+	WorkloadRegion    string
+	CarbonWeight      float64
+	// Tracks whether RL learning has been applied (idempotency guard)
+	rlLearningApplied bool
 }
 
 // +kubebuilder:rbac:groups=optimization.reconcilyx.io,resources=optimizationproposals,verbs=get;list;watch;create;update;patch;delete
@@ -68,21 +65,31 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 		return ctrl.Result{}, err
 	}
 
-	// Terminal states
+	workload := proposal.Spec.TargetWorkload.Name
+	ns := proposal.Spec.TargetWorkload.Namespace
+
 	if proposal.Status.Phase == optimizationv1alpha1.PhaseRejected ||
 		proposal.Status.Phase == optimizationv1alpha1.PhaseExpired ||
 		proposal.Status.Phase == optimizationv1alpha1.PhaseCompleted ||
 		proposal.Status.Phase == optimizationv1alpha1.PhaseFailed ||
 		proposal.Status.Phase == optimizationv1alpha1.PhaseRolledBack {
-		
-		// Lock Garbage Collection
+
+		if r.RLAgent != nil && !r.rlLearningApplied {
+			if proposal.Status.Phase == optimizationv1alpha1.PhaseCompleted || proposal.Status.Phase == optimizationv1alpha1.PhaseRolledBack {
+				if err := r.applyRLLearning(ctx, proposal); err != nil {
+					logger.V(1).Info("RL learning could not be applied", "proposal", proposal.Name, "err", err)
+				} else {
+					r.rlLearningApplied = true
+				}
+			}
+		}
+
 		if r.Actuator != nil {
 			_ = r.Actuator.ReleaseLock(ctx, proposal)
 		}
 		return ctrl.Result{}, nil
 	}
 
-	// 1. Freshness Check (TTL)
 	if proposal.Status.ExpirationTime != nil && time.Now().After(proposal.Status.ExpirationTime.Time) {
 		logger.Info("Proposal expired", "Proposal", proposal.Name)
 		proposal.Status.Phase = optimizationv1alpha1.PhaseExpired
@@ -97,9 +104,7 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 		return ctrl.Result{}, nil
 	}
 
-	// Evaluate Policy if Detected
 	if proposal.Status.Phase == optimizationv1alpha1.PhaseDetected || proposal.Status.Phase == "" {
-		// Fetch Policies
 		var policyList optimizationv1alpha1.OptimizationPolicyList
 		if err := r.List(ctx, &policyList); err != nil {
 			return ctrl.Result{}, err
@@ -130,7 +135,25 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 
 		if decision == optimizationv1alpha1.ApprovalApproved {
 			proposal.Status.Phase = optimizationv1alpha1.PhaseApproved
+			telemetry.ProposalApprovedTotal.WithLabelValues(ns, matchedPolicy.Name, workload).Inc()
 			r.Recorder.Event(proposal, "Normal", "ProposalApproved", "Policy Engine approved proposal")
+
+			if matchedPolicy.Spec.GitOps.Enabled {
+				prID, prErr := r.createGitOpsPR(ctx, proposal, matchedPolicy)
+				if prErr != nil {
+					logger.Error(prErr, "GitOps PR creation failed, falling back to local actuation")
+					r.Recorder.Event(proposal, "Warning", "GitOPSError", "PR creation failed: "+prErr.Error())
+				} else {
+					proposal.Status.ExternalPRID = prID
+					proposal.Status.Phase = optimizationv1alpha1.PhaseAwaitingExternalApproval
+					proposal.Status.Reason = "GitOps PR created: " + prID
+					if err := r.Status().Update(ctx, proposal); err != nil {
+						return ctrl.Result{}, err
+					}
+					r.Recorder.Event(proposal, "Normal", "GitOpsPRCreated", "Created pull/merge request: "+prID)
+					return ctrl.Result{}, nil
+				}
+			}
 		} else {
 			proposal.Status.Phase = optimizationv1alpha1.PhaseRejected
 			r.Recorder.Event(proposal, "Warning", "ProposalRejected", reason)
@@ -142,7 +165,6 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	// Execution Flow (Local Actuation Only)
 	if proposal.Status.Phase == optimizationv1alpha1.PhaseApproved {
 		proposal.Status.Phase = optimizationv1alpha1.PhaseScheduled
 		if err := r.Status().Update(ctx, proposal); err != nil {
@@ -151,16 +173,13 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	// If the proposal is targeted for a Spoke cluster, the Hub stops processing here.
-	// The Spoke Agent's remote_reconciler will pick it up and drive the execution phases.
 	if proposal.Spec.TargetClusterName != "" {
 		logger.V(1).Info("Delegating execution to Spoke Agent", "cluster", proposal.Spec.TargetClusterName)
 		return ctrl.Result{}, nil
 	}
 
 	if proposal.Status.Phase == optimizationv1alpha1.PhaseScheduled {
-		// JIT Validation
-		var pol optimizationv1alpha1.OptimizationPolicy // Get policy if needed
+		var pol optimizationv1alpha1.OptimizationPolicy
 		decision, err := r.ExecutionGate.ValidateJIT(ctx, proposal, &pol)
 		if err != nil {
 			logger.Error(err, "JIT validation encountered an error")
@@ -191,7 +210,6 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 	}
 
 	if proposal.Status.Phase == optimizationv1alpha1.PhaseExecuting {
-		// 1. Acquire Lock
 		acquired, err := r.Actuator.AcquireLock(ctx, proposal)
 		if err != nil {
 			return ctrl.Result{}, err
@@ -201,7 +219,6 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
 
-		// 2. Snapshot Capture
 		if proposal.Status.ExecutionSnapshot == nil {
 			snapshot, err := r.Actuator.CaptureSnapshot(ctx, proposal)
 			if err != nil {
@@ -211,15 +228,14 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 			if err := r.Status().Update(ctx, proposal); err != nil {
 				return ctrl.Result{}, err
 			}
-			// Requeue to ensure status is persisted before we mutate
 			return ctrl.Result{Requeue: true}, nil
 		}
 
 		r.Recorder.Event(proposal, "Normal", "ExecutionStarted", "Acquired lock and captured execution snapshot")
 
-		// 3. Apply In-Place Pod Resize
 		if err := r.Actuator.ApplyMutation(ctx, proposal); err != nil {
 			logger.Error(err, "Actuation failed")
+			telemetry.SSAConflictsTotal.WithLabelValues(workload, ns).Inc()
 			proposal.Status.Phase = optimizationv1alpha1.PhaseFailed
 			proposal.Status.ExecutionState = optimizationv1alpha1.ExecutionFailed
 			proposal.Status.Reason = "In-Place Pod Resize Failed: " + err.Error()
@@ -250,7 +266,8 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 
 		if proposal.Status.ExecutionSnapshot != nil && dep.Generation != proposal.Status.ExecutionSnapshot.Generation {
 			proposal.Status.YieldCount++
-			
+			telemetry.GitOpsYieldsTotal.WithLabelValues(workload, ns).Inc()
+
 			backoffDuration := 5 * time.Minute
 			if proposal.Status.YieldCount == 2 {
 				backoffDuration = 30 * time.Minute
@@ -262,11 +279,11 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 			}
 
 			logger.Info("GitOps conflict detected, yielding", "yieldCount", proposal.Status.YieldCount, "backoff", backoffDuration)
-			
+
 			proposal.Status.Phase = optimizationv1alpha1.PhaseExecuting
 			proposal.Status.ExecutionState = optimizationv1alpha1.ExecutionPending
 			proposal.Status.ExecutionSnapshot = nil
-			
+
 			if err := r.Status().Update(ctx, proposal); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -282,7 +299,6 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 	}
 
 	if proposal.Status.Phase == optimizationv1alpha1.PhaseStabilizing {
-		// Wait for 5 minutes monitoring window.
 		if time.Since(proposal.Status.ExecutionSnapshot.Timestamp.Time) < 5*time.Minute {
 			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 		}
@@ -313,25 +329,207 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 		if err := r.Status().Update(ctx, proposal); err != nil {
 			return ctrl.Result{}, err
 		}
-		
+
 		r.Recorder.Event(proposal, "Normal", "ExecutionCompleted", "Workload stabilized")
 		_ = r.Actuator.ReleaseLock(ctx, proposal)
-		
+
 		return ctrl.Result{}, nil
 	}
 
 	return ctrl.Result{}, nil
 }
 
-// SetupWithManager sets up the controller with the Manager.
+func (r *OptimizationProposalReconciler) createGitOpsPR(ctx context.Context, proposal *optimizationv1alpha1.OptimizationProposal, policy *optimizationv1alpha1.OptimizationPolicy) (string, error) {
+	if r.GitFactory == nil {
+		return "", fmt.Errorf("git provider factory not configured")
+	}
+	provider, err := r.GitFactory.ForPolicy(policy)
+	if err != nil {
+		return "", err
+	}
+	title := fmt.Sprintf("Reconcilyx: optimize %s/%s", proposal.Namespace, proposal.Spec.TargetWorkload.Name)
+	body := fmt.Sprintf(`## Reconcilyx Optimization Proposal
+
+**Workload:** %s/%s  
+**Recommendation:** %s  
+**Confidence:** %d  
+**Risk:** %d  
+**Est. Monthly Savings:** $%s
+
+### Rationale
+%s
+`,
+		proposal.Spec.TargetWorkload.Namespace,
+		proposal.Spec.TargetWorkload.Name,
+		proposal.Spec.Recommendation,
+		proposal.Spec.DecisionMetadata.ConfidenceScore,
+		proposal.Spec.DecisionMetadata.RiskScore,
+		proposal.Spec.ExpectedImpact.EstimatedSavingsUSD.String(),
+		proposal.Spec.DecisionMetadata.Rationale,
+	)
+	diff := fmt.Sprintf(`# Reconcilyx Optimization Patch
+# Target: %s/%s
+#
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: %s
+  namespace: %s
+  annotations:
+    reconcilyx.io/proposal: %s
+spec:
+  template:
+    spec:
+      containers:
+        # PATCH: set requests based on recommendation
+        - name: <CONTAINER>
+          resources:
+            requests:
+              cpu: %s
+              memory: %s
+`,
+		proposal.Spec.TargetWorkload.Namespace, proposal.Spec.TargetWorkload.Name,
+		proposal.Spec.TargetWorkload.Name,
+		proposal.Spec.TargetWorkload.Namespace,
+		proposal.Name,
+		proposal.Spec.ProposedResources.Requests.Cpu().String(),
+		proposal.Spec.ProposedResources.Requests.Memory().String(),
+	)
+	return provider.CreatePullRequest(ctx, &gitops.PullRequest{
+		Title:       title,
+		Description: body,
+		HeadBranch:  fmt.Sprintf("reconcilyx/%s-%s", proposal.Spec.TargetWorkload.Namespace, proposal.Spec.TargetWorkload.Name),
+		BaseBranch:  policy.Spec.GitOps.BaseBranch,
+		Diff:        diff,
+	})
+}
+
+func (r *OptimizationProposalReconciler) applyRLLearning(ctx context.Context, proposal *optimizationv1alpha1.OptimizationProposal) error {
+	if r.RLAgent == nil || r.TelemetryProvider == nil || proposal.Status.ExecutionSnapshot == nil {
+		return nil
+	}
+
+	snapshot := proposal.Status.ExecutionSnapshot
+	postMetrics, err := r.TelemetryProvider.GetWorkloadMetrics(ctx, proposal.Spec.TargetWorkload)
+	if err != nil && err != telemetry.ErrPartialTelemetry {
+		return fmt.Errorf("failed to fetch post-actuation telemetry: %w", err)
+	}
+
+	ref := proposal.Spec.TargetWorkload
+	replicas := snapshot.ReplicaCount
+	if replicas <= 0 {
+		replicas = 1
+	}
+
+	wasRolledBack := proposal.Status.Phase == optimizationv1alpha1.PhaseRolledBack
+	var overallReward float64
+	carbonIntensity := 0.0
+	if r.CarbonProvider != nil {
+		if intensity, cErr := r.CarbonProvider.IntensityForRegion(ctx, r.WorkloadRegion); cErr == nil {
+			carbonIntensity = intensity.Value
+		}
+	}
+
+	for containerName, snapState := range snapshot.ContainerResources {
+		prevCPUReq := snapState.Resources.Requests.Cpu().DeepCopy()
+		prevMemReq := snapState.Resources.Requests.Memory().DeepCopy()
+
+		postCM, ok := postMetrics.Containers[containerName]
+		prevUsageCores := 0.0
+		prevOOMCount := int32(0)
+		prevThrottledSecs := 0.0
+		prevMemBytes := 0.0
+		if preMetrics, preErr := r.TelemetryProvider.GetWorkloadMetrics(ctx, ref); preErr == nil || preErr == telemetry.ErrPartialTelemetry {
+			if cm, ok2 := preMetrics.Containers[containerName]; ok2 {
+				prevUsageCores = cm.CPU.UsageCores
+				prevOOMCount = cm.Memory.OOMCount
+				prevThrottledSecs = cm.CPU.ThrottledSecs
+				prevMemBytes = float64(cm.Memory.WorkingSetBytes)
+			}
+		}
+
+		postUsageCores := 0.0
+		postOOMCount := int32(0)
+		postThrottledSecs := 0.0
+		postMemBytes := 0.0
+		if ok {
+			postUsageCores = postCM.CPU.UsageCores
+			postOOMCount = postCM.Memory.OOMCount
+			postThrottledSecs = postCM.CPU.ThrottledSecs
+			postMemBytes = float64(postCM.Memory.WorkingSetBytes)
+		}
+
+		prevState := &rl.WorkloadState{
+			CPUUsageCores:         prevUsageCores,
+			CPUThrottledSecs:      prevThrottledSecs,
+			MemoryWorkingSetBytes: prevMemBytes,
+			OOMCount:              prevOOMCount,
+			CurrentCPURequest:     prevCPUReq,
+			CurrentMemoryRequest:  prevMemReq,
+			Region:                r.WorkloadRegion,
+			CarbonWeight:          &r.CarbonWeight,
+		}
+
+		nextState := &rl.WorkloadState{
+			CPUUsageCores:         postUsageCores,
+			CPUThrottledSecs:      postThrottledSecs,
+			MemoryWorkingSetBytes: postMemBytes,
+			OOMCount:              postOOMCount,
+			CurrentCPURequest:     proposal.Spec.ProposedResources.Requests.Cpu().DeepCopy(),
+			CurrentMemoryRequest:  proposal.Spec.ProposedResources.Requests.Memory().DeepCopy(),
+			Region:                r.WorkloadRegion,
+			CarbonWeight:          &r.CarbonWeight,
+		}
+
+		cpuDeltaMilli := prevCPUReq.MilliValue() - proposal.Spec.ProposedResources.Requests.Cpu().MilliValue()
+		memDeltaBytes := prevMemReq.Value() - proposal.Spec.ProposedResources.Requests.Memory().Value()
+		costSaved := engine.ComputeCostSavedUSDPerMonth(cpuDeltaMilli, memDeltaBytes, replicas)
+		carbonSaved := engine.ComputeCarbonSavedGramsPerMonth(cpuDeltaMilli, memDeltaBytes, replicas, carbonIntensity)
+
+		var reward float64
+		if wasRolledBack {
+			reward = -1.0
+			if costSaved > 0 {
+				reward = -rl.WeightedReward(costSaved, carbonSaved, r.CarbonWeight)
+			}
+		} else {
+			reward = rl.WeightedReward(costSaved, carbonSaved, r.CarbonWeight)
+			if postOOMCount > 0 || postThrottledSecs > (postUsageCores*0.2) {
+				reward *= 0.2
+			}
+		}
+		overallReward += reward
+
+		action := &rl.Action{
+			Adjustment: map[string]rl.ResourceAdjustment{
+				string(corev1.ResourceCPU): {
+					ResourceName: corev1.ResourceCPU,
+					NewRequest:   proposal.Spec.ProposedResources.Requests.Cpu().DeepCopy(),
+				},
+				string(corev1.ResourceMemory): {
+					ResourceName: corev1.ResourceMemory,
+					NewRequest:   proposal.Spec.ProposedResources.Requests.Memory().DeepCopy(),
+				},
+			},
+		}
+
+		if uErr := r.RLAgent.Update(ctx, reward, action, prevState, nextState); uErr != nil {
+			return fmt.Errorf("container %s: failed RL agent update: %w", containerName, uErr)
+		}
+	}
+
+	telemetry.RLUpdatesTotal.WithLabelValues(ref.Namespace, ref.Name, string(proposal.Status.Phase)).Inc()
+	return nil
+}
+
 func (r *OptimizationProposalReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.Recorder = mgr.GetEventRecorderFor("optimizationproposal-controller")
 	r.Matcher = policy.NewMatcher()
 	r.Evaluator = policy.NewEvaluator()
 	r.ExecutionGate = NewExecutionGate(NewActuationControl(mgr.GetClient(), "reconcilyx-system"), NewWorkloadHealthGate())
 	r.Actuator = NewActuator(mgr.GetClient())
-	
-	// Create a default telemetry provider for the rollback manager
+	r.GitFactory = gitops.NewProviderFactory()
+
 	promClient, err := telemetry.NewPrometheusClient("http://prometheus-operated.monitoring.svc.cluster.local:9090")
 	if err != nil {
 		return err

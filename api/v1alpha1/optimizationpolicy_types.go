@@ -98,6 +98,13 @@ type SafetyConstraints struct {
 	// +kubebuilder:validation:Maximum=100
 	// +optional
 	ConfidenceRequirement *int32 `json:"confidenceRequirement,omitempty"`
+
+	// CarbonWeight weights multi-objective RL reward between cost (0.0) and carbon (1.0).
+	// Cost-only (default) = 0.0, 50/50 = 0.5, carbon-only = 1.0.
+	// +kubebuilder:validation:Minimum=0.0
+	// +kubebuilder:validation:Maximum=1.0
+	// +optional
+	CarbonWeight *float64 `json:"carbonWeight,omitempty"`
 }
 
 // RecommendationGovernance defines allowed recommendation actions.
@@ -124,6 +131,50 @@ type RollbackConstraints struct {
 	// Automatically rollback if OOMKilled events are detected within this duration.
 	// +optional
 	OOMKilledWindow *metav1.Duration `json:"oomKilledWindow,omitempty"`
+}
+
+// GitProviderType defines the supported Git hosting providers.
+type GitProviderType string
+
+const (
+	GitProviderMock   GitProviderType = "mock"
+	GitProviderGitHub GitProviderType = "github"
+	GitProviderGitLab GitProviderType = "gitlab"
+)
+
+// GitOpsConfig configures the GitOps workflow for a policy.
+type GitOpsConfig struct {
+	// Enabled toggles GitOps mode. When true, approved proposals generate
+	// Pull Requests instead of live-patching the cluster.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Provider selects the Git hosting provider (mock, github, gitlab).
+	// +kubebuilder:validation:Enum=mock;github;gitlab
+	// +kubebuilder:default=mock
+	// +optional
+	Provider GitProviderType `json:"provider,omitempty"`
+
+	// Owner is the repository owner (GitHub org/user, GitLab namespace).
+	// +optional
+	Owner string `json:"owner,omitempty"`
+
+	// Repo is the repository name where manifests are stored.
+	// +optional
+	Repo string `json:"repo,omitempty"`
+
+	// BaseBranch is the target branch for PRs (default: main).
+	// +kubebuilder:default=main
+	// +optional
+	BaseBranch string `json:"baseBranch,omitempty"`
+
+	// ManifestsPath is the directory within the repo containing manifests.
+	// +optional
+	ManifestsPath string `json:"manifestsPath,omitempty"`
+
+	// AutoMerge controls whether PRs are merged automatically when CI passes.
+	// +optional
+	AutoMerge bool `json:"autoMerge,omitempty"`
 }
 
 // OptimizationPolicySpec defines the desired state of OptimizationPolicy
@@ -161,6 +212,10 @@ type OptimizationPolicySpec struct {
 	// WorkloadProtection defines exclusions to protect specific targets
 	// +optional
 	WorkloadProtection WorkloadProtection `json:"workloadProtection,omitempty"`
+
+	// GitOps configures Pull Request based actuation.
+	// +optional
+	GitOps GitOpsConfig `json:"gitOps,omitempty"`
 }
 
 // OptimizationPolicyStatus defines the observed state of OptimizationPolicy.

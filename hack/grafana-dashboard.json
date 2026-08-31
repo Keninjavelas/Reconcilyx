@@ -3,10 +3,7 @@
     "list": [
       {
         "builtIn": 1,
-        "datasource": {
-          "type": "grafana",
-          "uid": "-- Grafana --"
-        },
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
         "enable": true,
         "hide": true,
         "iconColor": "rgba(0, 211, 255, 1)",
@@ -18,271 +15,275 @@
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
-  "id": 1,
+  "id": null,
   "links": [],
   "liveNow": false,
   "panels": [
     {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 0
-      },
-      "id": 2,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
-      },
+      "type": "timeseries",
+      "title": "CPU / Memory requests — before vs after optimization",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "histogram_quantile(0.95, sum(rate(reconcilyx_optimization_latency_seconds_bucket[5m])) by (le))",
-          "legendFormat": "p95 Latency",
-          "refId": "A"
+          "expr": "sum by (workload, namespace) (kube_pod_container_resource_requests{resource=\"cpu\"} * on(pod, namespace) group_left() kube_pod_labels{label_app=~\".+\"} or reconcilyx_optimization_savings_usd_monthly or vector(0))",
+          "legendFormat": "{{workload}}/{{namespace}} — CPU requested",
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        },
+        {
+          "expr": "reconcilyx_forecast_cpu",
+          "legendFormat": "{{workload}}/{{namespace}} — Forecast CPU",
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        },
+        {
+          "expr": "reconcilyx_forecast_memory",
+          "legendFormat": "{{workload}}/{{namespace}} — Forecast Memory",
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        },
+        {
+          "expr": "sum by (workload, namespace) (kube_pod_container_resource_requests{resource=\"memory\"}) or reconcilyx_optimization_savings_usd_monthly or vector(0)",
+          "legendFormat": "{{workload}}/{{namespace}} — Memory requested",
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
         }
       ],
-      "title": "Optimization Latency (p95)",
-      "type": "timeseries"
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "opacity",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2
+          }
+        }
+      }
     },
     {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 0
-      },
-      "id": 4,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
-      },
+      "type": "timeseries",
+      "title": "RL rewards and recommendation counts per workload",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "histogram_quantile(0.99, sum(rate(reconcilyx_proposal_staleness_seconds_bucket[5m])) by (le))",
-          "legendFormat": "p99 Staleness",
-          "refId": "A"
+          "expr": "reconcilyx_rl_reward",
+          "legendFormat": "RL reward {{workload}}/{{namespace}}",
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        },
+        {
+          "expr": "sum(rate(reconcilyx_rl_recommendations_total[5m])) by (workload, namespace, action_type)",
+          "legendFormat": "RL recs {{action_type}} {{workload}}/{{namespace}}",
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        },
+        {
+          "expr": "reconcilyx_policy_workloads_matched",
+          "legendFormat": "Matched workloads policy={{policy_name}}/{{namespace}}",
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
         }
-      ],
-      "title": "Proposal Queue Staleness (p99)",
-      "type": "timeseries"
+      ]
     },
     {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
+      "type": "timeseries",
+      "title": "Forecast confidence & forecast CPU/Memory",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "reconcilyx_forecast_confidence",
+          "legendFormat": "confidence {{workload}}/{{namespace}}",
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        },
+        {
+          "expr": "reconcilyx_forecast_cpu",
+          "legendFormat": "CPU forecast {{workload}}/{{namespace}}",
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        },
+        {
+          "expr": "reconcilyx_forecast_memory",
+          "legendFormat": "Memory forecast {{workload}}/{{namespace}}",
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        }
+      ],
       "fieldConfig": {
         "defaults": {
-          "color": {
-            "mode": "thresholds"
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "gradientMode": "opacity",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2
           },
-          "mappings": [],
+          "min": 0,
+          "max": 1
+        }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Anomaly events (last 1h) by severity bucket",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum(increase(reconcilyx_anomaly_events_total[1h])) by (severity) or on() vector(0)",
+          "legendFormat": "{{severity}}",
+          "instant": true,
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 1
-              }
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 5 },
+              { "color": "red", "value": 20 }
             ]
           }
-        },
-        "overrides": []
+        }
       },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 8
-      },
-      "id": 6,
       "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "auto"
-      },
-      "pluginVersion": "10.4.1",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "GitOps activity — PR created / PR auto-merged",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum(rate(reconcilyx_ssa_conflicts_total[5m]))",
-          "legendFormat": "Conflicts / sec",
-          "refId": "A"
+          "expr": "sum(rate(reconcilyx_pr_created_total[5m])) by (provider, owner, repo)",
+          "legendFormat": "created {{provider}} {{owner}}/{{repo}}",
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        },
+        {
+          "expr": "sum(rate(reconcilyx_pr_automerge_total[5m])) by (provider, owner, repo)",
+          "legendFormat": "merged {{provider}} {{owner}}/{{repo}}",
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        },
+        {
+          "expr": "sum(rate(reconcilyx_proposal_created_total[5m])) by (workload, namespace)",
+          "legendFormat": "proposal {{workload}}/{{namespace}}",
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        },
+        {
+          "expr": "sum(rate(reconcilyx_proposal_approved_total[5m])) by (workload, namespace)",
+          "legendFormat": "approved {{workload}}/{{namespace}}",
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "SSA conflicts & GitOps yields (early-warn counters)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum(rate(reconcilyx_ssa_conflicts_total[5m])) by (workload, namespace)",
+          "legendFormat": "SSA conflicts {{workload}}/{{namespace}}",
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        },
+        {
+          "expr": "sum(rate(reconcilyx_gitops_yields_total[5m])) by (workload, namespace)",
+          "legendFormat": "GitOps yields {{workload}}/{{namespace}}",
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        },
+        {
+          "expr": "reconcilyx_optimization_duration_seconds",
+          "legendFormat": "optimization latency (histogram, s)",
+          "format": "heatmap",
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        },
+        {
+          "expr": "reconcilyx_optimization_savings_usd_monthly",
+          "legendFormat": "monthly savings $ {{workload}}/{{namespace}}",
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Anomaly severity per workload",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "reconcilyx_anomaly_severity",
+          "legendFormat": "anomaly {{metric}} {{workload}}/{{namespace}}",
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
         }
       ],
-      "title": "SSA Conflict Rate",
-      "type": "stat"
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineInterpolation": "linear",
+            "lineWidth": 2
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.3 },
+              { "color": "orange", "value": 0.5 },
+              { "color": "red", "value": 0.7 }
+            ]
+          },
+          "min": 0,
+          "max": 1
+        }
+      }
     }
   ],
-  "refresh": "5s",
+  "refresh": "10s",
   "schemaVersion": 39,
-  "tags": [],
+  "tags": ["reconcilyx", "kubernetes", "cost", "optimization", "ml"],
   "templating": {
-    "list": []
+    "list": [
+      {
+        "type": "datasource",
+        "name": "datasource",
+        "label": "Prometheus",
+        "pluginId": "prometheus",
+        "pluginName": "Prometheus",
+        "current": { "selected": true, "text": "Prometheus", "value": "prometheus" },
+        "includeAll": true,
+        "multi": false
+      },
+      {
+        "name": "namespace",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": "label_values(reconcilyx_proposal_created_total, namespace)",
+        "refresh": 1,
+        "includeAll": true,
+        "multi": true
+      },
+      {
+        "name": "workload",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": "label_values(reconcilyx_proposal_created_total{namespace=~\"$namespace\"}, workload)",
+        "refresh": 1,
+        "includeAll": true,
+        "multi": true
+      }
+    ]
   },
-  "time": {
-    "from": "now-1h",
-    "to": "now"
-  },
+  "time": { "from": "now-6h", "to": "now" },
   "timepicker": {},
-  "timezone": "browser",
-  "title": "Reconcilyx Operator Metrics",
-  "uid": "reconcilyx-ops-01",
-  "version": 1
+  "timezone": "",
+  "title": "Reconcilyx — RL + GitOps Cost Optimization Overview",
+  "uid": "reconcilyx-overview",
+  "version": 2,
+  "weekStart": ""
 }

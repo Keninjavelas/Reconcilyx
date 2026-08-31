@@ -13,9 +13,16 @@ var (
 		},
 		[]string{"namespace", "workload", "reason"},
 	)
+
+	PolicyWorkloadsMatched = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "reconcilyx_policy_workloads_matched",
+			Help: "Number of workloads currently matched by each OptimizationPolicy",
+		},
+		[]string{"namespace", "policy_name"},
+	)
 )
 
 func init() {
-	// Register custom metrics with the global prometheus registry
-	metrics.Registry.MustRegister(RollbackTotal)
+	metrics.Registry.MustRegister(RollbackTotal, PolicyWorkloadsMatched)
 }

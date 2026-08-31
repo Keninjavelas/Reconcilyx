@@ -40,17 +40,12 @@ func (r *defaultRollbackManager) CheckMonitoringWindow(ctx context.Context, prop
 		return false, fmt.Errorf("failed to gather post-resize metrics: %w", err)
 	}
 
-	// 3-Strike Check: If throttling > 20% or OOMs increment, we trigger a rollback
 	for containerName, cm := range metrics.Containers {
 		if _, tracked := proposal.Status.ExecutionSnapshot.ContainerResources[containerName]; tracked {
-			// Check OOMs
 			if cm.Memory.OOMCount > 0 {
 				RollbackTotal.WithLabelValues(proposal.Spec.TargetWorkload.Namespace, proposal.Spec.TargetWorkload.Name, "OOM").Inc()
 				return true, fmt.Errorf("OOM detected in container %s", containerName)
 			}
-			// Check Throttling
-			// Since we don't have baseline throttling, if throttling is >0.2 cores (20% of a core) or whatever limit we decide.
-			// Let's assume > 20% of the limit is throttled.
 			if cm.CPU.LimitedCores > 0 && cm.CPU.ThrottledSecs > (cm.CPU.LimitedCores*0.2) {
 				RollbackTotal.WithLabelValues(proposal.Spec.TargetWorkload.Namespace, proposal.Spec.TargetWorkload.Name, "Throttling").Inc()
 				return true, fmt.Errorf("severe CPU throttling detected in container %s", containerName)
@@ -86,21 +81,19 @@ func (r *defaultRollbackManager) ExecuteRollback(ctx context.Context, proposal *
 
 	for _, p := range podList.Items {
 		pod := p
-		patch := client.MergeFrom(pod.DeepCopy())
-		mutated := false
+		desired := make(map[string]corev1.ResourceRequirements)
 
 		for i := range pod.Spec.Containers {
 			c := &pod.Spec.Containers[i]
-			if snapState, tracked := proposal.Status.ExecutionSnapshot.ContainerResources[c.Name]; tracked {
-				c.Resources = *snapState.Resources.DeepCopy()
-				mutated = true
+			snapState, tracked := proposal.Status.ExecutionSnapshot.ContainerResources[c.Name]
+			if !tracked {
+				continue
 			}
+			desired[c.Name] = *snapState.Resources.DeepCopy()
 		}
 
-		if mutated {
-			if err := r.client.Patch(ctx, &pod, patch); err != nil {
-				return fmt.Errorf("failed to rollback pod %s: %w", pod.Name, err)
-			}
+		if err := applyPodResizeSSA(ctx, r.client, pod.Name, pod.Namespace, desired); err != nil {
+			return fmt.Errorf("rollback failed: %w", err)
 		}
 	}
 

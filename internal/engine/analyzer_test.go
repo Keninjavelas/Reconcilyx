@@ -3,11 +3,15 @@ package engine_test
 import (
 	"context"
 	"testing"
+	"time"
 
+	"github.com/prometheus/common/model"
 	"github.com/reconcilyx/operator/api/v1alpha1"
 	"github.com/reconcilyx/operator/internal/engine"
 	"github.com/reconcilyx/operator/internal/engine/forecasting"
+	"github.com/reconcilyx/operator/internal/engine/rl"
 	"github.com/reconcilyx/operator/internal/engine/rules"
+	"github.com/reconcilyx/operator/internal/federated"
 	"github.com/reconcilyx/operator/internal/telemetry"
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
@@ -23,6 +27,38 @@ func (m *mockTelemetryProvider) GetWorkloadMetrics(ctx context.Context, ref core
 	return m.metrics, m.err
 }
 
+type mockMetricsClient struct{}
+
+func (m *mockMetricsClient) Query(ctx context.Context, query string) (model.Value, error) {
+	return nil, nil
+}
+
+func (m *mockMetricsClient) QueryRange(ctx context.Context, query string, r time.Duration) (model.Value, error) {
+	return nil, nil
+}
+
+func (m *mockMetricsClient) HealthCheck(ctx context.Context) error {
+	return nil
+}
+
+type mockRLAgent struct{}
+
+func (m *mockRLAgent) Recommend(ctx context.Context, state *rl.WorkloadState) (*rl.RecommendationResult, error) {
+	return &rl.RecommendationResult{
+		Action: &rl.Action{
+			Adjustment: map[string]rl.ResourceAdjustment{}, // No adjustments
+		},
+		Confidence: 0.0,
+	}, nil
+}
+
+func (m *mockRLAgent) Update(ctx context.Context, reward float64, action *rl.Action, previousState *rl.WorkloadState, nextState *rl.WorkloadState) error {
+	return nil
+}
+
+func (m *mockRLAgent) LoadGlobal(_ context.Context, _ *federated.GlobalQTable) {}
+func (m *mockRLAgent) SetFederatedEmitter(_ *federated.Emitter)          {}
+
 func TestAnalyzer_Analyze(t *testing.T) {
 	registry := engine.NewRuleRegistry()
 	registry.Register(&rules.CPUOverprovisionedRule{})
@@ -30,8 +66,10 @@ func TestAnalyzer_Analyze(t *testing.T) {
 	registry.Register(&rules.IdleWorkloadRule{})
 
 	scorer := engine.NewScorer()
+	mockClient := &mockMetricsClient{}
+	mockAgent := &mockRLAgent{}
 
-	t.Run("Generates Proposal for Overprovisioned Workload", func(t *testing.T) {
+	t.Run("Generates_Proposal_for_Overprovisioned_Workload", func(t *testing.T) {
 		provider := &mockTelemetryProvider{
 			metrics: &telemetry.WorkloadMetrics{
 				Replicas: 2,
@@ -49,7 +87,7 @@ func TestAnalyzer_Analyze(t *testing.T) {
 			},
 		}
 
-		analyzer := engine.NewAnalyzer(provider, registry, scorer, forecasting.NewPredictor())
+		analyzer := engine.NewAnalyzer(provider, registry, scorer, forecasting.NewPredictor(mockClient), engine.WithRLAgent(mockAgent))
 
 		currentResources := map[string]corev1.ResourceRequirements{
 			"app": {
@@ -75,6 +113,9 @@ func TestAnalyzer_Analyze(t *testing.T) {
 
 		// Check positive savings
 		assert.True(t, proposal.Spec.ExpectedImpact.EstimatedSavingsUSD.Value() > 0)
+		// Carbon savings should be populated (non-nil) when resource reduction is positive
+		assert.NotNil(t, proposal.Spec.ExpectedImpact.CarbonSavedGramsCO2)
+		assert.True(t, proposal.Spec.ExpectedImpact.CarbonSavedGramsCO2.Value() > 0)
 	})
 
 	t.Run("No Optimization Needed", func(t *testing.T) {
@@ -89,7 +130,7 @@ func TestAnalyzer_Analyze(t *testing.T) {
 			},
 		}
 
-		analyzer := engine.NewAnalyzer(provider, registry, scorer, forecasting.NewPredictor())
+		analyzer := engine.NewAnalyzer(provider, registry, scorer, forecasting.NewPredictor(mockClient), engine.WithRLAgent(mockAgent))
 		currentResources := map[string]corev1.ResourceRequirements{
 			"app": {
 				Requests: corev1.ResourceList{

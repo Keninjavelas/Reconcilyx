@@ -291,3 +291,46 @@ endef
 define gomodver
 $(shell go list -m -f '{{if .Replace}}{{.Replace.Version}}{{else}}{{.Version}}{{end}}' $(1) 2>/dev/null)
 endef
+
+##@ Documentation & Demo
+
+.PHONY: docs
+docs: ## Render docs locally (requires Mermaid-capable viewer) and verify doc directory exists
+	@mkdir -p docs
+	@echo "docs/architecture.md : deep-dive architecture diagram + engine pipeline"
+	@echo "docs/gitops.md       : GitHub/GitLab provider setup + auto-merge webhook"
+	@echo "docs/troubleshooting.md : common build/install/runtime issues"
+	@ls -la docs/*.md 2>/dev/null || true
+
+.PHONY: demo
+demo: manifests generate docker-build kind-push deploy ## Run the demo script against a fresh Kind cluster (creates nginx workload).
+	@command -v kind >/dev/null 2>&1 || { echo "kind is not installed."; exit 1; }
+	bash demo/run.sh
+
+##@ Aggregated Testing
+
+.PHONY: test-all
+test-all: manifests generate fmt vet setup-envtest ## Run unit tests + e2e tests on Kind (installs CRDs + controller if needed).
+	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" \
+		go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
+	$(MAKE) test-e2e
+	@echo ""
+	@echo "All tests passed. Coverage: cover.out"
+	@go tool cover -func cover.out | tail -n 1 || true
+
+##@ Product Layer (v2.0)
+
+.PHONY: build-ui
+build-ui: ## Build React UI dashboard for embedding into API server
+	cd ui && npm run build
+
+.PHONY: build-cli
+build-cli: ## Compile kubectl-reconcilyx CLI plugin binary into bin/
+	@mkdir -p bin
+	go build -o bin/kubectl-reconcilyx ./cmd/kubectl-reconcilyx
+
+.PHONY: helm-chart
+helm-chart: ## Package Helm chart for release
+	@mkdir -p dist
+	helm package charts/reconcilyx -d dist/
+

@@ -158,6 +158,13 @@ spec:
                     maximum: 100
                     minimum: 0
                     type: integer
+                  carbonWeight:
+                    description: CarbonWeight weights multi-objective RL reward
+                      between cost (0.0) and carbon (1.0). Cost-only (default)
+                      = 0.0, 50/50 = 0.5, carbon-only = 1.0.
+                    maximum: 1.0
+                    minimum: 0.0
+                    type: number
                 type: object
               targetSelectors:
                 description: TargetSelectors defines which workloads the policy applies
