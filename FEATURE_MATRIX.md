@@ -10,6 +10,11 @@ Audit baseline as of `2026-07-31`:
 | Partial | 72 |
 | Missing/Stubbed | 30 |
 
+## 🚀 Live Demo
+
+- **Frontend UI:** [https://reconfigy.x.vercel.app](https://reconfigy.x.vercel.app)
+
+
 ## Section Summary
 
 | Section | Verified | Partial | Missing/Stubbed | Current Reality |

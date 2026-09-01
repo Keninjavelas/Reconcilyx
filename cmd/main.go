@@ -334,8 +334,10 @@ func main() {
 		dispatcher.Register(smtp)
 		setupLog.Info("Registered SMTP email notifier", "host", smtp.Host, "to", smtp.To)
 	}
+	ctx := ctrl.SetupSignalHandler()
+
 	auditLog := notifiers.NewAuditLog(10000, mgr.GetClient())
-	go auditLog.PersistToConfigMap(ctrl.SetupSignalHandler(), "reconcilyx-system", "reconcilyx-audit-buffer")
+	go auditLog.PersistToConfigMap(ctx, "reconcilyx-system", "reconcilyx-audit-buffer")
 
 	if apiPort != "" {
 		uiDist, uiOK := reconcilyxui.Dist()
@@ -352,19 +354,12 @@ func main() {
 			FederatedModelName:  federated.DefaultConfigMapName,
 		}
 		apiServer := api.NewServer(apiPort, apiKey, deps)
-		// Pass through a context derived from manager shutdown
 		go func() {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			// Tie lifecycle to the manager: when manager starts, API starts; stop via ctx via signal handling below.
 			if err := apiServer.Start(ctx); err != nil {
 				setupLog.Error(err, "API + UI server terminated with error")
 				os.Exit(1)
 			}
 		}()
-		// Wire a tiny signal reaper so the API server's context is cancelled on SIGINT/SIGTERM.
-		// Note: mgr.Start blocks on its own signal handler; the API goroutine uses its own context
-		// and relies on process teardown to stop. We additionally hook mgr's done channel below.
 		go func() {
 			<-mgr.Elected()
 			setupLog.V(1).Info("API server lifecycle coupled to manager election")
@@ -387,8 +382,6 @@ func main() {
 		}()
 	}
 
-	setupLog.Info("Starting manager", "concurrency", concurrency, "prometheus", prometheusURL, "batchSize", batchSize)
-
 	// +kubebuilder:scaffold:builder
 
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
@@ -410,7 +403,7 @@ func main() {
 	}
 
 	setupLog.Info("Starting manager", "concurrency", concurrency, "prometheus", prometheusURL, "batchSize", batchSize)
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+	if err := mgr.Start(ctx); err != nil {
 		setupLog.Error(err, "Failed to run manager")
 		os.Exit(1)
 	}

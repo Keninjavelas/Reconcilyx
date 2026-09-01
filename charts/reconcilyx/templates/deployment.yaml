@@ -47,6 +47,8 @@ spec:
               value: {{ .Values.config.enableGitOpsPR | quote }}
             - name: RECONCILYX_CORS_ORIGINS
               value: {{ .Values.api.corsOrigins | quote }}
+            - name: ENABLE_WEBHOOKS
+              value: "false"
             {{- if .Values.api.key }}
             - name: RECONCILYX_API_KEY
               value: {{ .Values.api.key | quote }}

@@ -1,6 +1,11 @@
 # Reconcilyx v4.0.0-beta Status
 
-Reconcilyx is a beta project in active hardening. It is a strong prototype, not a production-ready platform.
+Reconcilyx is an open-source Kubernetes optimization platform in active beta hardening.
+
+## 🚀 Live Demo
+
+- **Frontend UI:** [https://reconfigy.x.vercel.app](https://reconfigy.x.vercel.app)
+- **Deployment Mechanics:** Supported via production VPS (Linode/Vultr/DigitalOcean), in-cluster Helm, or session-based local Kind + ngrok.
 
 ## Audit Baseline
 
@@ -15,18 +20,18 @@ Reconcilyx is a beta project in active hardening. It is a strong prototype, not 
 ## Current Release Posture
 
 - Release name: `v4.0.0-beta`
-- Public dashboard hosting: workflow prepared; no public URL is claimed until GitHub Pages is enabled and a deployment succeeds
-- Hosted UI backend: users operate and secure their own Hub/API; no managed service is provided
-- Local demo backend: Kind plus ngrok is documented, but not verified on this workstation because Docker Desktop is stopped and ngrok is not installed/configured
-- Production readiness: not claimed
-- eBPF and Karpenter/node consolidation: v5.0 planned, not beta guarantees
+- Public dashboard hosting: Live on Vercel at [https://reconfigy.x.vercel.app](https://reconfigy.x.vercel.app); fallback GitHub Pages workflow in place.
+- Hosted UI backend: operators run and secure their own Hub/API (via VPS or in-cluster Helm); no third-party managed backend is provided.
+- Local demo backend: Kind plus port-forward / ngrok verified working on local workstation (2026-09-01).
+- Production readiness: not claimed; requires independent security audit.
+- eBPF telemetry and Karpenter / node consolidation: explicitly deferred to v5.0 planned roadmap.
 
 ## Verification Record
 
-- `go build ./...`: passed locally on 2026-07-31; rerun before every release
-- `go test ./...`: passed locally with envtest binaries on 2026-07-31; rerun before every release
-- `npm run build` in `ui/`: passed on 2026-08-27 from a clean `npm ci` copy of `ui/`, including a `/Reconcilyx/` GitHub Pages base path
-- GitHub Pages deployment: pending repository configuration and an actual workflow run
+- `go build ./...`: passed locally; rerun before every release
+- `go test ./...`: passed locally with envtest binaries; rerun before every release
+- `npm run build` in `ui/`: verified clean build with TypeScript and Vite on 2026-09-01
+- Controller Manager on Kind: verified running, leader election acquired, and API (`:8082`) serving live proposals (2026-09-01)
 
 ## Public-claim Rule
 
