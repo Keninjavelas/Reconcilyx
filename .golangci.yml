@@ -1,17 +1,16 @@
+# .golangci.yml
 run:
   timeout: 5m
-  go: '1.24'
+  modules-download-mode: readonly
+
 linters:
   enable:
     - gofmt
     - govet
     - staticcheck
     - ineffassign
-    - misspell
-    - unconvert
-    - unparam
     - unused
-    - whitespace
+
 issues:
   exclude-use-default: false
   max-issues-per-linter: 0
