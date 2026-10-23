@@ -56,6 +56,9 @@ Before and during execution, the Reconciler utilizes the **WorkloadHealthGate**.
 - Workload must exist.
 - `status.replicas > 0` (Unless the recommendation is `ScaleToZero`).
 - `status.readyReplicas == status.replicas` (No ongoing rollouts or crashing pods).
+- The Deployment must have observed its latest generation and report no `ReplicaFailure`.
+
+*Implementation status (2026-10-23): `WorkloadHealthGate` now enforces these checks against the live Deployment; it no longer returns an unconditional pass.*
 
 **During Stabilization:**
 - Continually monitor `readyReplicas`.

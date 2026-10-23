@@ -526,7 +526,7 @@ func (r *OptimizationProposalReconciler) SetupWithManager(mgr ctrl.Manager) erro
 	r.Recorder = mgr.GetEventRecorderFor("optimizationproposal-controller")
 	r.Matcher = policy.NewMatcher()
 	r.Evaluator = policy.NewEvaluator()
-	r.ExecutionGate = NewExecutionGate(NewActuationControl(mgr.GetClient(), "reconcilyx-system"), NewWorkloadHealthGate())
+	r.ExecutionGate = NewExecutionGate(NewActuationControl(mgr.GetClient(), "reconcilyx-system"), NewWorkloadHealthGate(mgr.GetClient()))
 	r.Actuator = NewActuator(mgr.GetClient())
 	r.GitFactory = gitops.NewProviderFactory()
 

@@ -45,4 +45,11 @@ Use `v4.0.0-beta` in documentation and releases. Do not describe Reconcilyx as p
 - Added `internal/controller/execution_gate_test.go`: RightSize, ReduceCPURequest, and ReduceMemoryRequest execute; ScaleToZero and MigrateCloud are rejected; kill switch, health, phase, and TTL paths are covered.
 - Evidence: `go test -c` + `controller.test.exe -test.run TestExecutionGate` passed (13 subtests).
 
+### 2026-10-23 — P0: WorkloadHealthGate performs real liveness checks
+
+- `internal/controller/health_gate.go` now verifies the target Deployment exists, is not deleting or scaled to zero, has observed its latest generation, is fully ready, and reports no `ReplicaFailure`.
+- Wired the manager client into the gate at `optimizationproposal_controller.go:529`.
+- Added `internal/controller/health_gate_test.go` covering healthy, missing, unsupported-kind, partial-readiness, zero-replica, stale-generation, and ReplicaFailure cases.
+- Design intent documented in `docs/RECONCILER_DESIGN_V2.md`. Evidence: health and gate test suite passed.
+
 See [FEATURE_MATRIX.md](FEATURE_MATRIX.md) for the feature inventory and [GITHUB_ISSUES.md](GITHUB_ISSUES.md) for the remediation tracker.
