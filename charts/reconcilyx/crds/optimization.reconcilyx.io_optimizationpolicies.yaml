@@ -47,6 +47,41 @@ spec:
           spec:
             description: spec defines the desired state of OptimizationPolicy
             properties:
+              blastRadius:
+                description: BlastRadius limits the size of the target a single change
+                  may affect.
+                properties:
+                  maxReplicasPerChange:
+                    description: |-
+                      MaxReplicasPerChange rejects changes to workloads with more replicas than this.
+                      A value of 0 disables the check; DaemonSets cannot be capped and are rejected
+                      when the check is enabled.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  requireCanaryLabel:
+                    description: |-
+                      RequireCanaryLabel requires the target workload or its pod template to carry
+                      reconcilyx.io/canary=true before a change is allowed.
+                    type: boolean
+                type: object
+              changeBudget:
+                description: ChangeBudget limits how many changes may be applied to
+                  a workload in a rolling window.
+                properties:
+                  maxChangesPerWindow:
+                    description: |-
+                      MaxChangesPerWindow caps executed changes per target workload within Window.
+                      A value of 0 disables the budget.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  window:
+                    default: 24h
+                    description: Window is the rolling period used for MaxChangesPerWindow.
+                      Defaults to 24h.
+                    type: string
+                type: object
               gitOps:
                 description: GitOps configures Pull Request based actuation.
                 properties:

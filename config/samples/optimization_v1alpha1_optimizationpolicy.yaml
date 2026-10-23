@@ -6,4 +6,33 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: optimizationpolicy-sample
 spec:
-  # TODO(user): Add fields here
+  objective: Efficiency
+  mode: Propose
+  targetSelectors:
+    workloadSelector:
+      matchLabels:
+        app.kubernetes.io/part-of: storefront
+  resourceConstraints:
+    minCPU: 100m
+    minMemory: 128Mi
+  safetyConstraints:
+    minReplicas: 2
+    maxLatencyIncreaseMs: 50
+    cooldownPeriod: 30m
+    riskTolerance: 40
+    confidenceRequirement: 75
+    carbonWeight: 0.35
+  # Allow at most two executions on the same workload per rolling day.
+  changeBudget:
+    maxChangesPerWindow: 2
+    window: 24h
+  # Refuse wide changes and require the workload pod template to carry
+  # reconcilyx.io/canary=true before a scheduled proposal may execute.
+  blastRadius:
+    maxReplicasPerChange: 10
+    requireCanaryLabel: true
+  recommendationGovernance:
+    allowedRecommendations:
+      - RightSize
+      - ReduceCPURequest
+      - ReduceMemoryRequest

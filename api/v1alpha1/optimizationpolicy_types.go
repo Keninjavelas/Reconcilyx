@@ -121,6 +121,38 @@ type WorkloadProtection struct {
 	ExcludedContainers []string `json:"excludedContainers,omitempty"`
 }
 
+// CanaryLabelKey marks a workload's pods as a canary scope for blast-radius policy.
+const CanaryLabelKey = "reconcilyx.io/canary"
+
+// ChangeBudget limits how many changes may be applied to a workload in a rolling window.
+type ChangeBudget struct {
+	// MaxChangesPerWindow caps executed changes per target workload within Window.
+	// A value of 0 disables the budget.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	MaxChangesPerWindow int32 `json:"maxChangesPerWindow,omitempty"`
+
+	// Window is the rolling period used for MaxChangesPerWindow. Defaults to 24h.
+	// +kubebuilder:default="24h"
+	// +optional
+	Window *metav1.Duration `json:"window,omitempty"`
+}
+
+// BlastRadius limits the size of the target a single change may affect.
+type BlastRadius struct {
+	// MaxReplicasPerChange rejects changes to workloads with more replicas than this.
+	// A value of 0 disables the check; DaemonSets cannot be capped and are rejected
+	// when the check is enabled.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	MaxReplicasPerChange int32 `json:"maxReplicasPerChange,omitempty"`
+
+	// RequireCanaryLabel requires the target workload or its pod template to carry
+	// reconcilyx.io/canary=true before a change is allowed.
+	// +optional
+	RequireCanaryLabel bool `json:"requireCanaryLabel,omitempty"`
+}
+
 // RollbackConstraints defines conditions under which a rollback should occur.
 type RollbackConstraints struct {
 	// Automatically rollback if error rate spikes beyond this threshold.
@@ -212,6 +244,14 @@ type OptimizationPolicySpec struct {
 	// WorkloadProtection defines exclusions to protect specific targets
 	// +optional
 	WorkloadProtection WorkloadProtection `json:"workloadProtection,omitempty"`
+
+	// ChangeBudget limits how many changes may be applied to a workload in a rolling window.
+	// +optional
+	ChangeBudget ChangeBudget `json:"changeBudget,omitempty"`
+
+	// BlastRadius limits the size of the target a single change may affect.
+	// +optional
+	BlastRadius BlastRadius `json:"blastRadius,omitempty"`
 
 	// GitOps configures Pull Request based actuation.
 	// +optional

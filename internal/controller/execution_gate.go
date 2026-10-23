@@ -27,13 +27,15 @@ type defaultExecutionGate struct {
 	actuationControl ActuationControl
 	healthGate       WorkloadHealthGate
 	autoscalerGate   AutoscalerGate
+	policyGuard      PolicyGuard
 }
 
-func NewExecutionGate(ac ActuationControl, hg WorkloadHealthGate, ag AutoscalerGate) ExecutionGate {
+func NewExecutionGate(ac ActuationControl, hg WorkloadHealthGate, ag AutoscalerGate, pg PolicyGuard) ExecutionGate {
 	return &defaultExecutionGate{
 		actuationControl: ac,
 		healthGate:       hg,
 		autoscalerGate:   ag,
+		policyGuard:      pg,
 	}
 }
 
@@ -72,6 +74,13 @@ func (g *defaultExecutionGate) ValidateJIT(ctx context.Context, proposal *v1alph
 	// 6. Verify Target Liveness
 	if err := g.healthGate.CheckLiveness(ctx, proposal.Spec.TargetWorkload); err != nil {
 		return ExecutionReject, fmt.Errorf("workload liveness check failed: %w", err)
+	}
+
+	// 7. Enforce policy change budgets and blast-radius limits.
+	if g.policyGuard != nil && policy != nil {
+		if err := g.policyGuard.Check(ctx, proposal, policy); err != nil {
+			return ExecutionReject, err
+		}
 	}
 
 	return ExecutionExecute, nil

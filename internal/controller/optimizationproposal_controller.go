@@ -52,6 +52,8 @@ type OptimizationProposalReconciler struct {
 // +kubebuilder:rbac:groups=optimization.reconcilyx.io,resources=optimizationpolicies,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods/resize,verbs=update;patch
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch
@@ -190,20 +192,29 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 	}
 
 	if proposal.Status.Phase == optimizationv1alpha1.PhaseScheduled {
-		var pol optimizationv1alpha1.OptimizationPolicy
-		decision, err := r.ExecutionGate.ValidateJIT(ctx, proposal, &pol)
-		if err != nil {
-			logger.Error(err, "JIT validation encountered an error")
+		if proposal.Status.PolicyApplied == "" {
+			return r.failScheduledProposal(ctx, proposal, "JIT Validation Rejected: proposal has no applied policy recorded; refusing to execute without policy guardrails"), nil
+		}
+		appliedPolicy, policyErr := r.lookupAppliedPolicy(ctx, proposal)
+		if policyErr != nil {
+			if apierrors.IsNotFound(policyErr) {
+				return r.failScheduledProposal(ctx, proposal, fmt.Sprintf("JIT Validation Rejected: applied policy %q no longer exists", proposal.Status.PolicyApplied)), nil
+			}
+			return ctrl.Result{}, policyErr
+		}
+
+		decision, gateErr := r.ExecutionGate.ValidateJIT(ctx, proposal, appliedPolicy)
+		if gateErr != nil {
+			logger.Error(gateErr, "JIT validation encountered an error")
 		}
 
 		switch decision {
 		case ExecutionReject:
-			proposal.Status.Phase = optimizationv1alpha1.PhaseFailed
-			proposal.Status.ExecutionState = optimizationv1alpha1.ExecutionFailed
-			proposal.Status.Reason = "JIT Validation Rejected: " + err.Error()
-			_ = r.Status().Update(ctx, proposal)
-			r.Recorder.Event(proposal, "Warning", "ExecutionFailed", proposal.Status.Reason)
-			return ctrl.Result{}, nil
+			reason := "JIT Validation Rejected"
+			if gateErr != nil {
+				reason += ": " + gateErr.Error()
+			}
+			return r.failScheduledProposal(ctx, proposal, reason), nil
 		case ExecutionExpire:
 			proposal.Status.Phase = optimizationv1alpha1.PhaseExpired
 			_ = r.Status().Update(ctx, proposal)
@@ -490,6 +501,17 @@ func (r *OptimizationProposalReconciler) lookupAppliedPolicy(ctx context.Context
 	return nil, err
 }
 
+func (r *OptimizationProposalReconciler) failScheduledProposal(ctx context.Context, proposal *optimizationv1alpha1.OptimizationProposal, reason string) ctrl.Result {
+	proposal.Status.Phase = optimizationv1alpha1.PhaseFailed
+	proposal.Status.ExecutionState = optimizationv1alpha1.ExecutionFailed
+	proposal.Status.Reason = reason
+	_ = r.Status().Update(ctx, proposal)
+	if r.Recorder != nil {
+		r.Recorder.Event(proposal, "Warning", "ExecutionFailed", reason)
+	}
+	return ctrl.Result{}
+}
+
 func (r *OptimizationProposalReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.Recorder = mgr.GetEventRecorderFor("optimizationproposal-controller")
 	r.Matcher = policy.NewMatcher()
@@ -498,6 +520,7 @@ func (r *OptimizationProposalReconciler) SetupWithManager(mgr ctrl.Manager) erro
 		NewActuationControl(mgr.GetClient(), "reconcilyx-system"),
 		NewWorkloadHealthGate(mgr.GetClient()),
 		NewAutoscalerConflictGate(mgr.GetClient()),
+		NewPolicyGuard(mgr.GetClient()),
 	)
 	r.Actuator = NewActuator(mgr.GetClient())
 	r.GitFactory = gitops.NewProviderFactory()
