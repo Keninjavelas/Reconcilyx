@@ -21,16 +21,16 @@ The codebase currently consists of four main layers:
 
 | Pillar | Current Status | Reality Check |
 |---|---|---|
-| Core actuation | `⚙️ Partial` | Proposal lifecycle and rollback scaffolding exist, but live `/resize` + SSA parity is still missing |
-| Federated learning | `⚙️ Partial` | Aggregation and bootstrap exist, but live RL update wiring is incomplete |
-| Multi-cloud arbitrage | `⚙️ Partial` | Arbitrage logic exists, but pricing providers are still static |
-| Carbon and app intelligence | `⚙️ Partial` | JVM helpers exist; GPU data path is still stubbed |
-| ChatOps | `⚙️ Partial` | Routing and provider selection exist, but answers are still heavily canned |
-| Shift-left GitOps | `⚙️ Partial` | PR helpers exist, but runtime wiring and validation are incomplete |
-| Agentic execution | `⚙️ Partial` | Action surfaces exist, but confirmation and real execution are incomplete |
-| Node consolidation | `❌ Stub/Planned` | Proposal helper exists, but no real Karpenter actuation loop |
-| eBPF streaming | `❌ Stub/Planned` | Current stream is synthetic and should not be presented as production telemetry |
-| Model registry | `⚙️ Partial` | Snapshot versioning and canary helpers exist, but rollout wiring is incomplete |
+| Core actuation | `⚙️ Partial` | Proposal lifecycle, rollback, and `/resize` SSA are implemented; independent end-to-end cluster validation is still pending |
+| Federated learning | `⚙️ Partial` | Aggregation, bootstrap, emitters, and live reward updates after completed/rolled-back proposals exist; production rollout is not claimed |
+| Multi-cloud arbitrage | `⚙️ Partial` | Arbitrage logic exists; pricing providers support live APIs with static fallbacks |
+| Carbon and app intelligence | `⚙️ Partial` | JVM parsing helpers exist; live JVM/GPU metric collection requires additional exporter queries |
+| ChatOps | `⚙️ Partial` | Tool-backed reads, confirmation tokens, and audit logging exist; LLM quality depends on the configured provider |
+| Shift-left GitOps | `⚙️ Partial` | PR helpers exist, but merge-path wiring and validation are incomplete |
+| Agentic execution | `⚙️ Partial` | Approve/reject/rollback execute real CRD changes with confirmation and audit |
+| Node consolidation | `❌ Stub/Planned` | Deferred to v5.0; no Karpenter actuation loop |
+| eBPF streaming | `❌ Stub/Planned` | Deferred to v5.0; v4 uses Prometheus telemetry |
+| Model registry | `⚙️ Partial` | Snapshot versioning and canary helpers exist; rollout wiring is being completed |
 
 ## Beta Architecture Priorities
 

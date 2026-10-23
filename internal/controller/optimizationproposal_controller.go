@@ -18,12 +18,10 @@ import (
 
 	optimizationv1alpha1 "github.com/reconcilyx/operator/api/v1alpha1"
 	"github.com/reconcilyx/operator/internal/carbon"
-	"github.com/reconcilyx/operator/internal/engine"
 	"github.com/reconcilyx/operator/internal/engine/rl"
 	"github.com/reconcilyx/operator/internal/gitops"
 	"github.com/reconcilyx/operator/internal/policy"
 	"github.com/reconcilyx/operator/internal/telemetry"
-	corev1 "k8s.io/api/core/v1"
 )
 
 type OptimizationProposalReconciler struct {
@@ -42,8 +40,6 @@ type OptimizationProposalReconciler struct {
 	CarbonProvider    carbon.Provider
 	WorkloadRegion    string
 	CarbonWeight      float64
-	// Tracks whether RL learning has been applied (idempotency guard)
-	rlLearningApplied bool
 }
 
 // +kubebuilder:rbac:groups=optimization.reconcilyx.io,resources=optimizationproposals,verbs=get;list;watch;create;update;patch;delete
@@ -77,13 +73,15 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 		proposal.Status.Phase == optimizationv1alpha1.PhaseFailed ||
 		proposal.Status.Phase == optimizationv1alpha1.PhaseRolledBack {
 
-		if r.RLAgent != nil && !r.rlLearningApplied {
-			if proposal.Status.Phase == optimizationv1alpha1.PhaseCompleted || proposal.Status.Phase == optimizationv1alpha1.PhaseRolledBack {
-				if err := r.applyRLLearning(ctx, proposal); err != nil {
-					logger.V(1).Info("RL learning could not be applied", "proposal", proposal.Name, "err", err)
-				} else {
-					r.rlLearningApplied = true
-				}
+		if (proposal.Status.Phase == optimizationv1alpha1.PhaseCompleted ||
+			proposal.Status.Phase == optimizationv1alpha1.PhaseRolledBack) &&
+			r.needsRLLearning(proposal) {
+			err := r.applyRLLearning(ctx, proposal)
+			if err == nil && proposal.Status.Learning != nil {
+				err = r.Status().Update(ctx, proposal)
+			}
+			if err != nil {
+				logger.Error(err, "RL learning could not be applied", "proposal", proposal.Name)
 			}
 		}
 
@@ -228,6 +226,9 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 				return ctrl.Result{}, err
 			}
 			proposal.Status.ExecutionSnapshot = snapshot
+			if proposal.Status.Learning == nil {
+				proposal.Status.Learning = r.captureLearningPreState(ctx, proposal)
+			}
 			if err := r.Status().Update(ctx, proposal); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -319,16 +320,22 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 			}
 			proposal.Status.Phase = optimizationv1alpha1.PhaseRolledBack
 			proposal.Status.ExecutionState = optimizationv1alpha1.ExecutionReverted
+			learningErr := r.applyRLLearning(ctx, proposal)
 			if err := r.Status().Update(ctx, proposal); err != nil {
 				return ctrl.Result{}, err
 			}
 			r.Recorder.Event(proposal, "Warning", "ExecutionReverted", "3-Strike Rollback Triggered due to workload stress")
 			_ = r.Actuator.ReleaseLock(ctx, proposal)
+			if learningErr != nil {
+				logger.Error(learningErr, "RL reward pending after rollback, will retry")
+				return ctrl.Result{RequeueAfter: time.Minute}, nil
+			}
 			return ctrl.Result{}, nil
 		}
 
 		proposal.Status.Phase = optimizationv1alpha1.PhaseCompleted
 		proposal.Status.ExecutionState = optimizationv1alpha1.ExecutionVerified
+		learningErr := r.applyRLLearning(ctx, proposal)
 		if err := r.Status().Update(ctx, proposal); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -336,6 +343,10 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 		r.Recorder.Event(proposal, "Normal", "ExecutionCompleted", "Workload stabilized")
 		_ = r.Actuator.ReleaseLock(ctx, proposal)
 
+		if learningErr != nil {
+			logger.Error(learningErr, "RL reward pending after completion, will retry")
+			return ctrl.Result{RequeueAfter: time.Minute}, nil
+		}
 		return ctrl.Result{}, nil
 	}
 
@@ -405,124 +416,6 @@ spec:
 		BaseBranch:  policy.Spec.GitOps.BaseBranch,
 		Diff:        diff,
 	})
-}
-
-func (r *OptimizationProposalReconciler) applyRLLearning(ctx context.Context, proposal *optimizationv1alpha1.OptimizationProposal) error {
-	if r.RLAgent == nil || r.TelemetryProvider == nil || proposal.Status.ExecutionSnapshot == nil {
-		return nil
-	}
-
-	snapshot := proposal.Status.ExecutionSnapshot
-	postMetrics, err := r.TelemetryProvider.GetWorkloadMetrics(ctx, proposal.Spec.TargetWorkload)
-	if err != nil && err != telemetry.ErrPartialTelemetry {
-		return fmt.Errorf("failed to fetch post-actuation telemetry: %w", err)
-	}
-
-	ref := proposal.Spec.TargetWorkload
-	replicas := snapshot.ReplicaCount
-	if replicas <= 0 {
-		replicas = 1
-	}
-
-	wasRolledBack := proposal.Status.Phase == optimizationv1alpha1.PhaseRolledBack
-	var overallReward float64
-	carbonIntensity := 0.0
-	if r.CarbonProvider != nil {
-		if intensity, cErr := r.CarbonProvider.IntensityForRegion(ctx, r.WorkloadRegion); cErr == nil {
-			carbonIntensity = intensity.Value
-		}
-	}
-
-	for containerName, snapState := range snapshot.ContainerResources {
-		prevCPUReq := snapState.Resources.Requests.Cpu().DeepCopy()
-		prevMemReq := snapState.Resources.Requests.Memory().DeepCopy()
-
-		postCM, ok := postMetrics.Containers[containerName]
-		prevUsageCores := 0.0
-		prevOOMCount := int32(0)
-		prevThrottledSecs := 0.0
-		prevMemBytes := 0.0
-		if preMetrics, preErr := r.TelemetryProvider.GetWorkloadMetrics(ctx, ref); preErr == nil || preErr == telemetry.ErrPartialTelemetry {
-			if cm, ok2 := preMetrics.Containers[containerName]; ok2 {
-				prevUsageCores = cm.CPU.UsageCores
-				prevOOMCount = cm.Memory.OOMCount
-				prevThrottledSecs = cm.CPU.ThrottledSecs
-				prevMemBytes = float64(cm.Memory.WorkingSetBytes)
-			}
-		}
-
-		postUsageCores := 0.0
-		postOOMCount := int32(0)
-		postThrottledSecs := 0.0
-		postMemBytes := 0.0
-		if ok {
-			postUsageCores = postCM.CPU.UsageCores
-			postOOMCount = postCM.Memory.OOMCount
-			postThrottledSecs = postCM.CPU.ThrottledSecs
-			postMemBytes = float64(postCM.Memory.WorkingSetBytes)
-		}
-
-		prevState := &rl.WorkloadState{
-			CPUUsageCores:         prevUsageCores,
-			CPUThrottledSecs:      prevThrottledSecs,
-			MemoryWorkingSetBytes: prevMemBytes,
-			OOMCount:              prevOOMCount,
-			CurrentCPURequest:     prevCPUReq,
-			CurrentMemoryRequest:  prevMemReq,
-			Region:                r.WorkloadRegion,
-			CarbonWeight:          &r.CarbonWeight,
-		}
-
-		nextState := &rl.WorkloadState{
-			CPUUsageCores:         postUsageCores,
-			CPUThrottledSecs:      postThrottledSecs,
-			MemoryWorkingSetBytes: postMemBytes,
-			OOMCount:              postOOMCount,
-			CurrentCPURequest:     proposal.Spec.ProposedResources.Requests.Cpu().DeepCopy(),
-			CurrentMemoryRequest:  proposal.Spec.ProposedResources.Requests.Memory().DeepCopy(),
-			Region:                r.WorkloadRegion,
-			CarbonWeight:          &r.CarbonWeight,
-		}
-
-		cpuDeltaMilli := prevCPUReq.MilliValue() - proposal.Spec.ProposedResources.Requests.Cpu().MilliValue()
-		memDeltaBytes := prevMemReq.Value() - proposal.Spec.ProposedResources.Requests.Memory().Value()
-		costSaved := engine.ComputeCostSavedUSDPerMonth(cpuDeltaMilli, memDeltaBytes, replicas)
-		carbonSaved := engine.ComputeCarbonSavedGramsPerMonth(cpuDeltaMilli, memDeltaBytes, replicas, carbonIntensity)
-
-		var reward float64
-		if wasRolledBack {
-			reward = -1.0
-			if costSaved > 0 {
-				reward = -rl.WeightedReward(costSaved, carbonSaved, r.CarbonWeight)
-			}
-		} else {
-			reward = rl.WeightedReward(costSaved, carbonSaved, r.CarbonWeight)
-			if postOOMCount > 0 || postThrottledSecs > (postUsageCores*0.2) {
-				reward *= 0.2
-			}
-		}
-		overallReward += reward
-
-		action := &rl.Action{
-			Adjustment: map[string]rl.ResourceAdjustment{
-				string(corev1.ResourceCPU): {
-					ResourceName: corev1.ResourceCPU,
-					NewRequest:   proposal.Spec.ProposedResources.Requests.Cpu().DeepCopy(),
-				},
-				string(corev1.ResourceMemory): {
-					ResourceName: corev1.ResourceMemory,
-					NewRequest:   proposal.Spec.ProposedResources.Requests.Memory().DeepCopy(),
-				},
-			},
-		}
-
-		if uErr := r.RLAgent.Update(ctx, reward, action, prevState, nextState); uErr != nil {
-			return fmt.Errorf("container %s: failed RL agent update: %w", containerName, uErr)
-		}
-	}
-
-	telemetry.RLUpdatesTotal.WithLabelValues(ref.Namespace, ref.Name, string(proposal.Status.Phase)).Inc()
-	return nil
 }
 
 func (r *OptimizationProposalReconciler) SetupWithManager(mgr ctrl.Manager) error {

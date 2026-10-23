@@ -58,9 +58,11 @@ Evidence: `applyPodResizeSSA` owns the `reconcilyx-operator` field manager and p
 
 ## Phase 5
 
-- `[ ]` `P1 Wiring` Call `agent.Update()` after successful optimization outcomes
-- `[ ]` `P1 Wiring` Compute and persist real reward inputs
-- `[ ]` `P1 Integration` Enable federated delta emission from live learning
+- `[x]` `P1 Wiring` Call `agent.Update()` after successful optimization outcomes
+- `[x]` `P1 Wiring` Compute and persist real reward inputs
+- `[x]` `P1 Integration` Enable federated delta emission from live learning
+
+Evidence: pre-actuation telemetry is captured into `status.learning.pre` before the resize, and the completed/rolled-back transitions call `applyRLLearning` in the same reconcile. Reward inputs (pre/post usage, throttle, OOM, cost and carbon deltas, snapped action percentages) are persisted under `status.learning`, with `finalized` providing per-proposal idempotency. The shared `SimpleQAgent` emits a federated delta from each `Update`. Unit tests cover completion, rollback, idempotency, legacy proposals, bucket capture, and action snapping (2026-10-23).
 
 ## Phase 6
 

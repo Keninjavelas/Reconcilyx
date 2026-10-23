@@ -533,6 +533,93 @@ spec:
                   evaluation
                 format: date-time
                 type: string
+              learning:
+                description: Learning records the pre-actuation state, reward inputs,
+                  and RL update outcome.
+                properties:
+                  completedAt:
+                    format: date-time
+                    type: string
+                  finalized:
+                    type: boolean
+                  outcome:
+                    type: string
+                  pre:
+                    additionalProperties:
+                      description: |-
+                        LearningContainerState captures the telemetry inputs for one container at a
+                        single point in the optimization lifecycle.
+                      properties:
+                        cpuThrottledSeconds:
+                          type: number
+                        cpuUsageCores:
+                          type: number
+                        gpuBucket:
+                          format: int64
+                          type: integer
+                        jvmBucket:
+                          format: int64
+                          type: integer
+                        memoryWorkingSetBytes:
+                          format: int64
+                          type: integer
+                        oomCount:
+                          format: int32
+                          type: integer
+                      type: object
+                    type: object
+                  results:
+                    additionalProperties:
+                      description: LearningContainerResult records the reward inputs
+                        and outcome for one container.
+                      properties:
+                        carbonSavedGramsCO2:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        costSavedUSD:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        cpuAdjustmentPercent:
+                          type: integer
+                        memoryAdjustmentPercent:
+                          type: integer
+                        post:
+                          description: |-
+                            LearningContainerState captures the telemetry inputs for one container at a
+                            single point in the optimization lifecycle.
+                          properties:
+                            cpuThrottledSeconds:
+                              type: number
+                            cpuUsageCores:
+                              type: number
+                            gpuBucket:
+                              format: int64
+                              type: integer
+                            jvmBucket:
+                              format: int64
+                              type: integer
+                            memoryWorkingSetBytes:
+                              format: int64
+                              type: integer
+                            oomCount:
+                              format: int32
+                              type: integer
+                          type: object
+                        reward:
+                          type: number
+                      type: object
+                    type: object
+                  reward:
+                    type: number
+                  skipReason:
+                    type: string
+                type: object
               phase:
                 description: Phase represents the current stage of the proposal lifecycle
                 type: string

@@ -199,6 +199,39 @@ type ExecutionMetadata struct {
 	TelemetryTimestamp metav1.Time `json:"telemetryTimestamp"`
 }
 
+// LearningContainerState captures the telemetry inputs for one container at a
+// single point in the optimization lifecycle.
+type LearningContainerState struct {
+	CPUUsageCores         float64 `json:"cpuUsageCores,omitempty"`
+	MemoryWorkingSetBytes int64   `json:"memoryWorkingSetBytes,omitempty"`
+	CPUThrottledSeconds   float64 `json:"cpuThrottledSeconds,omitempty"`
+	OOMCount              int32   `json:"oomCount,omitempty"`
+	JVMBucket             int64   `json:"jvmBucket,omitempty"`
+	GPUBucket             int64   `json:"gpuBucket,omitempty"`
+}
+
+// LearningContainerResult records the reward inputs and outcome for one container.
+type LearningContainerResult struct {
+	CPUAdjustmentPercent    int                    `json:"cpuAdjustmentPercent,omitempty"`
+	MemoryAdjustmentPercent int                    `json:"memoryAdjustmentPercent,omitempty"`
+	CostSavedUSD            *resource.Quantity     `json:"costSavedUSD,omitempty"`
+	CarbonSavedGramsCO2     *resource.Quantity     `json:"carbonSavedGramsCO2,omitempty"`
+	Reward                  float64                `json:"reward,omitempty"`
+	Post                    LearningContainerState `json:"post,omitempty"`
+}
+
+// LearningRecord persists the pre-actuation state and computed reward so the RL
+// update is idempotent across reconciles and auditable after completion.
+type LearningRecord struct {
+	Pre         map[string]LearningContainerState  `json:"pre,omitempty"`
+	Results     map[string]LearningContainerResult `json:"results,omitempty"`
+	Reward      float64                            `json:"reward,omitempty"`
+	Outcome     string                             `json:"outcome,omitempty"`
+	Finalized   bool                               `json:"finalized,omitempty"`
+	SkipReason  string                             `json:"skipReason,omitempty"`
+	CompletedAt *metav1.Time                       `json:"completedAt,omitempty"`
+}
+
 // OptimizationProposalStatus defines the observed state of OptimizationProposal.
 type OptimizationProposalStatus struct {
 	// Phase represents the current stage of the proposal lifecycle
@@ -250,6 +283,10 @@ type OptimizationProposalStatus struct {
 	// ExternalPRID is the ID of an external GitOps pull/merge request created for this proposal.
 	// +optional
 	ExternalPRID string `json:"externalPRID,omitempty"`
+
+	// Learning records the pre-actuation state, reward inputs, and RL update outcome.
+	// +optional
+	Learning *LearningRecord `json:"learning,omitempty"`
 }
 
 // +kubebuilder:object:root=true

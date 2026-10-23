@@ -40,6 +40,14 @@ Use `v4.0.0-beta` in documentation and releases. Do not describe Reconcilyx as p
 
 ## Remediation Log
 
+### 2026-10-23 — P1: learning feedback after optimization outcomes
+
+- The controller now captures the pre-actuation telemetry state before applying a resize and persists it in `status.learning.pre`; the reward update runs inside the same reconcile that marks a proposal `Completed` or `RolledBack` instead of waiting for an unrelated event.
+- `applyRLLearning` computes reward from the stored pre-state, post-actuation telemetry, replica count, cost/carbon deltas, throttling, and OOM evidence. It persists per-container results and a finalized outcome in `status.learning`, which also makes the update idempotent per proposal; the process-wide learning flag is gone.
+- Actions are trained with the snapped percentage that was actually applied, and rollbacks restore the pre-actuation requests in the next state while penalizing the attempted action. A rolled-back proposal is no longer silently skipped.
+- The shared Q-agent already carries the federated emitter, so live `Update` calls now produce deltas for the spoke path. A failed post-actuation telemetry read leaves the record unfinalized and requeues the terminal proposal after one minute for a retry.
+- Evidence: `go build ./...` passed; focused controller tests for completion, rollback, idempotency, legacy skip, bucket capture, and action snapping passed. CRDs and deepcopy code were regenerated for the new status fields.
+
 ### 2026-10-23 — P0: public claims truth-reset
 
 - Removed the unreachable Vercel demo link from `README.md` and `FEATURE_MATRIX.md`; replaced it with the embedded-console model. No public hosted instance is claimed.
