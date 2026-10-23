@@ -757,7 +757,10 @@ type whatIfResponse struct {
 	CPUDelta           string `json:"cpuDelta"`
 	MemoryDelta        string `json:"memoryDelta"`
 	SavingsUSDPerMonth string `json:"savingsUSDPerMonth"`
-	Rationale          string `json:"rationale"`
+	// CostDeltaUSDPerMonth is signed: positive means the proposed resources
+	// increase monthly spend, negative means they reduce it.
+	CostDeltaUSDPerMonth float64 `json:"costDeltaUSDPerMonth"`
+	Rationale            string  `json:"rationale"`
 }
 
 func (s *Server) handleWhatIf(w http.ResponseWriter, r *http.Request) {
@@ -814,19 +817,21 @@ func (s *Server) handleWhatIf(w http.ResponseWriter, r *http.Request) {
 	savingsCPU := (float64(cpu1.MilliValue()-cpu2.MilliValue()) / 1000.0) * 25.0
 	savingsMem := (float64(mem1.Value()-mem2.Value()) / (8 * 1024 * 1024 * 1024)) * 3.0
 	savingsTotal := savingsCPU + savingsMem
-	if savingsTotal < 0 {
-		savingsTotal = 0
+	reportedSavings := savingsTotal
+	if reportedSavings < 0 {
+		reportedSavings = 0
 		rationale += " Note: proposed configuration increases spend."
 	}
 
 	writeJSON(w, http.StatusOK, whatIfResponse{
-		Allowed:            risk < 70,
-		ConfidenceScore:    confidence,
-		RiskScore:          risk,
-		CPUDelta:           deltaCPU.String(),
-		MemoryDelta:        deltaMem.String(),
-		SavingsUSDPerMonth: fmt.Sprintf("%.2f", savingsTotal),
-		Rationale:          rationale,
+		Allowed:              risk < 70,
+		ConfidenceScore:      confidence,
+		RiskScore:            risk,
+		CPUDelta:             deltaCPU.String(),
+		MemoryDelta:          deltaMem.String(),
+		SavingsUSDPerMonth:   fmt.Sprintf("%.2f", reportedSavings),
+		CostDeltaUSDPerMonth: -savingsTotal,
+		Rationale:            rationale,
 	})
 }
 

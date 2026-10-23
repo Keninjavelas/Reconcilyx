@@ -48,24 +48,7 @@ var proposalsCmd = &cobra.Command{
 			return fmt.Errorf("list proposals failed (HTTP %d): %s", status, extractAPIMessage(body))
 		}
 
-		var env struct {
-			Items []struct {
-				Name             string `json:"name"`
-				Namespace        string `json:"namespace"`
-				Cluster          string `json:"cluster,omitempty"`
-				WorkloadKind     string `json:"workloadKind"`
-				WorkloadName     string `json:"workloadName"`
-				Recommendation   string `json:"recommendation"`
-				ApprovalState    string `json:"approvalState"`
-				Phase            string `json:"phase"`
-				RiskScore        int32  `json:"riskScore"`
-				ConfidenceScore  int32  `json:"confidenceScore"`
-				EstimatedSavings string `json:"estimatedSavings,omitempty"`
-				CarbonSavedHuman string `json:"carbonSavedHuman,omitempty"`
-				CreatedAt        string `json:"createdAt"`
-			} `json:"items"`
-			Total int `json:"total"`
-		}
+		var env proposalListResponse
 		if err := json.Unmarshal(body, &env); err != nil {
 			return fmt.Errorf("failed to parse proposals response: %w", err)
 		}

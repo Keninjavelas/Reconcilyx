@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -14,8 +15,10 @@ var (
 )
 
 var RootCmd = &cobra.Command{
-	Use:   "kubectl-reconcilyx",
-	Short: "kubectl plugin for Reconcilyx autonomous FinOps & carbon optimization",
+	Use:           "kubectl-reconcilyx",
+	Short:         "kubectl plugin for Reconcilyx autonomous FinOps & carbon optimization",
+	SilenceErrors: true,
+	SilenceUsage:  true,
 	Long: `kubectl reconcilyx allows cluster administrators and DevOps engineers to
 scan Kubernetes workloads for resource waste, estimate carbon emission savings,
 and inspect or approve AI-driven optimization proposals directly from the CLI.`,
@@ -24,7 +27,12 @@ and inspect or approve AI-driven optimization proposals directly from the CLI.`,
 func Execute() {
 	if err := RootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		code := 1
+		var exitErr *exitCodeError
+		if errors.As(err, &exitErr) {
+			code = exitErr.code
+		}
+		os.Exit(code)
 	}
 }
 
