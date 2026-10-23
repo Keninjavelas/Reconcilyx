@@ -60,6 +60,7 @@ type RemoteReconciler struct {
 // +kubebuilder:rbac:groups=optimization.reconcilyx.io,resources=optimizationproposals,verbs=get;list;watch;patch;update
 // +kubebuilder:rbac:groups=optimization.reconcilyx.io,resources=optimizationproposals/status,verbs=get;patch;update
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;patch;update
+// +kubebuilder:rbac:groups=core,resources=pods/resize,verbs=update;patch
 // +kubebuilder:rbac:groups=core,resources=pods/status,verbs=get;patch
 
 // Reconcile is the main loop for the Spoke Agent.

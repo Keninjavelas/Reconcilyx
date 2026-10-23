@@ -3,7 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.17.1
+    controller-gen.kubebuilder.io/version: v0.21.0
   name: optimizationpolicies.optimization.reconcilyx.io
 spec:
   group: optimization.reconcilyx.io
@@ -47,6 +47,44 @@ spec:
           spec:
             description: spec defines the desired state of OptimizationPolicy
             properties:
+              gitOps:
+                description: GitOps configures Pull Request based actuation.
+                properties:
+                  autoMerge:
+                    description: AutoMerge controls whether PRs are merged automatically
+                      when CI passes.
+                    type: boolean
+                  baseBranch:
+                    default: main
+                    description: 'BaseBranch is the target branch for PRs (default:
+                      main).'
+                    type: string
+                  enabled:
+                    description: |-
+                      Enabled toggles GitOps mode. When true, approved proposals generate
+                      Pull Requests instead of live-patching the cluster.
+                    type: boolean
+                  manifestsPath:
+                    description: ManifestsPath is the directory within the repo containing
+                      manifests.
+                    type: string
+                  owner:
+                    description: Owner is the repository owner (GitHub org/user, GitLab
+                      namespace).
+                    type: string
+                  provider:
+                    default: mock
+                    description: Provider selects the Git hosting provider (mock,
+                      github, gitlab).
+                    enum:
+                    - mock
+                    - github
+                    - gitlab
+                    type: string
+                  repo:
+                    description: Repo is the repository name where manifests are stored.
+                    type: string
+                type: object
               mode:
                 default: Propose
                 description: Mode determines if proposals should be observed, proposed,
@@ -128,6 +166,13 @@ spec:
               safetyConstraints:
                 description: SafetyConstraints defines availability and latency guardrails
                 properties:
+                  carbonWeight:
+                    description: |-
+                      CarbonWeight weights multi-objective RL reward between cost (0.0) and carbon (1.0).
+                      Cost-only (default) = 0.0, 50/50 = 0.5, carbon-only = 1.0.
+                    maximum: 1
+                    minimum: 0
+                    type: number
                   confidenceRequirement:
                     description: ConfidenceRequirement defines the minimum required
                       confidence score (0-100).
@@ -158,13 +203,6 @@ spec:
                     maximum: 100
                     minimum: 0
                     type: integer
-                  carbonWeight:
-                    description: CarbonWeight weights multi-objective RL reward
-                      between cost (0.0) and carbon (1.0). Cost-only (default)
-                      = 0.0, 50/50 = 0.5, carbon-only = 1.0.
-                    maximum: 1.0
-                    minimum: 0.0
-                    type: number
                 type: object
               targetSelectors:
                 description: TargetSelectors defines which workloads the policy applies

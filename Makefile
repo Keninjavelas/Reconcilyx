@@ -45,7 +45,8 @@ help: ## Display this help.
 
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
-	"$(CONTROLLER_GEN)" rbac:roleName=manager-role crd:allowDangerousTypes=true webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+	"$(CONTROLLER_GEN)" rbac:roleName=manager-role webhook paths="./internal/controller" paths="./internal/agent" paths="./internal/webhook"
+	"$(CONTROLLER_GEN)" crd:allowDangerousTypes=true paths="./api/v1alpha1" output:crd:artifacts:config=config/crd/bases
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
@@ -329,8 +330,13 @@ build-cli: ## Compile kubectl-reconcilyx CLI plugin binary into bin/
 	@mkdir -p bin
 	go build -o bin/kubectl-reconcilyx ./cmd/kubectl-reconcilyx
 
+.PHONY: helm-crds
+helm-crds: manifests ## Sync generated CRDs into the Helm chart.
+	@mkdir -p charts/reconcilyx/crds
+	cp config/crd/bases/*.yaml charts/reconcilyx/crds/
+
 .PHONY: helm-chart
-helm-chart: ## Package Helm chart for release
+helm-chart: helm-crds ## Package Helm chart for release
 	@mkdir -p dist
 	helm package charts/reconcilyx -d dist/
 

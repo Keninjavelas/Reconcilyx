@@ -1,9 +1,10 @@
 replicaCount: 1
 
 image:
-  repository: ghcr.io/reconcilyx/operator
+  repository: ghcr.io/keninjavelas/reconcilyx
   pullPolicy: IfNotPresent
-  tag: "v3.0.0"
+  # Defaults to .Chart.AppVersion when empty. Set this to an image tag you have published.
+  tag: ""
 
 imagePullSecrets: []
 nameOverride: ""

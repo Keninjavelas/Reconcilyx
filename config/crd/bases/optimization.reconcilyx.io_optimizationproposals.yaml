@@ -3,7 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.17.1
+    controller-gen.kubebuilder.io/version: v0.21.0
   name: optimizationproposals.optimization.reconcilyx.io
 spec:
   group: optimization.reconcilyx.io
@@ -106,6 +106,31 @@ spec:
                       x-kubernetes-int-or-string: true
                     description: Estimated reduction/increase in compute/memory limits.
                     type: object
+                type: object
+              migrationPlan:
+                description: MigrationPlan specifies target cloud details and migration
+                  script for cross-cloud arbitrage
+                properties:
+                  carbonSavedGrams:
+                    type: number
+                  costDeltaUSD:
+                    type: number
+                  migrationScript:
+                    type: string
+                  sourceCluster:
+                    type: string
+                  targetCloud:
+                    type: string
+                  targetInstance:
+                    type: string
+                  targetRegion:
+                    type: string
+                required:
+                - carbonSavedGrams
+                - costDeltaUSD
+                - targetCloud
+                - targetInstance
+                - targetRegion
                 type: object
               observedResources:
                 description: ObservedResources contains the baseline usage and current
@@ -498,6 +523,10 @@ spec:
               expirationTime:
                 description: ExpirationTime defines when this proposal naturally expires
                 format: date-time
+                type: string
+              externalPRID:
+                description: ExternalPRID is the ID of an external GitOps pull/merge
+                  request created for this proposal.
                 type: string
               lastEvaluationTime:
                 description: LastEvaluationTime is the timestamp of the last policy
