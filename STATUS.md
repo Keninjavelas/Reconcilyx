@@ -40,6 +40,16 @@ Use `v4.0.0-beta` in documentation and releases. Do not describe Reconcilyx as p
 
 ## Remediation Log
 
+### 2026-10-23 — P0/P1: autoscaler gate, GitOps completion, API auth rehearsal
+
+- Added `AutoscalerConflictGate` to the JIT execution gate. It lists HPAs (`autoscaling/v2`) and VPAs (`autoscaling.k8s.io/v1`, unstructured) in the workload namespace and rejects execution when an active autoscaler targets the Deployment. VPAs with `updateMode: Off` are recommendation-only and do not block; a missing VPA CRD or RBAC is tolerated (the rule is skipped) instead of blocking every optimization. The gate is wired in `SetupWithManager` and has RBAC markers plus Helm chart rules for both API groups.
+- Replaced the placeholder GitOps diff with real manifest patching. `ResolveManifest` locates the existing Deployment YAML under the policy's `manifestsPath`, applies proposed requests to the tracked containers, raises limits when a request would exceed them, annotates `reconcilyx.io/last-proposal`, and commits the complete file. A missing manifest is an error, because a partial document in an auto-synced directory would prune live fields. Container names, unrelated documents, namespaces, and replicas are preserved.
+- Completed the external-approval path: proposals entering `AwaitingExternalApproval` now record the PR ID, requeue every minute, and transition to `Completed` when the PR/MR merges, `Rejected`/`ApprovalRejected` when it is closed, or fail when no PR ID is recorded. The applied policy is re-resolved by namespace first and cluster-wide second.
+- Auto-merge is gated by `spec.gitOps.autoMerge` **and** confidence ≥ 80 / risk ≤ 20. The PR body carries `<!-- reconcilyx-auto-merge: true -->`; the webhook re-reads PR state and merges only when the marker is present, the head branch starts with `reconcilyx/`, and the PR is not already merged/closed. GitHub/GitLab webhook signatures are verified. The manager starts the listener in-process when `AUTOMERGE_WEBHOOK_ADDR` is set.
+- GitHub/GitLab providers are now idempotent (branch/MR/PR already exists → reuse), read repository files, report PR status, and honor the resolved `FilePath`.
+- CORS/API-key behavior is exercised in `internal/api/security_test.go` over a real `httptest` listener on the production middleware chain: missing/wrong/header/cookie keys, public routes, dev mode, CORS allow/deny, trailing-slash normalization, and preflight without credentials.
+- Evidence: `go build ./...` passed; `go test ./internal/gitops/... ./internal/webhook/... ./internal/api -count=1` passed; `go test ./internal/controller -run 'TestReconcileExternalApproval|TestCreateGitOpsPR|TestAutoscalerConflictGate|TestExecutionGate' -count=1` passed (2026-10-23). No live repository, cluster, or deployed backend was exercised because Docker Desktop/Kind was not running; the deployed CORS item remains open in `GITHUB_ISSUES.md`.
+
 ### 2026-10-23 — P1: live cloud pricing clients with retry and cache
 
 - AWS now uses the authenticated Price List Query API (`AWSPriceListService.GetProducts`) with in-process SigV4 signing, Linux/Shared/Used filters, and optional `AWS_SESSION_TOKEN`; credentials are read from `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, and the bundled rate table is used when they are absent.

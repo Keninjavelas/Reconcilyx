@@ -33,3 +33,9 @@ To elevate Reconcilyx to a true "World-Class / Staff-Level" distributed system, 
 8. **Hardcoded Telemetry Provider:** The system assumes Prometheus. It should support an interface allowing Datadog, Dynatrace, or AWS CloudWatch plugins.
 9. **No VPA/HPA Conflict Detection:** Reconcilyx does not currently check if a HorizontalPodAutoscaler or VerticalPodAutoscaler is actively managing the target workload. If it is, Reconcilyx will conflict directly with them.
 10. **Test Coverage Gaps:** While the controller logic is tested via `envtest`, there is no end-to-end (E2E) suite spinning up a real Kind cluster, deploying Prometheus, simulating load, and validating the final GitOps outcome via CI/CD.
+
+### Remediation Log (2026-10-23)
+
+- **#9 VPA/HPA conflict detection:** resolved in code. The JIT execution gate rejects a resize when an active HPA or VPA targets the workload; `updateMode: Off` VPAs are ignored, a missing VPA CRD is tolerated, and the check has unit coverage plus RBAC in the generated role and Helm chart. Live verification still requires a Kind cluster.
+- **GitOps merge path (related to #5/#10):** the placeholder PR diff is gone. Reconcilyx patches the existing manifest, gates auto-merge on policy plus confidence/risk, authorizes webhooks by marker and branch prefix, and polls `AwaitingExternalApproval` until the PR merges or closes. No live repository was exercised.
+- **In-place persistence:** the remaining architectural limitation is now explicit — Pod `resize` changes do not rewrite the Deployment template, so GitOps mode is the persistence path.

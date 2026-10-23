@@ -99,7 +99,7 @@ The model provider must be reachable from the Hub. Passing a key through the CLI
 
 ## 5. GitOps
 
-Policies can enable GitOps with the `mock`, `github`, or `gitlab` provider. When enabled, approved proposals open a pull request instead of patching pods directly. Provider tokens are configured on the Hub (`GITHUB_TOKEN`, `GITLAB_TOKEN`), not in the browser. Auto-merge settings are policy fields; consult your repository protections before enabling them.
+Policies can enable GitOps with the `mock`, `github`, or `gitlab` provider. When enabled, approved proposals patch the existing Deployment manifest and open a pull request instead of resizing pods directly. The proposal waits in `AwaitingExternalApproval` until the PR/MR merges (`Completed`) or closes (`Rejected`); the GitOps controller performs the rollout. Provider tokens are configured on the Hub (`GITHUB_TOKEN`, `GITLAB_TOKEN`), not in the browser. Auto-merge settings are policy fields; Reconcilyx also requires confidence ≥ 80 and risk ≤ 20 before it marks a PR auto-mergeable, and consult your repository protections before enabling it. See [gitops.md](gitops.md) for manifest resolution and webhook setup.
 
 ---
 
@@ -112,6 +112,8 @@ These are known limits, not configuration mistakes:
 - **GPU/DCGM and JVM heap telemetry** is queried from Prometheus when the DCGM and JMX exporters are present; it has not been validated against a live exporter deployment, and workloads without exporters report no GPU/JVM data rather than synthetic values.
 - **JVM `-Xmx` rewriting** exists as an engine helper and test path; it is not wired into the live actuator.
 - **Multi-cloud migration** produces a proposal and a generated Velero backup/restore script. Reconcilyx does not execute the migration.
+- **In-place resize is ephemeral:** the operator changes running Pods and the owning ReplicaSet, not the Deployment template. A rollout or reschedule restores the original requests; use a GitOps-enabled policy when the change must persist.
+- **Autoscaler conflicts block execution:** proposals targeting a Deployment with an active HPA or VPA are rejected before mutation (VPAs in `updateMode: Off` are recommendation-only). Disable or retarget the autoscaler first.
 - **Federated learning** supports stable/canary channel selection (`RECONCILYX_MODEL_CHANNEL`) and canary rollback; a production multi-cluster rollout is not claimed.
 - **Cloud pricing**: AWS, GCP, and Azure list-price clients are implemented and fall back to a bundled catalog. Spot prices are estimates derived from on-demand prices, not live spot-market feeds, and the clients have not been validated against real cloud accounts.
 - **Workload kinds**: execution supports Deployments. Other kinds may be evaluated but are not actuated by the in-place resize path.

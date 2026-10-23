@@ -15,6 +15,7 @@ Reconcilyx is in active beta hardening. It is not production-ready and should no
 | Build and automated tests | Locally verified; repeat in your environment |
 | Dashboard | React console embedded in the Hub; optional static hosting pointed at a Hub URL |
 | API, CLI, controller, and integrations | Implemented areas remain beta until end-to-end production-like validation |
+| Actuation safety | Kill switch, health and TTL gates, and HPA/VPA conflict rejection before mutation; in-place resizes are ephemeral, GitOps is the persistence path |
 | eBPF and node consolidation | Explicitly deferred to v5.0 planning |
 
 The conservative inventory is [FEATURE_MATRIX.md](FEATURE_MATRIX.md). [STATUS.md](STATUS.md) and [GITHUB_ISSUES.md](GITHUB_ISSUES.md) are the release and remediation sources of truth.

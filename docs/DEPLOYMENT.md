@@ -65,9 +65,14 @@ docker run -d \
   ghcr.io/keninjavelas/reconcilyx:v4.0.0-beta
 ```
 
-- `RECONCILYX_API_KEY` is optional. When set, every API request, including those from the UI, must send `X-API-Key`.
-- `RECONCILYX_CORS_ORIGINS` is only needed when the dashboard is hosted on a different origin. Leave it unset for the embedded UI.
+- `RECONCILYX_API_KEY` is optional. When set, every API request, including those from the UI, must send `X-API-Key` (or the `reconcilyx_api_key` cookie used by the browser).
+- `RECONCILYX_CORS_ORIGINS` is only needed when the dashboard is hosted on a different origin. Leave it unset for the embedded UI. The value is a comma-separated list; trailing slashes are ignored.
+- `AUTOMERGE_WEBHOOK_ADDR` (for example `:8090`) starts the GitOps auto-merge webhook inside the manager. Leave it unset to keep the listener disabled, and publish the port separately if the provider must reach it.
+- `GITOPS_WEBHOOK_SECRET` is the shared secret for `/webhook` (GitHub `X-Hub-Signature-256`, GitLab `X-Gitlab-Token`). With it unset, webhook verification is skipped and should not be used in production.
+- `GITHUB_TOKEN` / `GITLAB_TOKEN` (and optional `GITLAB_BASE_URL`) authenticate the GitOps providers.
 - The image is distroless and runs with a read-only root filesystem compatible configuration; do not mount volumes other than the kubeconfig.
+
+> **Template persistence:** in-place resizing changes running Pods, not the Deployment template, so the values revert on the next rollout. Use a GitOps-enabled policy when the optimization must persist. See [gitops.md](gitops.md#template-persistence).
 
 ### Step 4: Configure automatic HTTPS with Caddy
 

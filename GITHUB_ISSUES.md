@@ -107,6 +107,8 @@ Decision: eBPF telemetry and node consolidation/Karpenter actuation are deferred
 - `[x]` `P1 Docs` Remove dead Vercel/Pages demo claims and name the embedded console as the supported path
 - `[ ]` `P1 Security` Validate CORS and authentication against a deployed user-managed backend
 
+Local pre-deploy rehearsal complete (2026-10-23): `internal/api/security_test.go` starts a real `httptest` listener on the production middleware chain and verifies missing/wrong/header/cookie API keys, public routes, dev mode, allowed/denied CORS origins, trailing-slash normalization, and preflight behavior without credentials. The deployed-backend half remains open: no Kind/Docker engine was running on the workstation, so a live user-managed backend was not exercised. Re-run the same checks against the VPS or Kind deployment before closing this item.
+
 Decision: no GitHub Pages or Vercel deployment URL is claimed. `.github/workflows/deploy-ui.yml` remains an optional, unverified static-hosting path.
 
 ## Phase 11
@@ -120,3 +122,13 @@ P0 beta remediation, completed `2026-10-23`:
 - `[x]` `P0 Docs` Public demo and release-tracker claims truth-reset
 
 Evidence is recorded per item in [STATUS.md](STATUS.md).
+
+## Cross-Cutting Remediation (2026-10-23)
+
+- `[x]` `P0 Safety` Detect HPA/VPA conflicts before in-place execution
+- `[x]` `P1 Wiring` Patch real manifests in GitOps PRs and complete `AwaitingExternalApproval` proposals
+- `[x]` `P1 Security` Gate auto-merge webhooks on the Reconcilyx marker and branch prefix
+- `[x]` `P1 Wiring` Raise limits when a proposed request exceeds them during manifest patching
+- `[ ]` `P0 Validation` Exercise the autoscaler gate, GitOps PR flow, and CORS/API-key path against a running Kind cluster (blocked: Docker engine not running)
+
+Evidence: HPA/VPA lookups, Off-mode exemption, and missing-CRD tolerance are covered in `internal/controller/autoscaler_gate_test.go`; manifest patching and missing-manifest refusal in `internal/gitops/manifest_test.go` and `proposal_to_pr_test.go`; external-approval transitions in `internal/controller/gitops_approval_test.go`; webhook authorization in `internal/webhook/gitops_webhook_test.go`; CORS/API-key behavior in `internal/api/security_test.go`. `go build ./...` and the focused package tests passed on 2026-10-23. Live-repository and live-cluster validation remain open.

@@ -23,7 +23,7 @@ No public demo instance is operated. The React console is embedded in the Hub an
 | Multi-Cloud Arbitrage | 0 | 5 | 0 | AWS/GCP/Azure live list-price clients with TTL cache, retries, and bundled fallbacks; spot prices are on-demand estimates; no live-account validation yet |
 | Application Intelligence | 0 | 2 | 3 | JVM JMX heap and DCGM GPU metrics are queried from Prometheus and feed RL state buckets; live exporter validation still pending |
 | BYOK ChatOps | 0 | 7 | 0 | Real CRUD tool-backed answers; confirm-token safety on writes; audit log captures every LLM action (reads + pending-confirm writes) |
-| Shift-Left FinOps | 0 | 3 | 1 | PR logic exists, but runtime wiring and config depth are incomplete |
+| Shift-Left FinOps | 0 | 3 | 1 | Policy-driven manifest patching, idempotent PR/MR creation, confidence/risk-gated auto-merge, webhook authorization, and external-approval polling are wired; live repository validation pending |
 | Agentic AI | 0 | 4 | 0 | approve/reject/rollback → real CRD patches + audit + dispatcher events; confirm token format validated; read actions also audited |
 | Live Node Optimization | 0 | 0 | 0 | ⏳ **Moved to v5.0 planned** — Karpenter actuation / node drain out of scope for v4.0-beta. See `README.md` section "v5.0 Planned". Heuristic stub still callable; emits WARN on first use. |
 | Real-Time eBPF Telemetry | 0 | 0 | 0 | ⏳ **Moved to v5.0 planned** — Cilium/Pixie/Tetragon gRPC out of scope for v4.0-beta. Fallback = Prometheus WorkloadInspector (1 min granularity). Stub emits WARN on first use. |
@@ -31,8 +31,8 @@ No public demo instance is operated. The React console is embedded in the Hub an
 | Observability & Monitoring | 0 | 5 | 0 | Good instrumentation foundation, but not fully validated end-to-end |
 | User Experience | 0 | 4 | 2 | Embedded console covers proposals, savings, forecast, policies, and settings; responsive proposal queue, assistant drawer, and confirmation prompts. UI behaviour was exercised against a mock control plane, not a live cluster. |
 | Deployment & Packaging | 0 | 5 | 1 | Helm/CLI, embedded UI, and a Kind + ngrok evaluation guide exist; no public hosted instance is operated, and backend validation remains pending |
-| Security | 0 | 6 | 1 | Webhooks and API key auth exist; federated endpoints reuse the same X-API-Key header |
-| Integrations | 0 | 4 | 1 | Prometheus + GitOps + live cloud pricing + live carbon; Karpenter + eBPF moved to v5.0 |
+| Security | 0 | 6 | 1 | API-key auth and CORS are covered by tests over a real listener; auto-merge webhook requires a Reconcilyx marker, a `reconcilyx/` head branch, and verified signatures; federated endpoints reuse the same X-API-Key header |
+| Integrations | 0 | 4 | 1 | Prometheus + GitOps (manifest patching, external approval, auto-merge webhook) + live cloud pricing + live carbon; Karpenter + eBPF moved to v5.0 |
 | Documentation | 0 | 4 | 2 | README now lists real features + v5.0 planned section; FEATURE_MATRIX reflects reality |
 | Roadmap | 0 | 0 | 8 | Planned items only (now includes eBPF + node consolidation deferred to v5.0) |
 
@@ -45,9 +45,13 @@ No public demo instance is operated. The React console is embedded in the Hub an
 2. `go test ./...` passes with envtest binaries installed
    Status: complete on `2026-07-31`
 3. API/UI contracts are validated against a running backend
+   Status: pending — contracts were exercised against a mock control plane; live backend still required
 4. CLI actions report and propagate real API failures
+   Status: pending
 5. Live actuation uses the intended Kubernetes mutation strategy in a production-like cluster
+   Status: pending — unit/envtest coverage exists; Kind run blocked while Docker engine is stopped
 6. The embedded console is served by the Hub, and its CORS/API-key guidance is validated against a running control plane
+   Status: partial — middleware validated over a real HTTP listener in tests; deployed control plane not exercised
 
 ## Maintenance Note
 
