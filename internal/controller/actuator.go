@@ -26,6 +26,20 @@ const (
 // other actor (VPA, HPA, Argo CD, human kubectl apply, etc.).
 const ResizeFieldOwner = FieldManagerName
 
+// isActuatableRecommendation reports whether the in-place resize actuator can
+// execute the recommendation. Keep this as the single source of truth shared by
+// the JIT execution gate and the actuator itself.
+func isActuatableRecommendation(rec v1alpha1.RecommendationType) bool {
+	switch rec {
+	case v1alpha1.RecommendationRightSize,
+		v1alpha1.RecommendationReduceCPURequest,
+		v1alpha1.RecommendationReduceMemoryRequest:
+		return true
+	default:
+		return false
+	}
+}
+
 // Actuator executes safe mutations on workloads.
 type Actuator interface {
 	AcquireLock(ctx context.Context, proposal *v1alpha1.OptimizationProposal) (bool, error)
@@ -199,12 +213,8 @@ func wrapResizeError(err error, podName, namespace string) error {
 }
 
 func (a *defaultActuator) ApplyMutation(ctx context.Context, proposal *v1alpha1.OptimizationProposal) error {
-	switch proposal.Spec.Recommendation {
-	case v1alpha1.RecommendationRightSize,
-		v1alpha1.RecommendationReduceCPURequest,
-		v1alpha1.RecommendationReduceMemoryRequest:
-	default:
-		return fmt.Errorf("forbidden recommendation type: %s", proposal.Spec.Recommendation)
+	if !isActuatableRecommendation(proposal.Spec.Recommendation) {
+		return fmt.Errorf("unsupported recommendation type: %s", proposal.Spec.Recommendation)
 	}
 
 	if proposal.Status.ExecutionSnapshot == nil || len(proposal.Status.ExecutionSnapshot.ContainerResources) == 0 {

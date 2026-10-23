@@ -23,7 +23,7 @@ type ExecutionGate interface {
 	ValidateJIT(ctx context.Context, proposal *v1alpha1.OptimizationProposal, policy *v1alpha1.OptimizationPolicy) (ExecutionDecision, error)
 }
 
-type defaultExecutionGate struct{
+type defaultExecutionGate struct {
 	actuationControl ActuationControl
 	healthGate       WorkloadHealthGate
 }
@@ -55,10 +55,9 @@ func (g *defaultExecutionGate) ValidateJIT(ctx context.Context, proposal *v1alph
 		return ExecutionExpire, nil
 	}
 
-	// 4. Restrict Execution Scope (Phase 3A constraint)
-	if proposal.Spec.Recommendation != v1alpha1.RecommendationReduceCPURequest &&
-		proposal.Spec.Recommendation != v1alpha1.RecommendationReduceMemoryRequest {
-		return ExecutionReject, fmt.Errorf("recommendation type %s is forbidden in Phase 3A actuation", proposal.Spec.Recommendation)
+	// 4. Restrict execution scope to what the in-place resize actuator supports.
+	if !isActuatableRecommendation(proposal.Spec.Recommendation) {
+		return ExecutionReject, fmt.Errorf("recommendation type %s is not supported by in-place resize actuation", proposal.Spec.Recommendation)
 	}
 
 	// 5. Verify Target Liveness

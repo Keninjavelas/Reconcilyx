@@ -37,4 +37,12 @@ Reconcilyx is an open-source Kubernetes optimization platform in active beta har
 
 Use `v4.0.0-beta` in documentation and releases. Do not describe Reconcilyx as production-ready, fully verified, 95% complete, CNCF-approved, or commercially hosted without evidence for each specific claim.
 
+## Remediation Log
+
+### 2026-10-23 — P0: JIT gate accepts engine-generated RightSize proposals
+
+- `internal/controller/actuator.go` and `internal/controller/execution_gate.go` now share `isActuatableRecommendation`, removing the drift that rejected every engine-generated `RightSize` proposal at execution time.
+- Added `internal/controller/execution_gate_test.go`: RightSize, ReduceCPURequest, and ReduceMemoryRequest execute; ScaleToZero and MigrateCloud are rejected; kill switch, health, phase, and TTL paths are covered.
+- Evidence: `go test -c` + `controller.test.exe -test.run TestExecutionGate` passed (13 subtests).
+
 See [FEATURE_MATRIX.md](FEATURE_MATRIX.md) for the feature inventory and [GITHUB_ISSUES.md](GITHUB_ISSUES.md) for the remediation tracker.
