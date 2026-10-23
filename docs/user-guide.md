@@ -54,7 +54,12 @@ The v4 beta actuator executes `RightSize`, `ReduceCPURequest`, and `ReduceMemory
 | `Propose` | Queue proposals for human review. |
 | `AutoApply` | Approve proposals that satisfy the policy's safety constraints. |
 
-Guardrails in the policy cover minimum replicas, risk and confidence thresholds, carbon weight, cooldown, and rollback error rate. Workload protection can exclude sidecar containers.
+Guardrails in the policy cover minimum replicas, risk and confidence thresholds, carbon weight, cooldown, and rollback error rate. Workload protection can exclude sidecar containers. Two execution-time guards apply only to scheduled proposals:
+
+- `changeBudget.maxChangesPerWindow` counts executed changes to the same workload inside a rolling `window` (default `24h`). A budget of `0` disables the check; a proposal is rejected when the count has already reached the budget.
+- `blastRadius.maxReplicasPerChange` rejects changes to Deployments or StatefulSets above the replica cap. DaemonSets are rejected when the cap is enabled because their node count is unknown. `blastRadius.requireCanaryLabel` additionally requires `reconcilyx.io/canary=true` on the workload or its pod template.
+
+The JIT gate fails closed: if an applied policy disappeared or the Hub cannot read the target workload, the proposal is marked `Failed` with the gate reason instead of executing.
 
 ### CLI examples
 
@@ -63,9 +68,28 @@ kubectl-reconcilyx proposals
 kubectl-reconcilyx approve payment-service-rightsize-7f2c -n production --reason "P95 confirmed"
 kubectl-reconcilyx reject search-indexer-scale-1d33 -n batch --reason "Cold-start tolerance is unknown"
 kubectl-reconcilyx rollback ledger-worker-rightsize-2b8e -n payments --reason "Latency regression"
+
+# Inspect the Hub's optimization opportunity list (no synthetic fallback data)
+kubectl-reconcilyx scan -n production
+kubectl-reconcilyx scan -o json > scan.json
+
+# Reconcile predicted impact with the realized learning receipt
+kubectl-reconcilyx explain payment-service-rightsize-7f2c -n production
+kubectl-reconcilyx explain payment-service-rightsize-7f2c -n production -o json
+
+# Simulate a resize and fail CI on an unsafe or cost-increasing change
+kubectl-reconcilyx what-if \
+  --current-cpu 500m --current-memory 256Mi \
+  --proposed-cpu 250m --proposed-memory 128Mi \
+  --fail-on not-allowed,cost-increase
+
+# Compare manifests with a git base and enforce guardrails
+kubectl-reconcilyx diff --manifests deploy/ --base origin/main \
+  --fail-on cost-increase,guardrail
+kubectl-reconcilyx diff --manifests deploy/app.yaml --base HEAD~1 -o json
 ```
 
-Reject requires `--reason`. Approve and rollback default to a generic reason. The CLI prints the API error for non-2xx responses.
+Reject requires `--reason`. Approve and rollback default to a generic reason. The CLI prints the API error for non-2xx responses. `scan`, `explain`, `what-if`, and `diff` accept `-o json`; `what-if` and `diff` exit `2` when a `--fail-on` condition triggers and `1` for transport, HTTP, or validation errors.
 
 ---
 

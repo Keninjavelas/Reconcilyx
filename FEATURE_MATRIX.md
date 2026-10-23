@@ -23,7 +23,7 @@ No public demo instance is operated. The React console is embedded in the Hub an
 | Multi-Cloud Arbitrage | 0 | 5 | 0 | AWS/GCP/Azure live list-price clients with TTL cache, retries, and bundled fallbacks; spot prices are on-demand estimates; no live-account validation yet |
 | Application Intelligence | 0 | 2 | 3 | JVM JMX heap and DCGM GPU metrics are queried from Prometheus and feed RL state buckets; live exporter validation still pending |
 | BYOK ChatOps | 0 | 7 | 0 | Real CRUD tool-backed answers; confirm-token safety on writes; audit log captures every LLM action (reads + pending-confirm writes) |
-| Shift-Left FinOps | 0 | 3 | 1 | Policy-driven manifest patching, idempotent PR/MR creation, confidence/risk-gated auto-merge, webhook authorization, and external-approval polling are wired; live repository validation pending |
+| Shift-Left FinOps | 0 | 3 | 1 | Policy-driven manifest patching, idempotent PR/MR creation, confidence/risk-gated auto-merge, webhook authorization, external-approval polling, and a git-backed `kubectl-reconcilyx diff` with cost/carbon/guardrail CI exit codes are wired; live repository validation pending |
 | Agentic AI | 0 | 4 | 0 | approve/reject/rollback → real CRD patches + audit + dispatcher events; confirm token format validated; read actions also audited |
 | Live Node Optimization | 0 | 0 | 0 | ⏳ **Moved to v5.0 planned** — Karpenter actuation / node drain out of scope for v4.0-beta. See `README.md` section "v5.0 Planned". Heuristic stub still callable; emits WARN on first use. |
 | Real-Time eBPF Telemetry | 0 | 0 | 0 | ⏳ **Moved to v5.0 planned** — Cilium/Pixie/Tetragon gRPC out of scope for v4.0-beta. Fallback = Prometheus WorkloadInspector (1 min granularity). Stub emits WARN on first use. |
@@ -47,7 +47,7 @@ No public demo instance is operated. The React console is embedded in the Hub an
 3. API/UI contracts are validated against a running backend
    Status: partial on 2026-10-23 — the embedded console rendered live Kind-backed data on Overview (3 proposals, 1 policy, fleet `hub` READY), Proposals (3 rows with phases), and Policies (`demo/autoscaler-test`, AutoApply) with zero console messages; Savings, Forecast, and Settings were not re-exercised against the live backend
 4. CLI actions report and propagate real API failures
-   Status: pending
+   Status: complete on 2026-10-23 — `scan` no longer fabricates fallback workloads and fails on transport, non-2xx, and parse errors; `explain` and `what-if` propagate Hub errors; `diff` returns exit 1 for unreachable refs/malformed manifests and exit 2 for triggered `--fail-on` conditions. Command tests use `httptest` Hub responses and temporary git repositories; a live-Hub run of the new commands was not repeated.
 5. Live actuation uses the intended Kubernetes mutation strategy in a production-like cluster
    Status: partial on 2026-10-23 — the manager resized both `demo/web` pods in place through the Pod `resize` subresource on Kind v1.36.1 and reached `Stabilizing`; a production-like cluster and Prometheus-backed stabilization completion remain unverified
 6. The embedded console is served by the Hub, and its CORS/API-key guidance is validated against a running control plane

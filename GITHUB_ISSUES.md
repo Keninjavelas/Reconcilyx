@@ -125,6 +125,17 @@ P0 beta remediation, completed `2026-10-23`:
 
 Evidence is recorded per item in [STATUS.md](STATUS.md).
 
+## Phase 12 — CLI Product Layer and Execution-Time Policy Guardrails (2026-10-23)
+
+- `[x]` `P1 CLI` Replace `scan` fallback data with the real Hub proposal list and propagate failures
+- `[x]` `P1 CLI` Add `explain` with predicted-versus-realized savings/carbon receipts
+- `[x]` `P1 CLI` Add `what-if` with a signed cost delta, JSON output, and CI `--fail-on` exit codes
+- `[x]` `P1 Shift-Left` Add `diff --manifests` with cost, carbon, guardrails, JSON, and `--fail-on`
+- `[x]` `P1 Safety` Enforce `changeBudget` and `blastRadius` in the JIT execution gate
+- `[x]` `P1 Docs` Document CLI commands, CI usage, and the new policy fields
+
+Evidence: `scan` now calls `GET /api/proposals` and has no synthetic fallback; it exits non-zero on unreachable/error/malformed responses, and an empty response prints an empty state. `explain` joins the proposal detail with `status.learning` per-container receipts and computes variance. `what-if` returns `costDeltaUSDPerMonth` (signed) alongside the legacy clamped savings field. `diff` compares the working tree with a git base ref with `git show`, prices workloads with the engine cost/carbon helpers, and flags guardrails; the base file listing was fixed to run from the repository root with `--full-tree`. `OptimizationPolicy` gained `spec.changeBudget` and `spec.blastRadius`; the controller resolves the applied policy before execution, fails closed when it is missing, and rejects proposals that exceed the rolling change budget, replica cap, or canary-label requirement. Command tests use `httptest` and temporary git repositories; the full controller envtest suite passed 9/9 on 2026-10-23. Live Hub and live GitHub/GitLab validation remain open.
+
 ## Cross-Cutting Remediation (2026-10-23)
 
 - `[x]` `P0 Safety` Detect HPA/VPA conflicts before in-place execution

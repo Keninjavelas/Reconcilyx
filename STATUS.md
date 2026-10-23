@@ -31,6 +31,9 @@ Reconcilyx is an open-source Kubernetes optimization platform in active beta har
 
 - `go build ./...`: passed locally on 2026-10-23 after `npm ci && npm run build` in `ui/` (the binary embeds `ui/dist`); rerun before every release
 - `go test ./...`: passed locally with envtest binaries; rerun before every release
+- `go vet ./...`: passed locally on 2026-10-23 after the CLI and policy-guard changes
+- `go test ./cmd/kubectl-reconcilyx/cmd ./internal/api`: passed on 2026-10-23; CLI command tests use `httptest` Hub responses and temp git repositories, and the API test covers signed what-if cost deltas
+- `go test ./internal/controller` (envtest): 9 of 9 specs passed on 2026-10-23; focused policy-guard and execution-gate tests also passed
 - `npm run build` in `ui/`: clean build with TypeScript and Vite on 2026-10-23
 - Controller Manager on Kind: verified running, leader election acquired, and API (`:8082`) serving live proposals (2026-09-01)
 - Live Kind validation: manager container served the embedded console and authenticated API, rejected an HPA-managed resize, resized pods in place after the HPA was removed, and rejected unsigned/wrong webhook signatures (2026-10-23; details in the Remediation Log)
@@ -40,6 +43,16 @@ Reconcilyx is an open-source Kubernetes optimization platform in active beta har
 Use `v4.0.0-beta` in documentation and releases. Do not describe Reconcilyx as production-ready, fully verified, 95% complete, CNCF-approved, or commercially hosted without evidence for each specific claim.
 
 ## Remediation Log
+
+### 2026-10-23 — P1: real CLI scan, explain/what-if/diff, and execution-time policy guardrails
+
+- `kubectl-reconcilyx scan` now reads `GET /api/proposals` and reports the Hub's items, approval/phase state, estimated monthly savings, and carbon. The synthetic fallback report was deleted. Transport failures, non-2xx responses (with a token hint on 401/403), malformed JSON, and malformed `estimatedSavings` values all fail the command; an empty Hub response prints an empty state, not demo workloads.
+- `explain <proposal>` fetches the proposal and its events, prints the policy/approval/execution path, resource deltas, predicted savings/carbon, and the finalized `status.learning` receipt with per-container cost/carbon/reward. It computes realized-minus-predicted variance and supports `-o json`. A missing namespace is resolved from the proposal list; ambiguous names are rejected.
+- `what-if` posts to `/api/what-if` and supports `-o json` and `--fail-on` (`not-allowed`, `risk>=N`, `confidence<N`, `savings-below:N`, `cost-increase`). The API now returns a signed `costDeltaUSDPerMonth` (positive means increased spend) while keeping the legacy clamped `savingsUSDPerMonth`.
+- `diff --manifests` reads Deployment/StatefulSet/DaemonSet manifests from the working tree and the same paths at a git base ref, prices them with the engine's cost/carbon helpers, and reports changed/added/removed workloads, guardrail violations (missing requests, request above limit, replica bounds, request-increase caps), and DaemonSet one-pod warnings. It supports `-o json` and `--fail-on cost-increase,carbon-increase,guardrail`. Git discovery was corrected to list base files from the repository root with `--full-tree`; listing from a manifests subdirectory silently produced zero base workloads.
+- `OptimizationPolicy` now has `spec.changeBudget` (`maxChangesPerWindow`, `window`, default 24h) and `spec.blastRadius` (`maxReplicasPerChange`, `requireCanaryLabel`). The JIT gate resolves the applied policy, fails closed when it is missing, counts other proposals that actually executed on the same workload inside the rolling window, rejects workloads above the replica cap, and fails closed for DaemonSets when a cap is configured. CRDs, deepcopy, RBAC, and Helm CRDs were regenerated.
+- Verification on 2026-10-23: `go build ./...` and `go vet ./...` passed; `go test ./cmd/kubectl-reconcilyx/cmd` passed (scan, explain, what-if, diff, fail-on, and output tests); `go test ./internal/api` passed (including the signed what-if cost delta); the full controller envtest suite passed 9 of 9 specs. `make test` now includes the CLI package instead of excluding `/cmd`.
+- Not exercised: `scan`, `explain`, and `what-if` were tested against `httptest` Hub responses, not a live Hub; `diff` was tested against temporary git repositories, not a release branch. The live GitHub/GitLab PR flow remains the open validation item in `GITHUB_ISSUES.md`.
 
 ### 2026-10-23 — P0: live Kind validation of API auth, autoscaler gate, and webhook signatures
 

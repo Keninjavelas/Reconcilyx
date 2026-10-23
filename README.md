@@ -30,6 +30,25 @@ The conservative inventory is [FEATURE_MATRIX.md](FEATURE_MATRIX.md). [STATUS.md
 
 See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for step-by-step instructions for each deployment model.
 
+## CLI
+
+`kubectl-reconcilyx` talks to the Hub API and never substitutes demo data when the Hub fails.
+
+```bash
+kubectl-reconcilyx scan -n production                 # real proposals, savings, and carbon
+kubectl-reconcilyx explain web-rightsize-7f2c -n production
+kubectl-reconcilyx what-if --current-cpu 500m --current-memory 256Mi \
+  --proposed-cpu 250m --proposed-memory 128Mi
+kubectl-reconcilyx diff --manifests deploy/ --base origin/main
+```
+
+- `scan` reports the Hub's proposals, approval/phase state, estimated savings, and carbon.
+- `explain` reconciles predicted savings and carbon against the realized `status.learning` receipt and prints the policy/gate path and recent events.
+- `what-if` returns the risk/confidence verdict plus a signed monthly cost delta (positive means increased spend).
+- `diff` compares Deployments, StatefulSets, and DaemonSets at a git base ref, estimates monthly cost and carbon, and flags guardrail violations in the working tree.
+
+All four commands accept `-o json`. `what-if` and `diff` accept `--fail-on` for CI (`cost-increase`, `carbon-increase`, `guardrail`, `not-allowed`, `risk>=N`, `confidence<N`, `savings-below:N`); a triggered condition exits `2`, while transport or validation errors exit `1`. See [docs/user-guide.md](docs/user-guide.md) and [docs/gitops.md](docs/gitops.md).
+
 ## v5.0 Planned
 
 The following are out of scope for `v4.0.0-beta` and have no committed release date:

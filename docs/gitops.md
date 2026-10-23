@@ -78,6 +78,46 @@ This is deliberate: the operator never races Argo CD/Flux for the same Deploymen
 
 Live in-place rescaling changes running Pods and their owning ReplicaSet, not the Deployment template in Git. A rolling update, reschedule, or Git reconciliation will therefore restore the original template requests. Use GitOps mode when the optimization must survive rollouts; it is the supported persistence path. The local resize path is documented as ephemeral in [ARCHITECTURE.md](ARCHITECTURE.md).
 
+## Cost, Carbon, and Guardrail Diff in CI
+
+`kubectl-reconcilyx diff` reads Deployment, StatefulSet, and DaemonSet manifests from the working tree, reads the same paths at a git base ref with `git show`, and reports the monthly cost/carbon delta plus guardrail violations. It does not call the Hub, so it runs before a cluster sees the change.
+
+```bash
+kubectl-reconcilyx diff --manifests deploy/ --base origin/main \
+  --region aws-eu-west-1 \
+  --min-replicas 2 --max-replicas 20 --max-increase-percent 25 \
+  --fail-on cost-increase,carbon-increase,guardrail
+```
+
+Guardrails include missing CPU/memory requests, requests above limits, replica bounds, and optional per-pod request-increase caps. DaemonSet cost is estimated from one pod because the node count is unknown. `--output json` emits the full per-workload report for dashboards or PR comments.
+
+GitHub Actions example (the base ref must exist in the checkout, hence `fetch-depth: 0`):
+
+```yaml
+name: reconcilyx-manifest-diff
+on: pull_request
+
+jobs:
+  diff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go build -o /usr/local/bin/kubectl-reconcilyx ./cmd/kubectl-reconcilyx
+      - name: Cost, carbon, and guardrails
+        run: |
+          kubectl-reconcilyx diff \
+            --manifests deploy/ \
+            --base origin/${{ github.base_ref }} \
+            --fail-on cost-increase,guardrail
+```
+
+If the plugin is already installed in the runner image, drop the checkout/setup-go/build steps and run the `diff` command directly. A triggered `--fail-on` condition exits `2`; an unreachable git ref or malformed manifest exits `1`, so a broken diff cannot be mistaken for a clean result.
+
 ## Configuring the Auto-Merge Webhook Server
 
 For true CI-success-driven merging, Reconcilyx ships a standalone webhook listener in `internal/webhook/gitops_webhook.go` that reacts to GitHub status events and GitLab MR + pipeline events.
