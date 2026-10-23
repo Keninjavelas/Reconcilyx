@@ -24,6 +24,10 @@ import (
 	"github.com/reconcilyx/operator/internal/telemetry"
 )
 
+type GitProviderFactory interface {
+	ForPolicy(policy *optimizationv1alpha1.OptimizationPolicy) (gitops.GitProvider, error)
+}
+
 type OptimizationProposalReconciler struct {
 	client.Client
 	Scheme          *runtime.Scheme
@@ -33,7 +37,7 @@ type OptimizationProposalReconciler struct {
 	ExecutionGate   ExecutionGate
 	Actuator        Actuator
 	RollbackManager RollbackManager
-	GitFactory      *gitops.ProviderFactory
+	GitFactory      GitProviderFactory
 	// RL Learning Loop dependencies
 	RLAgent           rl.Agent
 	TelemetryProvider telemetry.TelemetryProvider
@@ -51,6 +55,8 @@ type OptimizationProposalReconciler struct {
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods/resize,verbs=update;patch
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch
+// +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch
 
 func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -105,6 +111,10 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 		return ctrl.Result{}, nil
 	}
 
+	if proposal.Status.Phase == optimizationv1alpha1.PhaseAwaitingExternalApproval {
+		return r.reconcileExternalApproval(ctx, proposal)
+	}
+
 	if proposal.Status.Phase == optimizationv1alpha1.PhaseDetected || proposal.Status.Phase == "" {
 		var policyList optimizationv1alpha1.OptimizationPolicyList
 		if err := r.List(ctx, &policyList); err != nil {
@@ -152,7 +162,7 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 						return ctrl.Result{}, err
 					}
 					r.Recorder.Event(proposal, "Normal", "GitOpsPRCreated", "Created pull/merge request: "+prID)
-					return ctrl.Result{}, nil
+					return ctrl.Result{RequeueAfter: time.Minute}, nil
 				}
 			}
 		} else {
@@ -361,68 +371,134 @@ func (r *OptimizationProposalReconciler) createGitOpsPR(ctx context.Context, pro
 	if err != nil {
 		return "", err
 	}
-	title := fmt.Sprintf("Reconcilyx: optimize %s/%s", proposal.Namespace, proposal.Spec.TargetWorkload.Name)
-	body := fmt.Sprintf(`## Reconcilyx Optimization Proposal
 
-**Workload:** %s/%s  
-**Recommendation:** %s  
-**Confidence:** %d  
-**Risk:** %d  
-**Est. Monthly Savings:** $%s
+	dep := &appsv1.Deployment{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      proposal.Spec.TargetWorkload.Name,
+		Namespace: proposal.Spec.TargetWorkload.Namespace,
+	}, dep); err != nil {
+		return "", fmt.Errorf("failed to get target deployment: %w", err)
+	}
 
-### Rationale
-%s
-`,
-		proposal.Spec.TargetWorkload.Namespace,
-		proposal.Spec.TargetWorkload.Name,
-		proposal.Spec.Recommendation,
-		proposal.Spec.DecisionMetadata.ConfidenceScore,
-		proposal.Spec.DecisionMetadata.RiskScore,
-		proposal.Spec.ExpectedImpact.EstimatedSavingsUSD.String(),
-		proposal.Spec.DecisionMetadata.Rationale,
+	result, err := gitops.NewPRManager(provider).CreateProposalPR(
+		ctx,
+		proposal,
+		extractCurrentResources(dep),
+		gitops.PROptions{
+			ManifestsPath: policy.Spec.GitOps.ManifestsPath,
+			BaseBranch:    policy.Spec.GitOps.BaseBranch,
+			AutoMerge:     policy.Spec.GitOps.AutoMerge,
+		},
 	)
-	diff := fmt.Sprintf(`# Reconcilyx Optimization Patch
-# Target: %s/%s
-#
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: %s
-  namespace: %s
-  annotations:
-    reconcilyx.io/proposal: %s
-spec:
-  template:
-    spec:
-      containers:
-        # PATCH: set requests based on recommendation
-        - name: <CONTAINER>
-          resources:
-            requests:
-              cpu: %s
-              memory: %s
-`,
-		proposal.Spec.TargetWorkload.Namespace, proposal.Spec.TargetWorkload.Name,
-		proposal.Spec.TargetWorkload.Name,
-		proposal.Spec.TargetWorkload.Namespace,
-		proposal.Name,
-		proposal.Spec.ProposedResources.Requests.Cpu().String(),
-		proposal.Spec.ProposedResources.Requests.Memory().String(),
-	)
-	return provider.CreatePullRequest(ctx, &gitops.PullRequest{
-		Title:       title,
-		Description: body,
-		HeadBranch:  fmt.Sprintf("reconcilyx/%s-%s", proposal.Spec.TargetWorkload.Namespace, proposal.Spec.TargetWorkload.Name),
-		BaseBranch:  policy.Spec.GitOps.BaseBranch,
-		Diff:        diff,
-	})
+	if err != nil {
+		return "", err
+	}
+	return result.ID, nil
+}
+
+// reconcileExternalApproval polls the PR that gates execution. A merged PR
+// completes the proposal because the GitOps controller owns the rollout; a
+// closed PR is rejected; an open PR is retried until it merges or the TTL
+// expires.
+func (r *OptimizationProposalReconciler) reconcileExternalApproval(ctx context.Context, proposal *optimizationv1alpha1.OptimizationProposal) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+
+	if proposal.Status.ExternalPRID == "" {
+		proposal.Status.Phase = optimizationv1alpha1.PhaseFailed
+		proposal.Status.Reason = "AwaitingExternalApproval without a pull request ID"
+		if err := r.Status().Update(ctx, proposal); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	}
+	if r.GitFactory == nil {
+		return ctrl.Result{RequeueAfter: time.Minute}, fmt.Errorf("git provider factory not configured")
+	}
+
+	policy, err := r.lookupAppliedPolicy(ctx, proposal)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			proposal.Status.Phase = optimizationv1alpha1.PhaseRejected
+			proposal.Status.ApprovalState = optimizationv1alpha1.ApprovalRejected
+			proposal.Status.Reason = fmt.Sprintf("Policy %q no longer exists; cannot resolve GitOps approval", proposal.Status.PolicyApplied)
+			if updateErr := r.Status().Update(ctx, proposal); updateErr != nil {
+				return ctrl.Result{}, updateErr
+			}
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
+	}
+
+	provider, err := r.GitFactory.ForPolicy(policy)
+	if err != nil {
+		logger.Error(err, "Cannot resolve Git provider for external approval", "proposal", proposal.Name)
+		return ctrl.Result{RequeueAfter: time.Minute}, nil
+	}
+
+	status, err := provider.GetPullRequestStatus(ctx, proposal.Status.ExternalPRID)
+	if err != nil {
+		logger.Error(err, "Could not read GitOps PR status", "proposal", proposal.Name, "pr", proposal.Status.ExternalPRID)
+		return ctrl.Result{RequeueAfter: time.Minute}, nil
+	}
+
+	switch {
+	case status.Merged:
+		proposal.Status.Phase = optimizationv1alpha1.PhaseCompleted
+		proposal.Status.Reason = "GitOps change merged; rollout is owned by the GitOps controller"
+		if err := r.Status().Update(ctx, proposal); err != nil {
+			return ctrl.Result{}, err
+		}
+		r.Recorder.Event(proposal, "Normal", "GitOpsMerged", "Pull request merged; proposal completed")
+		logger.Info("GitOps pull request merged", "proposal", proposal.Name, "pr", proposal.Status.ExternalPRID)
+		return ctrl.Result{}, nil
+	case status.State == "closed":
+		proposal.Status.Phase = optimizationv1alpha1.PhaseRejected
+		proposal.Status.ApprovalState = optimizationv1alpha1.ApprovalRejected
+		proposal.Status.Reason = "GitOps pull request was closed without merging"
+		if err := r.Status().Update(ctx, proposal); err != nil {
+			return ctrl.Result{}, err
+		}
+		r.Recorder.Event(proposal, "Warning", "GitOpsClosed", "Pull request closed without merging")
+		return ctrl.Result{}, nil
+	default:
+		return ctrl.Result{RequeueAfter: time.Minute}, nil
+	}
+}
+
+// lookupAppliedPolicy resolves the policy recorded on the proposal. The
+// recorded reference is a bare name, so the proposal namespace is tried first
+// and a cluster-wide list is used as a fallback for cross-namespace policies.
+func (r *OptimizationProposalReconciler) lookupAppliedPolicy(ctx context.Context, proposal *optimizationv1alpha1.OptimizationProposal) (*optimizationv1alpha1.OptimizationPolicy, error) {
+	policy := &optimizationv1alpha1.OptimizationPolicy{}
+	err := r.Get(ctx, types.NamespacedName{Name: proposal.Status.PolicyApplied, Namespace: proposal.Namespace}, policy)
+	if err == nil {
+		return policy, nil
+	}
+	if !apierrors.IsNotFound(err) {
+		return nil, err
+	}
+
+	var list optimizationv1alpha1.OptimizationPolicyList
+	if listErr := r.List(ctx, &list); listErr != nil {
+		return nil, listErr
+	}
+	for i := range list.Items {
+		if list.Items[i].Name == proposal.Status.PolicyApplied {
+			return &list.Items[i], nil
+		}
+	}
+	return nil, err
 }
 
 func (r *OptimizationProposalReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.Recorder = mgr.GetEventRecorderFor("optimizationproposal-controller")
 	r.Matcher = policy.NewMatcher()
 	r.Evaluator = policy.NewEvaluator()
-	r.ExecutionGate = NewExecutionGate(NewActuationControl(mgr.GetClient(), "reconcilyx-system"), NewWorkloadHealthGate(mgr.GetClient()))
+	r.ExecutionGate = NewExecutionGate(
+		NewActuationControl(mgr.GetClient(), "reconcilyx-system"),
+		NewWorkloadHealthGate(mgr.GetClient()),
+		NewAutoscalerConflictGate(mgr.GetClient()),
+	)
 	r.Actuator = NewActuator(mgr.GetClient())
 	r.GitFactory = gitops.NewProviderFactory()
 

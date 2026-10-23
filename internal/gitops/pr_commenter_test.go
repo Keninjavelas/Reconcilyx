@@ -9,13 +9,13 @@ func TestShiftLeftPRCommenter(t *testing.T) {
 	commenter := NewShiftLeftPRCommenter()
 
 	diff := PRManifestDiff{
-		WorkloadName:       "payment-service",
-		Namespace:          "production",
-		CurrentCPU:         "1000m",
-		ProposedCPU:        "450m",
-		CurrentMemory:      "2048Mi",
-		ProposedMemory:     "1280Mi",
-		EstimatedCostDelta: -142.50,
+		WorkloadName:         "payment-service",
+		Namespace:            "production",
+		CurrentCPU:           "1000m",
+		ProposedCPU:          "450m",
+		CurrentMemory:        "2048Mi",
+		ProposedMemory:       "1280Mi",
+		EstimatedCostDelta:   -142.50,
 		EstimatedCarbonDelta: -18.4,
 	}
 

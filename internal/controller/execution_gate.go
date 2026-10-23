@@ -26,12 +26,14 @@ type ExecutionGate interface {
 type defaultExecutionGate struct {
 	actuationControl ActuationControl
 	healthGate       WorkloadHealthGate
+	autoscalerGate   AutoscalerGate
 }
 
-func NewExecutionGate(ac ActuationControl, hg WorkloadHealthGate) ExecutionGate {
+func NewExecutionGate(ac ActuationControl, hg WorkloadHealthGate, ag AutoscalerGate) ExecutionGate {
 	return &defaultExecutionGate{
 		actuationControl: ac,
 		healthGate:       hg,
+		autoscalerGate:   ag,
 	}
 }
 
@@ -60,7 +62,14 @@ func (g *defaultExecutionGate) ValidateJIT(ctx context.Context, proposal *v1alph
 		return ExecutionReject, fmt.Errorf("recommendation type %s is not supported by in-place resize actuation", proposal.Spec.Recommendation)
 	}
 
-	// 5. Verify Target Liveness
+	// 5. Verify no other autoscaler owns resource sizing for this workload.
+	if g.autoscalerGate != nil {
+		if err := g.autoscalerGate.Check(ctx, proposal.Spec.TargetWorkload); err != nil {
+			return ExecutionReject, err
+		}
+	}
+
+	// 6. Verify Target Liveness
 	if err := g.healthGate.CheckLiveness(ctx, proposal.Spec.TargetWorkload); err != nil {
 		return ExecutionReject, fmt.Errorf("workload liveness check failed: %w", err)
 	}

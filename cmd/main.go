@@ -30,6 +30,7 @@ import (
 	"github.com/reconcilyx/operator/internal/engine"
 	"github.com/reconcilyx/operator/internal/engine/rl"
 	"github.com/reconcilyx/operator/internal/federated"
+	"github.com/reconcilyx/operator/internal/gitops"
 	"github.com/reconcilyx/operator/internal/notifiers"
 	"github.com/reconcilyx/operator/internal/telemetry"
 	reconcilyxwebhook "github.com/reconcilyx/operator/internal/webhook"
@@ -375,6 +376,19 @@ func main() {
 			}
 			return "api-key"
 		}())
+	}
+
+	if hookAddr := os.Getenv("AUTOMERGE_WEBHOOK_ADDR"); hookAddr != "" {
+		hook := reconcilyxwebhook.NewAutoMergeWebhookServerFromEnv(
+			ctrl.Log.WithName("automerge-webhook"),
+			gitops.NewProviderFactory(),
+		)
+		go func() {
+			if err := hook.StartContext(ctx); err != nil {
+				setupLog.Error(err, "Auto-merge webhook terminated with error")
+			}
+		}()
+		setupLog.Info("Auto-merge webhook enabled", "addr", hookAddr)
 	}
 
 	if pprofAddr != "" {

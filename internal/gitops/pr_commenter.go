@@ -6,13 +6,13 @@ import (
 )
 
 type PRManifestDiff struct {
-	WorkloadName      string
-	Namespace         string
-	CurrentCPU        string
-	ProposedCPU       string
-	CurrentMemory     string
-	ProposedMemory    string
-	EstimatedCostDelta float64 // $/month (negative means savings)
+	WorkloadName         string
+	Namespace            string
+	CurrentCPU           string
+	ProposedCPU          string
+	CurrentMemory        string
+	ProposedMemory       string
+	EstimatedCostDelta   float64 // $/month (negative means savings)
 	EstimatedCarbonDelta float64 // kg CO2e/month
 }
 

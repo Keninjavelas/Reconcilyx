@@ -30,6 +30,14 @@ func (s stubHealthGate) CheckLiveness(context.Context, corev1.ObjectReference) e
 	return s.err
 }
 
+type stubAutoscalerGate struct {
+	err error
+}
+
+func (s stubAutoscalerGate) Check(context.Context, corev1.ObjectReference) error {
+	return s.err
+}
+
 func scheduledProposal(rec v1alpha1.RecommendationType) *v1alpha1.OptimizationProposal {
 	return &v1alpha1.OptimizationProposal{
 		Spec: v1alpha1.OptimizationProposalSpec{
@@ -49,7 +57,7 @@ func scheduledProposal(rec v1alpha1.RecommendationType) *v1alpha1.OptimizationPr
 }
 
 func TestExecutionGateActuatableRecommendations(t *testing.T) {
-	gate := NewExecutionGate(stubActuationControl{}, stubHealthGate{})
+	gate := NewExecutionGate(stubActuationControl{}, stubHealthGate{}, stubAutoscalerGate{})
 
 	for _, rec := range []v1alpha1.RecommendationType{
 		v1alpha1.RecommendationRightSize,
@@ -90,7 +98,7 @@ func TestExecutionGateSafetyConditions(t *testing.T) {
 	proposal := scheduledProposal(v1alpha1.RecommendationRightSize)
 
 	t.Run("paused kill switch defers execution", func(t *testing.T) {
-		gate := NewExecutionGate(stubActuationControl{paused: true}, stubHealthGate{})
+		gate := NewExecutionGate(stubActuationControl{paused: true}, stubHealthGate{}, stubAutoscalerGate{})
 		decision, err := gate.ValidateJIT(context.Background(), proposal, nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -101,7 +109,7 @@ func TestExecutionGateSafetyConditions(t *testing.T) {
 	})
 
 	t.Run("unhealthy workload is rejected", func(t *testing.T) {
-		gate := NewExecutionGate(stubActuationControl{}, stubHealthGate{err: errors.New("deployment has no ready replicas")})
+		gate := NewExecutionGate(stubActuationControl{}, stubHealthGate{err: errors.New("deployment has no ready replicas")}, stubAutoscalerGate{})
 		decision, err := gate.ValidateJIT(context.Background(), proposal, nil)
 		if err == nil || decision != ExecutionReject {
 			t.Fatalf("expected rejection, got decision=%q err=%v", decision, err)
@@ -111,7 +119,7 @@ func TestExecutionGateSafetyConditions(t *testing.T) {
 	t.Run("wrong phase is rejected", func(t *testing.T) {
 		p := proposal.DeepCopy()
 		p.Status.Phase = v1alpha1.PhaseApproved
-		gate := NewExecutionGate(stubActuationControl{}, stubHealthGate{})
+		gate := NewExecutionGate(stubActuationControl{}, stubHealthGate{}, stubAutoscalerGate{})
 		decision, err := gate.ValidateJIT(context.Background(), p, nil)
 		if err == nil || decision != ExecutionReject {
 			t.Fatalf("expected rejection, got decision=%q err=%v", decision, err)
@@ -121,13 +129,26 @@ func TestExecutionGateSafetyConditions(t *testing.T) {
 	t.Run("expired proposal expires", func(t *testing.T) {
 		p := proposal.DeepCopy()
 		p.Status.ExpirationTime = &metav1.Time{Time: time.Now().Add(-time.Minute)}
-		gate := NewExecutionGate(stubActuationControl{}, stubHealthGate{})
+		gate := NewExecutionGate(stubActuationControl{}, stubHealthGate{}, stubAutoscalerGate{})
 		decision, err := gate.ValidateJIT(context.Background(), p, nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if decision != ExecutionExpire {
 			t.Fatalf("expected %q, got %q", ExecutionExpire, decision)
+		}
+	})
+
+	t.Run("competing autoscaler is rejected", func(t *testing.T) {
+		gate := NewExecutionGate(stubActuationControl{}, stubHealthGate{}, stubAutoscalerGate{
+			err: errors.New("autoscaler conflict: HorizontalPodAutoscaler default/demo targets Deployment/demo"),
+		})
+		decision, err := gate.ValidateJIT(context.Background(), proposal, nil)
+		if err == nil || decision != ExecutionReject {
+			t.Fatalf("expected rejection, got decision=%q err=%v", decision, err)
+		}
+		if !strings.Contains(err.Error(), "autoscaler conflict") {
+			t.Fatalf("unexpected error: %v", err)
 		}
 	})
 }

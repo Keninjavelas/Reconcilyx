@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -38,9 +39,9 @@ type GitHubWebhookPush struct {
 }
 
 type GitHubStatusEvent struct {
-	State       string `json:"state"`
-	Sha         string `json:"sha"`
-	Commit      struct {
+	State  string `json:"state"`
+	Sha    string `json:"sha"`
+	Commit struct {
 		Commit struct {
 			Message string `json:"message"`
 		} `json:"commit"`
@@ -56,6 +57,9 @@ type GitHubStatusEvent struct {
 
 type GitLabMRNoteEvent struct {
 	ObjectKind string `json:"object_kind"`
+	Project    struct {
+		PathWithNamespace string `json:"path_with_namespace"`
+	} `json:"project"`
 	MergeRequest struct {
 		ID    int    `json:"id"`
 		IID   int    `json:"iid"`
@@ -115,7 +119,7 @@ func (s *AutoMergeWebhookServer) verifyGitLab(r *http.Request, body []byte) bool
 		return true
 	}
 	token := r.Header.Get("X-Gitlab-Token")
-	return token == s.secretToken
+	return subtle.ConstantTimeCompare([]byte(token), []byte(s.secretToken)) == 1
 }
 
 func (s *AutoMergeWebhookServer) handleGitHub(w http.ResponseWriter, r *http.Request) {
@@ -168,9 +172,14 @@ func (s *AutoMergeWebhookServer) handleGitLab(w http.ResponseWriter, r *http.Req
 		stateOk := strings.EqualFold(mr.ObjectAttributes.State, "opened") ||
 			strings.EqualFold(mr.MergeRequest.State, "opened")
 		if pipelineOk && stateOk && strings.EqualFold(mr.ObjectAttributes.MergeStatus, "can_be_merged") {
-			s.logger.Info("GitLab MR mergeable with pipeline success", "id", mr.MergeRequest.IID)
-			owner := ""
-			repo := ""
+			owner, repo, ok := strings.Cut(mr.Project.PathWithNamespace, "/")
+			if !ok || owner == "" || repo == "" {
+				s.logger.Info("GitLab event missing project path; auto-merge skipped", "id", mr.MergeRequest.IID)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("ok"))
+				return
+			}
+			s.logger.Info("GitLab MR mergeable with pipeline success", "id", mr.MergeRequest.IID, "project", mr.Project.PathWithNamespace)
 			go s.tryAutoMergeGitLab(owner, repo, strconv.Itoa(mr.MergeRequest.IID))
 		}
 	}
@@ -195,7 +204,16 @@ func (s *AutoMergeWebhookServer) tryAutoMergeGitHub(owner, repo, sha string) {
 	}
 	prID, err := finder.FindPRForCommit(ctx, sha)
 	if err != nil || prID == "" {
-		s.logger.Info("No PR found for commit", "sha", sha, "err", err)
+		s.logger.Info("No Reconcilyx PR found for commit", "sha", sha, "err", err)
+		return
+	}
+	status, err := provider.GetPullRequestStatus(ctx, prID)
+	if err != nil {
+		s.logger.Error(err, "Cannot read PR status", "pr", prID)
+		return
+	}
+	if !autoMergeAuthorized(status) {
+		s.logger.Info("PR is not policy-marked for auto-merge, skipping", "pr", prID, "branch", status.HeadBranch)
 		return
 	}
 	conditions := gitops.MergeConditions{MinApprovalCount: 0}
@@ -214,6 +232,17 @@ func (s *AutoMergeWebhookServer) tryAutoMergeGitLab(owner, repo, mrID string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+
+	status, err := provider.GetPullRequestStatus(ctx, mrID)
+	if err != nil {
+		s.logger.Error(err, "Cannot read MR status", "mr", mrID)
+		return
+	}
+	if !autoMergeAuthorized(status) {
+		s.logger.Info("MR is not policy-marked for auto-merge, skipping", "mr", mrID, "branch", status.HeadBranch)
+		return
+	}
+
 	conditions := gitops.MergeConditions{MinApprovalCount: 0}
 	if err := provider.AutoMerge(ctx, mrID, &conditions); err != nil {
 		s.logger.Error(err, "Auto-merge failed", "mr", mrID)
@@ -222,6 +251,16 @@ func (s *AutoMergeWebhookServer) tryAutoMergeGitLab(owner, repo, mrID string) {
 	s.logger.Info("Auto-merged MR on success pipeline", "mr", mrID)
 }
 
+// autoMergeAuthorized ensures the webhook only merges Reconcilyx PRs whose
+// policy opted into auto-merge. The marker is written by PRManager only for
+// proposals that also meet the confidence/risk thresholds.
+func autoMergeAuthorized(status *gitops.PullRequestStatus) bool {
+	if status == nil || status.Merged || status.State == "closed" {
+		return false
+	}
+	return strings.HasPrefix(status.HeadBranch, "reconcilyx/") &&
+		strings.Contains(status.Body, gitops.AutoMergeMarker)
+}
 
 func (s *AutoMergeWebhookServer) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -248,12 +287,23 @@ func (s *AutoMergeWebhookServer) Handler() http.Handler {
 }
 
 func (s *AutoMergeWebhookServer) Start() error {
+	return s.StartContext(context.Background())
+}
+
+// StartContext runs the webhook listener until ctx is cancelled.
+func (s *AutoMergeWebhookServer) StartContext(ctx context.Context) error {
 	srv := &http.Server{
 		Addr:              s.addr,
 		Handler:           s.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	s.logger.Info("Starting auto-merge webhook server", "addr", s.addr)
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+	}()
+	s.logger.Info("Starting auto-merge webhook server", "addr", s.addr, "signature_verification", s.secretToken != "")
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("webhook server: %w", err)
 	}

@@ -2,9 +2,13 @@ package gitops
 
 import (
 	"context"
+	"encoding/base64"
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/reconcilyx/operator/internal/telemetry"
@@ -63,8 +67,8 @@ func (g *GitLabProvider) CreatePullRequest(ctx context.Context, pr *PullRequest)
 		return "", fmt.Errorf("failed to create branch: %w", err)
 	}
 
-	filePath := pr.HeadBranch
-	if filePath == "" || filePath == headBranch {
+	filePath := pr.FilePath
+	if filePath == "" {
 		filePath = fmt.Sprintf("manifests/reconcilyx-proposal-%d.yaml", time.Now().Unix())
 	}
 	content := pr.Diff
@@ -96,20 +100,35 @@ func (g *GitLabProvider) CreatePullRequest(ctx context.Context, pr *PullRequest)
 	}
 
 	mrOpts := &gitlab.CreateMergeRequestOptions{
-		Title:        gitlab.String(pr.Title),
-		SourceBranch: gitlab.String(headBranch),
-		TargetBranch: gitlab.String(baseBranch),
-		Description:  gitlab.String(pr.Description),
+		Title:              gitlab.String(pr.Title),
+		SourceBranch:       gitlab.String(headBranch),
+		TargetBranch:       gitlab.String(baseBranch),
+		Description:        gitlab.String(pr.Description),
 		RemoveSourceBranch: gitlab.Bool(true),
 	}
 	mr, _, err := g.client.MergeRequests.CreateMergeRequest(g.projectID, mrOpts, gitlab.WithContext(ctx))
 	if err != nil {
+		if existing := g.findOpenMR(ctx, headBranch); existing != "" {
+			return existing, nil
+		}
 		return "", fmt.Errorf("failed to create merge request: %w", err)
 	}
 
 	telemetry.PRCreatedTotal.WithLabelValues("gitlab", g.owner, g.repo).Inc()
 
 	return strconv.Itoa(mr.IID), nil
+}
+
+func (g *GitLabProvider) findOpenMR(ctx context.Context, headBranch string) string {
+	state := "opened"
+	mrs, _, err := g.client.MergeRequests.ListMergeRequests(&gitlab.ListMergeRequestsOptions{
+		SourceBranch: gitlab.String(headBranch),
+		State:        &state,
+	}, gitlab.WithContext(ctx))
+	if err != nil || len(mrs) == 0 {
+		return ""
+	}
+	return strconv.Itoa(mrs[0].IID)
 }
 
 func isGitLab404BranchExists(err error) bool {
@@ -173,10 +192,10 @@ func (g *GitLabProvider) AutoMerge(ctx context.Context, prID string, conditions 
 	}
 
 	mergeOpts := &gitlab.AcceptMergeRequestOptions{
-		SquashCommitMessage:       gitlab.String(mr.Title),
-		Squash:                    gitlab.Bool(true),
-		ShouldRemoveSourceBranch:  gitlab.Bool(true),
-		MergeCommitMessage:        gitlab.String("Auto-merged by Reconcilyx"),
+		SquashCommitMessage:      gitlab.String(mr.Title),
+		Squash:                   gitlab.Bool(true),
+		ShouldRemoveSourceBranch: gitlab.Bool(true),
+		MergeCommitMessage:       gitlab.String("Auto-merged by Reconcilyx"),
 	}
 	_, _, err = g.client.MergeRequests.AcceptMergeRequest(g.projectID, mrIID, mergeOpts, gitlab.WithContext(ctx))
 	if err != nil {
@@ -185,4 +204,47 @@ func (g *GitLabProvider) AutoMerge(ctx context.Context, prID string, conditions 
 
 	telemetry.PRAutoMergedTotal.WithLabelValues("gitlab", g.owner, g.repo).Inc()
 	return nil
+}
+
+// GetFile reads a repository file at the given branch.
+func (g *GitLabProvider) GetFile(ctx context.Context, path, branch string) ([]byte, error) {
+	file, _, err := g.client.RepositoryFiles.GetFile(g.projectID, path, &gitlab.GetFileOptions{
+		Ref: gitlab.String(branch),
+	}, gitlab.WithContext(ctx))
+	if err != nil {
+		var respErr *gitlab.ErrorResponse
+		if errors.As(err, &respErr) && respErr.Response != nil && respErr.Response.StatusCode == http.StatusNotFound {
+			return nil, fmt.Errorf("%w: %s@%s", ErrFileNotFound, path, branch)
+		}
+		return nil, err
+	}
+	content, err := base64.StdEncoding.DecodeString(file.Content)
+	if err != nil {
+		return nil, fmt.Errorf("decode %s: %w", path, err)
+	}
+	return content, nil
+}
+
+// GetPullRequestStatus returns the lifecycle state of a merge request.
+func (g *GitLabProvider) GetPullRequestStatus(ctx context.Context, prID string) (*PullRequestStatus, error) {
+	mrIID, err := strconv.Atoi(prID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid MR IID %q: %w", prID, err)
+	}
+	mr, _, err := g.client.MergeRequests.GetMergeRequest(g.projectID, mrIID, nil, gitlab.WithContext(ctx))
+	if err != nil {
+		return nil, fmt.Errorf("failed to get MR: %w", err)
+	}
+	merged := strings.EqualFold(mr.State, "merged")
+	state := strings.ToLower(mr.State)
+	if merged {
+		state = "merged"
+	}
+	return &PullRequestStatus{
+		State:      state,
+		Merged:     merged,
+		Mergeable:  strings.EqualFold(mr.MergeStatus, "can_be_merged"),
+		HeadBranch: mr.SourceBranch,
+		Body:       mr.Description,
+	}, nil
 }

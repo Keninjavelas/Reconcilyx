@@ -3,11 +3,28 @@ package gitops
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/reconcilyx/operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 )
+
+const autoMergeMarker = AutoMergeMarker
+
+// PROptions carries the policy-controlled GitOps settings for a proposal PR.
+type PROptions struct {
+	ManifestsPath string
+	BaseBranch    string
+	AutoMerge     bool
+}
+
+// PRResult describes the created pull/merge request.
+type PRResult struct {
+	ID         string
+	FilePath   string
+	AutoMerged bool
+}
 
 // PRManager manages pull requests for optimization proposals
 type PRManager struct {
@@ -21,45 +38,78 @@ func NewPRManager(provider GitProvider) *PRManager {
 	}
 }
 
-// CreateProposalPR creates a pull request for an OptimizationProposal
+// CreateProposalPR patches the workload's existing manifest and opens a pull
+// request against the configured repository. The manifest patch is required:
+// a partial document committed into an auto-synced directory would prune live
+// Deployment fields, so a missing manifest is an error rather than a fallback.
 func (m *PRManager) CreateProposalPR(
 	ctx context.Context,
 	proposal *v1alpha1.OptimizationProposal,
 	currentResources map[string]corev1.ResourceRequirements,
-) (string, error) {
-	prTitle := fmt.Sprintf("Optimize resources for %s/%s", proposal.Spec.TargetWorkload.Namespace, proposal.Spec.TargetWorkload.Name)
-	prDescription := m.buildPRDescription(proposal, currentResources)
-	prDiff := m.buildDiff(proposal, currentResources)
+	opts PROptions,
+) (*PRResult, error) {
+	if m.provider == nil {
+		return nil, fmt.Errorf("gitops: provider is nil")
+	}
+	if proposal == nil {
+		return nil, fmt.Errorf("gitops: proposal is nil")
+	}
+
+	baseBranch := opts.BaseBranch
+	if baseBranch == "" {
+		baseBranch = "main"
+	}
+
+	manifest, err := ResolveManifest(
+		ctx,
+		m.provider,
+		proposal.Spec.TargetWorkload,
+		proposal.Spec.ProposedResources,
+		currentResources,
+		opts.ManifestsPath,
+		baseBranch,
+		proposal.Name,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	autoMergeEligible := opts.AutoMerge && m.shouldAutoMerge(proposal)
 
 	pr := &PullRequest{
-		Title:       prTitle,
-		Description: prDescription,
-		HeadBranch:  fmt.Sprintf("reconcilyx-optimize-%s", proposal.Name),
-		BaseBranch:  "main",
-		Diff:        prDiff,
+		Title:       fmt.Sprintf("Optimize resources for %s/%s", proposal.Spec.TargetWorkload.Namespace, proposal.Spec.TargetWorkload.Name),
+		Description: m.buildPRDescription(proposal, manifest.Path, autoMergeEligible),
+		HeadBranch:  fmt.Sprintf("reconcilyx/%s-%s", proposal.Spec.TargetWorkload.Namespace, proposal.Spec.TargetWorkload.Name),
+		BaseBranch:  baseBranch,
+		FilePath:    manifest.Path,
+		Diff:        string(manifest.Content),
 	}
 
 	prID, err := m.provider.CreatePullRequest(ctx, pr)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
-	costComment := &Comment{
-		Body: m.buildCostComment(proposal),
-	}
+	costComment := &Comment{Body: m.buildCostComment(proposal)}
 	if err := m.provider.AddComment(ctx, prID, costComment); err != nil {
+		slog.Warn("Could not add cost comment to GitOps PR", "pr", prID, "error", err)
 	}
 
-	if m.shouldAutoMerge(proposal) {
-		if err := m.provider.AutoMerge(ctx, prID, &MergeConditions{
+	result := &PRResult{ID: prID, FilePath: manifest.Path}
+	if autoMergeEligible {
+		conditions := &MergeConditions{
 			MinApprovalCount: 0,
 			MaxRiskScore:     20,
 			MinConfidence:    80,
-		}); err != nil {
+		}
+		if err := m.provider.AutoMerge(ctx, prID, conditions); err != nil {
+			slog.Warn("Auto-merge request failed; PR remains open", "pr", prID, "error", err)
+		} else {
+			result.AutoMerged = true
 		}
 	}
 
-	return prID, nil
+	return result, nil
 }
 
 func formatCarbonImpact(q *resource.Quantity) string {
@@ -78,15 +128,20 @@ func formatCarbonImpact(q *resource.Quantity) string {
 
 func (m *PRManager) buildPRDescription(
 	proposal *v1alpha1.OptimizationProposal,
-	currentResources map[string]corev1.ResourceRequirements,
+	manifestPath string,
+	autoMerge bool,
 ) string {
 	carbonLine := ""
 	if line := formatCarbonImpact(proposal.Spec.ExpectedImpact.CarbonSavedGramsCO2); line != "" {
 		carbonLine = fmt.Sprintf("- **Estimated carbon reduction:** %s\n", line)
 	}
+	marker := ""
+	if autoMerge {
+		marker = "\n" + autoMergeMarker + "\n"
+	}
 	return fmt.Sprintf(`# Reconcilyx Optimization Proposal
 
-This pull request optimizes the resources for %s/%s.
+This pull request optimizes the resources for %s/%s by patching `+"`%s`"+`.
 
 ## Decision Details
 - **Recommendation Type**: %s
@@ -96,15 +151,17 @@ This pull request optimizes the resources for %s/%s.
 
 ## Expected Impact
 - Estimated monthly savings: %s
-%s`,
+%s%s`,
 		proposal.Spec.TargetWorkload.Namespace,
 		proposal.Spec.TargetWorkload.Name,
+		manifestPath,
 		proposal.Spec.Recommendation,
 		proposal.Spec.DecisionMetadata.ConfidenceScore,
 		proposal.Spec.DecisionMetadata.RiskScore,
 		proposal.Spec.DecisionMetadata.Rationale,
 		proposal.Spec.ExpectedImpact.EstimatedSavingsUSD.String(),
 		carbonLine,
+		marker,
 	)
 }
 
@@ -126,13 +183,6 @@ func (m *PRManager) buildCostComment(proposal *v1alpha1.OptimizationProposal) st
 		proposal.Spec.DecisionMetadata.ConfidenceScore,
 		proposal.Spec.DecisionMetadata.RiskScore,
 	)
-}
-
-func (m *PRManager) buildDiff(
-	proposal *v1alpha1.OptimizationProposal,
-	currentResources map[string]corev1.ResourceRequirements,
-) string {
-	return fmt.Sprintf("diff: update resources for %s", proposal.Spec.TargetWorkload.Name)
 }
 
 func (m *PRManager) shouldAutoMerge(proposal *v1alpha1.OptimizationProposal) bool {

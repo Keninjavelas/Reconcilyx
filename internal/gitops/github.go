@@ -2,10 +2,11 @@ package gitops
 
 import (
 	"context"
-	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -57,43 +58,32 @@ func (g *GitHubProvider) CreatePullRequest(ctx context.Context, pr *PullRequest)
 		Ref:    github.String("refs/heads/" + headBranch),
 		Object: &github.GitObject{SHA: ref.Object.SHA},
 	}
-	_, _, err = g.client.Git.CreateRef(ctx, g.owner, g.repo, newRef)
-	if err != nil {
+	if _, _, err = g.client.Git.CreateRef(ctx, g.owner, g.repo, newRef); err != nil &&
+		!strings.Contains(err.Error(), "Reference already exists") {
 		return "", fmt.Errorf("failed to create head branch: %w", err)
 	}
 
-	// TODO: parse diff into individual file commits. For MVP, write a manifest path placeholder.
-	manifestPath := pr.HeadBranch
+	manifestPath := pr.FilePath
 	if manifestPath == "" {
-		manifestPath = "manifests/workload-patch.yaml"
+		manifestPath = fmt.Sprintf("manifests/reconcilyx-proposal-%d.yaml", time.Now().Unix())
 	}
 	commitMsg := pr.Title
 	if commitMsg == "" {
 		commitMsg = "reconcilyx: optimization proposal"
 	}
-	content := base64.StdEncoding.EncodeToString([]byte(pr.Diff))
 	opts := &github.RepositoryContentFileOptions{
 		Message: github.String(commitMsg),
 		Content: []byte(pr.Diff),
 		Branch:  github.String(headBranch),
-		SHA:     nil,
 	}
-	_, _, err = g.client.Repositories.CreateFile(ctx, g.owner, g.repo, manifestPath, opts)
-	_ = content
-	if err != nil && !strings.Contains(err.Error(), "already exists") {
-		sha, getErr := g.getCurrentFileSHA(ctx, manifestPath, headBranch)
-		if getErr == nil {
-			opts.SHA = sha
-			_, _, err = g.client.Repositories.CreateFile(ctx, g.owner, g.repo, manifestPath, opts)
-		}
-		if err != nil && strings.Contains(err.Error(), "not a directory") {
-			path := fmt.Sprintf("reconcilyx-proposal-%d.yaml", time.Now().Unix())
-			opts.SHA = nil
-			_, _, err = g.client.Repositories.CreateFile(ctx, g.owner, g.repo, path, opts)
-		}
-		if err != nil && strings.Contains(err.Error(), "sha wasn't supplied") {
-			_, _, err = g.client.Repositories.CreateFile(ctx, g.owner, g.repo, fmt.Sprintf("reconcilyx/%s", manifestPath), opts)
-		}
+	if sha, shaErr := g.getCurrentFileSHA(ctx, manifestPath, headBranch); shaErr == nil {
+		opts.SHA = sha
+		_, _, err = g.client.Repositories.UpdateFile(ctx, g.owner, g.repo, manifestPath, opts)
+	} else {
+		_, _, err = g.client.Repositories.CreateFile(ctx, g.owner, g.repo, manifestPath, opts)
+	}
+	if err != nil {
+		return "", fmt.Errorf("failed to write manifest %s: %w", manifestPath, err)
 	}
 
 	pullReq := &github.NewPullRequest{
@@ -105,12 +95,26 @@ func (g *GitHubProvider) CreatePullRequest(ctx context.Context, pr *PullRequest)
 	}
 	created, _, err := g.client.PullRequests.Create(ctx, g.owner, g.repo, pullReq)
 	if err != nil {
+		if existing := g.findOpenPR(ctx, headBranch); existing != "" {
+			return existing, nil
+		}
 		return "", fmt.Errorf("failed to create pull request: %w", err)
 	}
 
 	telemetry.PRCreatedTotal.WithLabelValues("github", g.owner, g.repo).Inc()
 
 	return fmt.Sprintf("%d", created.GetNumber()), nil
+}
+
+func (g *GitHubProvider) findOpenPR(ctx context.Context, headBranch string) string {
+	prs, _, err := g.client.PullRequests.List(ctx, g.owner, g.repo, &github.PullRequestListOptions{
+		Head:  g.owner + ":" + headBranch,
+		State: "open",
+	})
+	if err != nil || len(prs) == 0 {
+		return ""
+	}
+	return strconv.Itoa(prs[0].GetNumber())
 }
 
 func (g *GitHubProvider) getCurrentFileSHA(ctx context.Context, path, branch string) (*string, error) {
@@ -187,4 +191,58 @@ func (g *GitHubProvider) AutoMerge(ctx context.Context, prID string, conditions 
 
 	telemetry.PRAutoMergedTotal.WithLabelValues("github", g.owner, g.repo).Inc()
 	return nil
+}
+
+// GetFile reads a repository file at the given branch.
+func (g *GitHubProvider) GetFile(ctx context.Context, path, branch string) ([]byte, error) {
+	opts := &github.RepositoryContentGetOptions{Ref: branch}
+	file, _, _, err := g.client.Repositories.GetContents(ctx, g.owner, g.repo, path, opts)
+	if err != nil {
+		var respErr *github.ErrorResponse
+		if errors.As(err, &respErr) && respErr.Response != nil && respErr.Response.StatusCode == http.StatusNotFound {
+			return nil, fmt.Errorf("%w: %s@%s", ErrFileNotFound, path, branch)
+		}
+		return nil, err
+	}
+	if file == nil {
+		return nil, fmt.Errorf("%w: %s@%s", ErrFileNotFound, path, branch)
+	}
+	content, err := file.GetContent()
+	if err != nil {
+		return nil, fmt.Errorf("decode %s: %w", path, err)
+	}
+	return []byte(content), nil
+}
+
+// GetPullRequestStatus returns the lifecycle state of a pull request.
+func (g *GitHubProvider) GetPullRequestStatus(ctx context.Context, prID string) (*PullRequestStatus, error) {
+	prNum := 0
+	if _, err := fmt.Sscanf(prID, "%d", &prNum); err != nil {
+		return nil, fmt.Errorf("invalid PR id %q: %w", prID, err)
+	}
+	pr, _, err := g.client.PullRequests.Get(ctx, g.owner, g.repo, prNum)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get PR: %w", err)
+	}
+	return &PullRequestStatus{
+		State:      pr.GetState(),
+		Merged:     pr.GetMerged(),
+		Mergeable:  pr.GetMergeable(),
+		HeadBranch: pr.GetHead().GetRef(),
+		Body:       pr.GetBody(),
+	}, nil
+}
+
+// FindPRForCommit returns the first Reconcilyx PR associated with a commit.
+func (g *GitHubProvider) FindPRForCommit(ctx context.Context, sha string) (string, error) {
+	prs, _, err := g.client.PullRequests.ListPullRequestsWithCommit(ctx, g.owner, g.repo, sha, &github.ListOptions{PerPage: 10})
+	if err != nil {
+		return "", err
+	}
+	for _, pr := range prs {
+		if strings.HasPrefix(pr.GetHead().GetRef(), "reconcilyx/") {
+			return strconv.Itoa(pr.GetNumber()), nil
+		}
+	}
+	return "", nil
 }
