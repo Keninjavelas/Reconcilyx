@@ -29,6 +29,8 @@ func (p *defaultProvider) GetWorkloadMetrics(ctx context.Context, ref corev1.Obj
 	cpuMap, errCPU := p.inspector.InspectCPU(ctx, ref)
 	memMap, errMem := p.inspector.InspectMemory(ctx, ref)
 	restartMap, errRestart := p.inspector.InspectRestarts(ctx, ref)
+	jvmMap, _ := p.inspector.InspectJVM(ctx, ref)
+	gpuMap, _ := p.inspector.InspectGPU(ctx, ref)
 
 	// Fetch Replica count from kube-state-metrics as well
 	repQuery := fmt.Sprintf(`sum(kube_deployment_status_replicas_available{namespace="%s", deployment="%s"})`, ref.Namespace, ref.Name)
@@ -42,12 +44,18 @@ func (p *defaultProvider) GetWorkloadMetrics(ctx context.Context, ref corev1.Obj
 
 	// Merge the container data
 	containerMetrics := make(map[string]*ContainerMetrics)
-	
+
 	// Collect all unique container names
 	seen := make(map[string]struct{})
-	for k := range cpuMap { seen[k] = struct{}{} }
-	for k := range memMap { seen[k] = struct{}{} }
-	for k := range restartMap { seen[k] = struct{}{} }
+	for k := range cpuMap {
+		seen[k] = struct{}{}
+	}
+	for k := range memMap {
+		seen[k] = struct{}{}
+	}
+	for k := range restartMap {
+		seen[k] = struct{}{}
+	}
 
 	for containerName := range seen {
 		cm := &ContainerMetrics{
@@ -61,6 +69,16 @@ func (p *defaultProvider) GetWorkloadMetrics(ctx context.Context, ref corev1.Obj
 		}
 		if r, ok := restartMap[containerName]; ok {
 			cm.Restarts = r
+		}
+		if j, ok := jvmMap[containerName]; ok {
+			cm.JVM = j
+		} else if j, ok := jvmMap[""]; ok {
+			cm.JVM = j
+		}
+		if g, ok := gpuMap[containerName]; ok {
+			cm.GPU = g
+		} else if g, ok := gpuMap[""]; ok {
+			cm.GPU = g
 		}
 		containerMetrics[containerName] = cm
 	}

@@ -40,6 +40,14 @@ Use `v4.0.0-beta` in documentation and releases. Do not describe Reconcilyx as p
 
 ## Remediation Log
 
+### 2026-10-23 — P1: JVM/GPU buckets and federated channel rollout
+
+- `InspectJVM` and `InspectGPU` now query JMX (`jvm_memory_max_bytes`/`bytes_committed`/`bytes_used` for heap) and NVIDIA DCGM (`DCGM_FI_DEV_GPU_UTIL`, `DCGM_FI_DEV_FB_USED`, `DCGM_FI_DEV_FB_TOTAL`, `DCGM_FI_DEV_GPU_TEMP`) series from Prometheus. Exporters that omit a container label are applied at workload level; containers with no series are skipped instead of receiving synthetic zeros.
+- The telemetry provider merges JVM and GPU metrics into each container, so `status.learning.pre/post` now carries real `JVMBucket` and `GPUBucket` values. `ScrapeGPUMetrics` no longer fabricates utilization or device counts; it errors without a Prometheus client and returns zeroes when no DCGM exporter exists.
+- The model registry now keeps stable and canary versions separate. Registering a canary never promotes it, a stable release supersedes an older canary, and `Promote` moves an existing release to stable. The Hub auto-publishes converged snapshots to stable and non-converged ones to canary on every compaction.
+- `GET /api/federated/global-model` resolves `channel` (`stable`/`canary`) and `cluster`; `GET /api/federated/releases` reports the active channels, and `DELETE /api/federated/releases/canary` demotes a canary. Spokes request a channel through `RECONCILYX_MODEL_CHANNEL` (default `stable`) with `FetchGlobalModelForChannel`, falling back to the live snapshot when a channel is empty.
+- Evidence: `go build ./...` passed; `go test ./internal/telemetry/... ./internal/federated/... ./internal/api/... ./hack/e2e/...` passed on 2026-10-23. The updated e2e integration test feeds DCGM series through a mock client instead of relying on the removed synthetic values. Live exporter and multi-cluster rollout validation remain open.
+
 ### 2026-10-23 — P1: learning feedback after optimization outcomes
 
 - The controller now captures the pre-actuation telemetry state before applying a resize and persists it in `status.learning.pre`; the reward update runs inside the same reconcile that marks a proposal `Completed` or `RolledBack` instead of waiting for an unrelated event.

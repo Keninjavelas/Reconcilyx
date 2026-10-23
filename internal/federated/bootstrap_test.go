@@ -31,6 +31,7 @@ func TestFetchGlobalModel_Success(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, http.MethodGet, r.Method)
 		assert.Equal(t, "/api/federated/global-model", r.URL.Path)
+		assert.Empty(t, r.URL.RawQuery)
 		assert.Equal(t, "application/json", r.Header.Get("Accept"))
 		w.Header().Set("Content-Type", "application/json")
 		require.NoError(t, json.NewEncoder(w).Encode(expected))
@@ -45,6 +46,20 @@ func TestFetchGlobalModel_Success(t *testing.T) {
 		assert.InDelta(t, v.QValue, got.Entries[k].QValue, 1e-9)
 		assert.Equal(t, v.VisitCount, got.Entries[k].VisitCount)
 	}
+}
+
+func TestFetchGlobalModelForChannel_SendsSelection(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/federated/global-model", r.URL.Path)
+		assert.Equal(t, ModelTagCanary, r.URL.Query().Get("channel"))
+		assert.Equal(t, "spoke-eu", r.URL.Query().Get("cluster"))
+		require.NoError(t, json.NewEncoder(w).Encode(&GlobalQTable{Version: 9, Entries: map[string]GlobalQEntry{}}))
+	}))
+	defer ts.Close()
+
+	got, err := FetchGlobalModelForChannel(context.Background(), ts.URL+"/", "", ModelTagCanary, "spoke-eu", nil)
+	require.NoError(t, err)
+	assert.Equal(t, int64(9), got.Version)
 }
 
 func TestFetchGlobalModel_WithAPIKeyHeader(t *testing.T) {

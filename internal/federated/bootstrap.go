@@ -8,17 +8,37 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 )
 
 func FetchGlobalModel(ctx context.Context, hubBaseURL, apiKey string, httpClient *http.Client) (*GlobalQTable, error) {
+	return FetchGlobalModelForChannel(ctx, hubBaseURL, apiKey, "", "", httpClient)
+}
+
+// FetchGlobalModelForChannel bootstraps from a specific rollout channel
+// ("stable" or "canary"). An empty channel preserves the legacy behaviour of
+// loading the hub's live aggregated snapshot.
+func FetchGlobalModelForChannel(ctx context.Context, hubBaseURL, apiKey, channel, clusterName string, httpClient *http.Client) (*GlobalQTable, error) {
 	if hubBaseURL == "" {
 		return nil, errors.New("federated: HubBaseURL is empty; cannot bootstrap")
 	}
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 30 * time.Second}
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, hubBaseURL+"/api/federated/global-model", http.NoBody)
+	endpoint := strings.TrimRight(hubBaseURL, "/") + "/api/federated/global-model"
+	query := url.Values{}
+	if channel != "" {
+		query.Set("channel", channel)
+	}
+	if clusterName != "" {
+		query.Set("cluster", clusterName)
+	}
+	if encoded := query.Encode(); encoded != "" {
+		endpoint += "?" + encoded
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, http.NoBody)
 	if err != nil {
 		return nil, err
 	}

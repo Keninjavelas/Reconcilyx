@@ -214,7 +214,36 @@ make build
 
 ---
 
-## 6. Static UI (Optional)
+## 6. Federated Spoke Channels (Optional)
+
+A Hub aggregates RL deltas from registered spokes and publishes aggregated snapshots on two rollout channels:
+
+- `stable` receives snapshots whose convergence shift is below the stability threshold.
+- `canary` receives the latest non-converged snapshot and is selected only by spokes that opt in.
+
+On each spoke, point the agent at the Hub and choose a channel:
+
+```bash
+export RECONCILYX_HUB_URL="https://hub.example.com"
+export RECONCILYX_CLUSTER_NAME="spoke-eu-west"
+export RECONCILYX_MODEL_CHANNEL="stable"   # or "canary"; defaults to stable
+```
+
+The spoke requests `GET /api/federated/global-model?channel=<channel>&cluster=<name>` and loads the returned Q-table. Both federated endpoints use the same `X-API-Key` as the rest of the API when `RECONCILYX_API_KEY` is set.
+
+Operators can inspect and roll back channels from the Hub:
+
+```bash
+curl -H "X-API-Key: $RECONCILYX_API_KEY" https://hub.example.com/api/federated/releases
+curl -X DELETE -H "X-API-Key: $RECONCILYX_API_KEY" \
+  "https://hub.example.com/api/federated/releases/canary?reason=regression"
+```
+
+Demoting a canary makes canary-opt-in spokes fall back to the stable release on their next bootstrap. If no release exists for the requested channel, the Hub serves its live aggregated snapshot so existing spokes keep bootstrapping during upgrades.
+
+---
+
+## 7. Static UI (Optional)
 
 The static build can be served from any file host:
 

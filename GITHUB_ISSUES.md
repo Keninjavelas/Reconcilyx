@@ -66,9 +66,11 @@ Evidence: pre-actuation telemetry is captured into `status.learning.pre` before 
 
 ## Phase 6
 
-- `[ ]` `P1 Wiring` Populate `JVMBucket`
-- `[ ]` `P1 Wiring` Populate `GPUBucket`
-- `[ ]` `P1 Wiring` Connect registry stable/canary model selection to live flows
+- `[x]` `P1 Wiring` Populate `JVMBucket`
+- `[x]` `P1 Wiring` Populate `GPUBucket`
+- `[x]` `P1 Wiring` Connect registry stable/canary model selection to live flows
+
+Evidence: `InspectJVM`/`InspectGPU` query JMX and DCGM series from Prometheus with workload-level fallbacks; the telemetry provider merges them into container metrics, and `learningStateFromMetrics` feeds `DetermineJVMBucket`/`DetermineGPUBucket`. `ScrapeGPUMetrics` now returns real DCGM data or zeroes when no exporter exists, never synthetic values (2026-10-23). The Hub publishes converged snapshots to the stable channel and non-converged ones to canary; `GET /api/federated/global-model` selects by `channel`/`cluster`, `GET /api/federated/releases` reports channels, and `DELETE /api/federated/releases/canary` demotes a canary. Spokes bootstrap with `RECONCILYX_MODEL_CHANNEL` (default `stable`). Unit tests cover channel selection, canary rollback, bucket capture, and JVM/GPU merging; live multi-cluster rollout remains unverified.
 
 ## Phase 7
 

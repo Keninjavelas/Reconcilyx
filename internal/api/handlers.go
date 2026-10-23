@@ -980,8 +980,51 @@ func (s *Server) handleFederatedGlobalModel(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusServiceUnavailable, "Federated aggregator is not initialized")
 		return
 	}
-	snap := s.fedAggregator.CurrentSnapshot()
+	channel := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("channel")))
+	cluster := strings.TrimSpace(r.URL.Query().Get("cluster"))
+
+	var snap *federated.GlobalQTable
+	if channel == federated.ModelTagStable || channel == federated.ModelTagCanary {
+		var version string
+		snap, version = s.modelRegistry.GetModelForCluster(cluster, channel == federated.ModelTagCanary)
+		if version != "" {
+			actualChannel := federated.ModelTagStable
+			if channel == federated.ModelTagCanary && s.modelRegistry.CanaryVersion() != "" {
+				actualChannel = federated.ModelTagCanary
+			}
+			w.Header().Set("X-Reconcilyx-Model-Version", version)
+			w.Header().Set("X-Reconcilyx-Model-Channel", actualChannel)
+		}
+	}
+	if snap == nil {
+		// No release has been published for this channel yet; serve the live
+		// aggregated snapshot so pre-registry spokes keep bootstrapping.
+		snap = s.fedAggregator.CurrentSnapshot()
+	}
 	writeJSON(w, http.StatusOK, snap)
+}
+
+func (s *Server) handleFederatedReleases(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"stable": s.modelRegistry.StableVersion(),
+		"canary": s.modelRegistry.CanaryVersion(),
+	})
+}
+
+func (s *Server) handleFederatedCanaryRollback(w http.ResponseWriter, r *http.Request) {
+	reason := strings.TrimSpace(r.URL.Query().Get("reason"))
+	if reason == "" {
+		reason = "operator rollback"
+	}
+	if err := s.modelRegistry.RollbackCanary(reason); err != nil {
+		writeError(w, http.StatusConflict, "Cannot roll back canary model", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": "canary-demoted",
+		"stable": s.modelRegistry.StableVersion(),
+		"canary": s.modelRegistry.CanaryVersion(),
+	})
 }
 
 var _ = context.Background

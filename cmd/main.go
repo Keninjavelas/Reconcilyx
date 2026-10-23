@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
@@ -210,6 +211,10 @@ func main() {
 	// --- Federated intelligence wiring -------------------------------------
 	hubBaseURL := os.Getenv("RECONCILYX_HUB_URL")
 	spokeClusterName := os.Getenv("RECONCILYX_CLUSTER_NAME")
+	modelChannel := strings.ToLower(strings.TrimSpace(os.Getenv("RECONCILYX_MODEL_CHANNEL")))
+	if modelChannel == "" {
+		modelChannel = federated.ModelTagStable
+	}
 	fedNamespace := os.Getenv("RECONCILYX_FED_NAMESPACE")
 	if fedNamespace == "" {
 		fedNamespace = "reconcilyx-system"
@@ -274,13 +279,13 @@ func main() {
 			})
 			rlAgent.SetFederatedEmitter(emitter)
 			bootstrapCtx, bootstrapCancel := context.WithTimeout(context.Background(), 15*time.Second)
-			snap, bErr := federated.FetchGlobalModel(bootstrapCtx, hubBaseURL, apiKey, nil)
+			snap, bErr := federated.FetchGlobalModelForChannel(bootstrapCtx, hubBaseURL, apiKey, modelChannel, spokeClusterName, nil)
 			if bErr == nil && snap != nil && len(snap.Entries) > 0 {
 				rlAgent.LoadGlobal(bootstrapCtx, snap)
-				setupLog.Info("Federated bootstrap loaded global Q-table", "entries", len(snap.Entries), "version", snap.Version, "cluster", spokeClusterName)
+				setupLog.Info("Federated bootstrap loaded global Q-table", "entries", len(snap.Entries), "version", snap.Version, "cluster", spokeClusterName, "channel", modelChannel)
 				api.EmitFederatedBootstrapOutcome(spokeClusterName, "success")
 			} else if bErr != nil {
-				setupLog.Info("Federated bootstrap skipped (hub unreachable or empty)", "cluster", spokeClusterName, "error", safeErr(bErr))
+				setupLog.Info("Federated bootstrap skipped (hub unreachable or empty)", "cluster", spokeClusterName, "channel", modelChannel, "error", safeErr(bErr))
 				api.EmitFederatedBootstrapOutcome(spokeClusterName, "skipped")
 			} else {
 				api.EmitFederatedBootstrapOutcome(spokeClusterName, "empty")

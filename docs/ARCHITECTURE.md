@@ -22,15 +22,15 @@ The codebase currently consists of four main layers:
 | Pillar | Current Status | Reality Check |
 |---|---|---|
 | Core actuation | `⚙️ Partial` | Proposal lifecycle, rollback, and `/resize` SSA are implemented; independent end-to-end cluster validation is still pending |
-| Federated learning | `⚙️ Partial` | Aggregation, bootstrap, emitters, and live reward updates after completed/rolled-back proposals exist; production rollout is not claimed |
+| Federated learning | `⚙️ Partial` | Aggregation, bootstrap, emitters, live reward updates, and stable/canary channel selection exist; production multi-cluster rollout is not claimed |
 | Multi-cloud arbitrage | `⚙️ Partial` | Arbitrage logic exists; pricing providers support live APIs with static fallbacks |
-| Carbon and app intelligence | `⚙️ Partial` | JVM parsing helpers exist; live JVM/GPU metric collection requires additional exporter queries |
+| Carbon and app intelligence | `⚙️ Partial` | JVM JMX heap and NVIDIA DCGM metrics are queried from Prometheus and feed the RL state buckets; live exporter validation is pending |
 | ChatOps | `⚙️ Partial` | Tool-backed reads, confirmation tokens, and audit logging exist; LLM quality depends on the configured provider |
 | Shift-left GitOps | `⚙️ Partial` | PR helpers exist, but merge-path wiring and validation are incomplete |
 | Agentic execution | `⚙️ Partial` | Approve/reject/rollback execute real CRD changes with confirmation and audit |
 | Node consolidation | `❌ Stub/Planned` | Deferred to v5.0; no Karpenter actuation loop |
 | eBPF streaming | `❌ Stub/Planned` | Deferred to v5.0; v4 uses Prometheus telemetry |
-| Model registry | `⚙️ Partial` | Snapshot versioning and canary helpers exist; rollout wiring is being completed |
+| Model registry | `⚙️ Partial` | Converged snapshots publish to a stable channel and unstable ones to canary; spokes select with `RECONCILYX_MODEL_CHANNEL`, and operators can demote a canary; live multi-cluster rollout is unverified |
 
 ## Beta Architecture Priorities
 
@@ -46,9 +46,9 @@ The beta architecture is focused on five hardening goals:
 
 The following areas should be treated as in development until upgraded by evidence:
 
-- Federated learning end-to-end updates
+- Federated learning end-to-end updates and cross-cluster channel rollout
 - Live cloud pricing
-- Real GPU telemetry
+- GPU/JVM exporter telemetry against real clusters
 - Agentic write execution
 - eBPF telemetry
 - Karpenter node consolidation

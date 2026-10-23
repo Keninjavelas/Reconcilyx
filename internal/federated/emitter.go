@@ -14,13 +14,13 @@ import (
 type DeltaObserver func(delta QTableDelta)
 
 type EmitterConfig struct {
-	HubBaseURL       string
-	ClusterName      string
-	APIKey           string
-	BufferCapacity   int
-	FlushInterval    time.Duration
-	FlushThreshold   int
-	HTTPClient       *http.Client
+	HubBaseURL     string
+	ClusterName    string
+	APIKey         string
+	BufferCapacity int
+	FlushInterval  time.Duration
+	FlushThreshold int
+	HTTPClient     *http.Client
 }
 
 func (c EmitterConfig) withDefaults() EmitterConfig {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -44,6 +45,7 @@ type Server struct {
 	fedAggregator *federated.Aggregator
 	fedNamespace  string
 	fedModelName  string
+	modelRegistry *federated.ModelRegistry
 }
 
 func NewServer(addr, apiKey string, deps ServerDeps) *Server {
@@ -69,6 +71,10 @@ func NewServer(addr, apiKey string, deps ServerDeps) *Server {
 		fedAggregator: agg,
 		fedNamespace:  ns,
 		fedModelName:  modelName,
+		modelRegistry: federated.NewModelRegistry(),
+	}
+	if snap := agg.CurrentSnapshot(); snap != nil {
+		s.registerSnapshot(snap)
 	}
 	s.routes()
 	cors := strings.Split(os.Getenv("RECONCILYX_CORS_ORIGINS"), ",")
@@ -123,6 +129,8 @@ func (s *Server) routes() {
 
 	s.mux.HandleFunc("POST /api/federated/deltas", s.handleFederatedDeltas)
 	s.mux.HandleFunc("GET /api/federated/global-model", s.handleFederatedGlobalModel)
+	s.mux.HandleFunc("GET /api/federated/releases", s.handleFederatedReleases)
+	s.mux.HandleFunc("DELETE /api/federated/releases/canary", s.handleFederatedCanaryRollback)
 
 	s.mux.HandleFunc("POST /api/chat", s.handleChat)
 
@@ -171,6 +179,7 @@ func (s *Server) runFederatedLoop(ctx context.Context) {
 	if snapshot != nil && len(snapshot.Entries) == 0 && s.deps.Client != nil {
 		if loaded, err := federated.LoadGlobalModel(ctx, s.deps.Client, s.fedNamespace, s.fedModelName); err == nil && len(loaded.Entries) > 0 {
 			s.fedAggregator.LoadSnapshot(loaded)
+			s.registerSnapshot(loaded)
 			s.logger.Info("Restored global Q-table from ConfigMap", "entries", len(loaded.Entries), "version", loaded.Version, "namespace", s.fedNamespace, "name", s.fedModelName)
 		}
 	}
@@ -188,6 +197,7 @@ func (s *Server) runFederatedLoop(ctx context.Context) {
 
 func (s *Server) compactAndPersist(ctx context.Context) error {
 	snap := s.fedAggregator.CompactAndSnapshot()
+	s.registerSnapshot(snap)
 	syncGauges(s.fedAggregator)
 	if s.deps.Client == nil || snap == nil {
 		return nil
@@ -198,6 +208,27 @@ func (s *Server) compactAndPersist(ctx context.Context) error {
 	}
 	s.logger.Info("Persisted global Q-table snapshot", "version", snap.Version, "entries", len(snap.Entries))
 	return nil
+}
+
+// registerSnapshot publishes an aggregated snapshot onto the matching rollout
+// channel: converged models become stable, everything else stays canary-only.
+func (s *Server) registerSnapshot(snap *federated.GlobalQTable) {
+	if snap == nil || len(snap.Entries) == 0 {
+		return
+	}
+	version := snap.VersionStr
+	if version == "" {
+		version = fmt.Sprintf("v%d", snap.Version)
+	}
+	tag := federated.ModelTagCanary
+	if snap.IsStable {
+		tag = federated.ModelTagStable
+	}
+	if err := s.modelRegistry.RegisterModel(version, tag, snap); err != nil {
+		s.logger.Error("Failed to register federated model release", "version", version, "tag", tag, "error", err.Error())
+		return
+	}
+	s.logger.Info("Registered federated model release", "version", version, "tag", tag, "entries", len(snap.Entries))
 }
 
 func syncGauges(a *federated.Aggregator) {

@@ -3,8 +3,8 @@ package federated
 import "time"
 
 const (
-	DefaultTrimRatio        = 0.10 // Trim top and bottom 10% outlier deltas
-	DefaultMaxDeltaQ        = 5.0  // Outlier rejection cutoff for impossible delta magnitude
+	DefaultTrimRatio          = 0.10  // Trim top and bottom 10% outlier deltas
+	DefaultMaxDeltaQ          = 5.0   // Outlier rejection cutoff for impossible delta magnitude
 	DefaultStabilityThreshold = 0.005 // Maximum shift threshold to declare model STABLE
 )
 
@@ -23,31 +23,31 @@ type QActionKey struct {
 }
 
 type QTableDelta struct {
-	ClusterName string       `json:"clusterName"`
-	StateKey    QStateKey    `json:"stateKey"`
-	ActionKey   QActionKey   `json:"actionKey"`
-	DeltaQ      float64      `json:"deltaQ"`
-	VisitCount  uint64       `json:"visitCount"`
-	Epoch       int64        `json:"epoch"`
-	Timestamp   time.Time    `json:"timestamp"`
+	ClusterName string     `json:"clusterName"`
+	StateKey    QStateKey  `json:"stateKey"`
+	ActionKey   QActionKey `json:"actionKey"`
+	DeltaQ      float64    `json:"deltaQ"`
+	VisitCount  uint64     `json:"visitCount"`
+	Epoch       int64      `json:"epoch"`
+	Timestamp   time.Time  `json:"timestamp"`
 }
 
 type DeltaBatch struct {
-	ClusterName string       `json:"clusterName"`
-	Epoch       int64        `json:"epoch"`
+	ClusterName string        `json:"clusterName"`
+	Epoch       int64         `json:"epoch"`
 	Deltas      []QTableDelta `json:"deltas"`
 }
 
 type GlobalQTable struct {
-	Version              int64                      `json:"version"`
-	VersionStr           string                     `json:"versionStr,omitempty"`
-	CreatedAt            time.Time                  `json:"createdAt"`
-	Entries              map[string]GlobalQEntry    `json:"entries"`
-	IsStable             bool                       `json:"isStable"`
-	ConvergenceScore     float64                    `json:"convergenceScore"`
-	ModelHash            string                     `json:"modelHash,omitempty"`
-	MinSpokeVersion      string                     `json:"minSpokeVersion,omitempty"`
-	OutlierRejectedCount uint64                     `json:"outlierRejectedCount"`
+	Version              int64                   `json:"version"`
+	VersionStr           string                  `json:"versionStr,omitempty"`
+	CreatedAt            time.Time               `json:"createdAt"`
+	Entries              map[string]GlobalQEntry `json:"entries"`
+	IsStable             bool                    `json:"isStable"`
+	ConvergenceScore     float64                 `json:"convergenceScore"`
+	ModelHash            string                  `json:"modelHash,omitempty"`
+	MinSpokeVersion      string                  `json:"minSpokeVersion,omitempty"`
+	OutlierRejectedCount uint64                  `json:"outlierRejectedCount"`
 }
 
 type GlobalQEntry struct {

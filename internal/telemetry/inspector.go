@@ -122,7 +122,7 @@ func (i *defaultInspector) InspectMemory(ctx context.Context, ref corev1.ObjectR
 
 func (i *defaultInspector) InspectRestarts(ctx context.Context, ref corev1.ObjectReference) (map[string]int32, error) {
 	result := make(map[string]int32)
-	
+
 	restartQuery := fmt.Sprintf(`max(kube_pod_container_status_restarts_total{namespace="%s", pod=~"`+podMatchRegex+`", container!="POD", container!=""}) by (container)`, ref.Namespace, ref.Name)
 	restartVal, err := i.client.Query(ctx, restartQuery)
 	if err != nil && err != ErrNoData {
@@ -135,6 +135,180 @@ func (i *defaultInspector) InspectRestarts(ctx context.Context, ref corev1.Objec
 	}
 
 	return result, nil
+}
+
+// InspectJVM reads JVM heap metrics exposed by a JMX exporter. Metrics without
+// a container label are returned under the empty key and applied to the
+// workload's containers by the provider.
+func (i *defaultInspector) InspectJVM(ctx context.Context, ref corev1.ObjectReference) (map[string]JVMHeapMetrics, error) {
+	result := make(map[string]JVMHeapMetrics)
+
+	maxMap, err := i.queryByContainer(ctx, fmt.Sprintf(
+		`max(jvm_memory_max_bytes{namespace="%s", pod=~"`+podMatchRegex+`", area="heap"}) by (container)`,
+		ref.Namespace, ref.Name))
+	if err != nil {
+		return nil, err
+	}
+	committedMap, err := i.queryByContainer(ctx, fmt.Sprintf(
+		`max(jvm_memory_bytes_committed{namespace="%s", pod=~"`+podMatchRegex+`", area="heap"}) by (container)`,
+		ref.Namespace, ref.Name))
+	if err != nil {
+		return nil, err
+	}
+	usedMap, err := i.queryByContainer(ctx, fmt.Sprintf(
+		`max(jvm_memory_bytes_used{namespace="%s", pod=~"`+podMatchRegex+`", area="heap"}) by (container)`,
+		ref.Namespace, ref.Name))
+	if err != nil {
+		return nil, err
+	}
+
+	for _, containerName := range gatherContainers(maxMap, committedMap, usedMap) {
+		heapMax := maxMap[containerName]
+		if heapMax <= 0 {
+			heapMax = committedMap[containerName]
+		}
+		heapUsed := usedMap[containerName]
+		if heapMax <= 0 && heapUsed <= 0 {
+			continue
+		}
+		result[containerName] = JVMHeapMetrics{
+			IsJVMWorkload: true,
+			XmxBytes:      heapMax,
+			HeapUsedBytes: heapUsed,
+		}
+	}
+	if len(result) > 0 {
+		return result, nil
+	}
+
+	// JMX exporters without pod relabeling do not carry a container label.
+	heapMax, err := i.queryScalar(ctx, fmt.Sprintf(
+		`max(jvm_memory_max_bytes{namespace="%s", pod=~"`+podMatchRegex+`", area="heap"})`,
+		ref.Namespace, ref.Name))
+	if err != nil {
+		return nil, err
+	}
+	heapUsed, err := i.queryScalar(ctx, fmt.Sprintf(
+		`max(jvm_memory_bytes_used{namespace="%s", pod=~"`+podMatchRegex+`", area="heap"})`,
+		ref.Namespace, ref.Name))
+	if err != nil {
+		return nil, err
+	}
+	if heapMax > 0 || heapUsed > 0 {
+		result[""] = JVMHeapMetrics{IsJVMWorkload: true, XmxBytes: heapMax, HeapUsedBytes: heapUsed}
+	}
+	return result, nil
+}
+
+// InspectGPU reads NVIDIA DCGM metrics. It returns an empty map when no DCGM
+// series are present, so non-GPU workloads are not assigned synthetic data.
+func (i *defaultInspector) InspectGPU(ctx context.Context, ref corev1.ObjectReference) (map[string]GPUMetrics, error) {
+	result := make(map[string]GPUMetrics)
+
+	utilMap, err := i.queryByContainer(ctx, fmt.Sprintf(
+		`max(DCGM_FI_DEV_GPU_UTIL{namespace="%s", pod=~"`+podMatchRegex+`"}) by (container)`,
+		ref.Namespace, ref.Name))
+	if err != nil {
+		return nil, err
+	}
+	countMap, err := i.queryByContainer(ctx, fmt.Sprintf(
+		`count(DCGM_FI_DEV_GPU_UTIL{namespace="%s", pod=~"`+podMatchRegex+`"}) by (container)`,
+		ref.Namespace, ref.Name))
+	if err != nil {
+		return nil, err
+	}
+	usedMap, err := i.queryByContainer(ctx, fmt.Sprintf(
+		`sum(DCGM_FI_DEV_FB_USED{namespace="%s", pod=~"`+podMatchRegex+`"}) by (container)`,
+		ref.Namespace, ref.Name))
+	if err != nil {
+		return nil, err
+	}
+	totalMap, err := i.queryByContainer(ctx, fmt.Sprintf(
+		`sum(DCGM_FI_DEV_FB_TOTAL{namespace="%s", pod=~"`+podMatchRegex+`"}) by (container)`,
+		ref.Namespace, ref.Name))
+	if err != nil {
+		return nil, err
+	}
+	tempMap, err := i.queryByContainer(ctx, fmt.Sprintf(
+		`max(DCGM_FI_DEV_GPU_TEMP{namespace="%s", pod=~"`+podMatchRegex+`"}) by (container)`,
+		ref.Namespace, ref.Name))
+	if err != nil {
+		return nil, err
+	}
+
+	for _, containerName := range gatherContainers(utilMap, countMap, usedMap, totalMap, tempMap) {
+		count := int32(countMap[containerName])
+		util := utilMap[containerName]
+		used := usedMap[containerName]
+		total := totalMap[containerName]
+		temp := tempMap[containerName]
+		if count <= 0 && util == 0 && used == 0 && total == 0 && temp == 0 {
+			continue
+		}
+		if count <= 0 {
+			count = 1
+		}
+		result[containerName] = GPUMetrics{
+			GPUCount:            count,
+			GPUUtilizationPct:   util,
+			GPUMemoryUsedBytes:  used * 1024 * 1024,
+			GPUMemoryTotalBytes: total * 1024 * 1024,
+			TemperatureCelsius:  temp,
+		}
+	}
+	if len(result) > 0 {
+		return result, nil
+	}
+
+	// DCGM exporters that do not attach the pod's container label still expose
+	// usable device metrics; apply them to the whole workload.
+	util, err := i.queryScalar(ctx, fmt.Sprintf(
+		`avg(DCGM_FI_DEV_GPU_UTIL{namespace="%s", pod=~"`+podMatchRegex+`"})`,
+		ref.Namespace, ref.Name))
+	if err != nil {
+		return nil, err
+	}
+	count, err := i.queryScalar(ctx, fmt.Sprintf(
+		`count(DCGM_FI_DEV_GPU_UTIL{namespace="%s", pod=~"`+podMatchRegex+`"})`,
+		ref.Namespace, ref.Name))
+	if err != nil {
+		return nil, err
+	}
+	if count > 0 {
+		used, _ := i.queryScalar(ctx, fmt.Sprintf(
+			`sum(DCGM_FI_DEV_FB_USED{namespace="%s", pod=~"`+podMatchRegex+`"})`,
+			ref.Namespace, ref.Name))
+		total, _ := i.queryScalar(ctx, fmt.Sprintf(
+			`sum(DCGM_FI_DEV_FB_TOTAL{namespace="%s", pod=~"`+podMatchRegex+`"})`,
+			ref.Namespace, ref.Name))
+		temp, _ := i.queryScalar(ctx, fmt.Sprintf(
+			`max(DCGM_FI_DEV_GPU_TEMP{namespace="%s", pod=~"`+podMatchRegex+`"})`,
+			ref.Namespace, ref.Name))
+		result[""] = GPUMetrics{
+			GPUCount:            int32(count),
+			GPUUtilizationPct:   util,
+			GPUMemoryUsedBytes:  used * 1024 * 1024,
+			GPUMemoryTotalBytes: total * 1024 * 1024,
+			TemperatureCelsius:  temp,
+		}
+	}
+	return result, nil
+}
+
+func (i *defaultInspector) queryByContainer(ctx context.Context, query string) (map[string]float64, error) {
+	val, err := i.client.Query(ctx, query)
+	if err != nil && err != ErrNoData {
+		return nil, err
+	}
+	return parseVectorToMap(val), nil
+}
+
+func (i *defaultInspector) queryScalar(ctx context.Context, query string) (float64, error) {
+	val, err := i.client.Query(ctx, query)
+	if err != nil && err != ErrNoData {
+		return 0, err
+	}
+	return parseScalar(val), nil
 }
 
 // parseVectorToMap extracts float64 values grouped by the "container" label from a Prometheus model.Value.

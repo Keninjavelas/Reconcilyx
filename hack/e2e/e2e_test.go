@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/common/model"
 	"github.com/reconcilyx/operator/internal/cloud"
 	"github.com/reconcilyx/operator/internal/engine"
 	"github.com/reconcilyx/operator/internal/federated"
@@ -92,9 +93,27 @@ func TestFullPlatformIntegrationPipeline(t *testing.T) {
 		t.Fatalf("E2E Pipeline Failure: JVM -Xmx command override failed, got %s", newArgs[1])
 	}
 
-	gpuMetrics, err := telemetry.ScrapeGPUMetrics(ctx, nil, "pytorch-training", "analytics")
+	gpuClient := &telemetry.MockMetricsClient{
+		QueryFunc: func(_ context.Context, query string) (model.Value, error) {
+			switch {
+			case strings.HasPrefix(strings.TrimSpace(query), "count("):
+				return model.Vector{{Metric: model.Metric{"container": "trainer"}, Value: 2}}, nil
+			case strings.Contains(query, "DCGM_FI_DEV_GPU_UTIL"):
+				return model.Vector{{Metric: model.Metric{"container": "trainer"}, Value: 87.5}}, nil
+			case strings.Contains(query, "DCGM_FI_DEV_FB_USED"):
+				return model.Vector{{Metric: model.Metric{"container": "trainer"}, Value: 8192}}, nil
+			case strings.Contains(query, "DCGM_FI_DEV_FB_TOTAL"):
+				return model.Vector{{Metric: model.Metric{"container": "trainer"}, Value: 16384}}, nil
+			case strings.Contains(query, "DCGM_FI_DEV_GPU_TEMP"):
+				return model.Vector{{Metric: model.Metric{"container": "trainer"}, Value: 68}}, nil
+			default:
+				return model.Vector{}, nil
+			}
+		},
+	}
+	gpuMetrics, err := telemetry.ScrapeGPUMetrics(ctx, gpuClient, "pytorch-training", "analytics")
 	if err != nil || gpuMetrics.GPUCount <= 0 {
-		t.Fatalf("E2E Pipeline Failure: GPU telemetry scraping failed")
+		t.Fatalf("E2E Pipeline Failure: GPU telemetry scraping failed: %v", err)
 	}
 
 	// -------------------------------------------------------------

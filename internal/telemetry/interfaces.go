@@ -25,6 +25,8 @@ type WorkloadInspector interface {
 	InspectCPU(ctx context.Context, ref corev1.ObjectReference) (map[string]CPUMetrics, error)
 	InspectMemory(ctx context.Context, ref corev1.ObjectReference) (map[string]MemoryMetrics, error)
 	InspectRestarts(ctx context.Context, ref corev1.ObjectReference) (map[string]int32, error)
+	InspectJVM(ctx context.Context, ref corev1.ObjectReference) (map[string]JVMHeapMetrics, error)
+	InspectGPU(ctx context.Context, ref corev1.ObjectReference) (map[string]GPUMetrics, error)
 }
 
 // TelemetryProvider is the high-level façade injected into the Optimization Engine.

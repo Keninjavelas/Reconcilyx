@@ -109,10 +109,10 @@ These are known limits, not configuration mistakes:
 
 - **eBPF telemetry** is deferred to v5.0 planning. Telemetry uses Prometheus; invoking the eBPF stub emits a warning.
 - **Node consolidation and Karpenter actuation** are deferred to v5.0 planning.
-- **GPU/DCGM telemetry** returns stub values; it is not a live DCGM scrape.
+- **GPU/DCGM and JVM heap telemetry** is queried from Prometheus when the DCGM and JMX exporters are present; it has not been validated against a live exporter deployment, and workloads without exporters report no GPU/JVM data rather than synthetic values.
 - **JVM `-Xmx` rewriting** exists as an engine helper and test path; it is not wired into the live actuator.
 - **Multi-cloud migration** produces a proposal and a generated Velero backup/restore script. Reconcilyx does not execute the migration.
-- **Federated learning** and **model registry rollout** are partially implemented; live production rollout wiring is incomplete.
+- **Federated learning** supports stable/canary channel selection (`RECONCILYX_MODEL_CHANNEL`) and canary rollback; a production multi-cluster rollout is not claimed.
 - **Workload kinds**: execution supports Deployments. Other kinds may be evaluated but are not actuated by the in-place resize path.
 
 See [FEATURE_MATRIX.md](../FEATURE_MATRIX.md) for the conservative inventory and [STATUS.md](../STATUS.md) for evidence.
