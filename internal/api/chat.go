@@ -426,12 +426,12 @@ func (s *Server) respondCarbon() string {
 		carbonHuman = "0 kg CO₂"
 	}
 	return fmt.Sprintf("### 🌱 Carbon Footprint Summary\n\n"+
-		"Reconcilyx reduces carbon by right-sizing over-provisioned workloads and (optionally) scheduling work during clean-energy grid windows.\n\n"+
+		"Reconcilyx reduces carbon by right-sizing over-provisioned workloads. The policy `carbonWeight` field (0–1) blends carbon abatement into the evaluation; it does not move workloads between grid windows.\n\n"+
 		"**Running totals**:\n"+
 		"- ✅ **%s** CO₂ abated from %d applied proposals\n"+
 		"- 📉 Right-sizing (In-Place Pod Resizing) = no pod restart, no re-scheduling cost\n"+
-		"- ⚡ Carbon-aware scheduler integration = available via policies when `carbonWeight` is set > 0.\n\n"+
-		"Tip: use `set policy carbonWeight=40` to give the RL agent a 40%% carbon objective.",
+		"- ⚡ Carbon-aware scheduling is not implemented in v4.0-beta.\n\n"+
+		"Tip: set `carbonWeight` between 0 and 1 in the policy (for example `0.4` for a 40%% carbon objective).",
 		carbonHuman, appliedCount)
 }
 
@@ -483,7 +483,7 @@ func (s *Server) respondArbitrage(args map[string]interface{}) string {
 			return strings.Join(lines, "\n")
 		}
 	}
-	return "### 🌐 Multi-Cloud Arbitrage\n\nLive ranking uses current AWS / GCP / Azure on-demand & spot rates from the pricing factory (see `internal/cloud/factory.go`).\n\nTo see concrete migration candidates, try:\n\n- `evaluate arbitrage for payment-service`\n- `rank workloads by cost`\n\nTip: set `GCP_BILLING_API_KEY`, AWS credentials, and/or `AZURE_SUB_ID` env vars to enable live pricing lookups. Otherwise static fallbacks (updated monthly) are used."
+	return "### 🌐 Multi-Cloud Arbitrage\n\nLive ranking uses current AWS / GCP / Azure on-demand & spot rates from the pricing factory (see `internal/cloud/factory.go`).\n\nTo see concrete migration candidates, try:\n\n- `evaluate arbitrage for payment-service`\n- `rank workloads by cost`\n\nTip: set `GCP_BILLING_API_KEY`, AWS credentials, and/or `AZURE_SUB_ID` env vars to enable live pricing lookups. Otherwise a bundled static fallback is used."
 }
 
 func (s *Server) respondForecast(args map[string]interface{}) string {
@@ -491,8 +491,8 @@ func (s *Server) respondForecast(args map[string]interface{}) string {
 	if workload == "" {
 		workload = "(any workload)"
 	}
-	return fmt.Sprintf("### 📈 Workload Resource Forecast\n\n**Workload**: `%s`\n\nThe forecasting engine uses historical Prometheus usage (last 7 days, default) and computes 95%% confidence-interval bounds. The analyzer compares the forecasted peak against current requests:\n\n1. 🔍 If forecasted peak < 85%% of request **for 3 consecutive windows** → a right-sizing proposal is generated.\n2. ⚠️ If forecasted peak > request → proposal is suppressed (safety-first).\n3. 🔐 Forecast confidence < 75%% → recommendation requires manual approval.\n\nPrometheus metrics used:\n- `rate(container_cpu_usage_seconds_total[5m])`\n- `container_memory_working_set_bytes`\n\nQuery the UI `#/forecast/%s` page for an interactive chart.",
-		workload, workload)
+	return fmt.Sprintf("### 📈 Workload Resource Forecast\n\n**Workload**: `%s`\n\nThe forecasting engine uses historical Prometheus usage (last 7 days, default) and computes 95%% confidence-interval bounds. The analyzer compares the forecasted peak against current requests:\n\n1. 🔍 If forecasted peak < 85%% of request **for 3 consecutive windows** → a right-sizing proposal is generated.\n2. ⚠️ If forecasted peak > request → proposal is suppressed (safety-first).\n3. 🔐 Forecast confidence < 75%% → recommendation requires manual approval.\n\nPrometheus metrics used:\n- `rate(container_cpu_usage_seconds_total[5m])`\n- `container_memory_working_set_bytes`\n\nQuery the UI `#/forecast` page for an interactive chart.",
+		workload)
 }
 
 func (s *Server) respondAnomalies() string {
@@ -921,11 +921,11 @@ func (s *Server) respondExplain(args map[string]interface{}) string {
 	topic, _ := args["topic"].(string)
 	switch {
 	case strings.Contains(strings.ToLower(topic), "in-place") || strings.Contains(strings.ToLower(topic), "resize"):
-		return "### 🧠 What is In-Place Pod Resizing?\n\nKubernetes 1.27+ introduced **InPlacePodVerticalScaling**, which lets the kubelet update a running container's `resources.requests` and `resources.limits` **without restarting the pod**.\n\nReconcilyx uses this via Server-Side Apply (SSA):\n1. Detector proposes new requests\n2. Approval (or AutoApply mode)\n3. Controller SSA-patches the pod template with the new values\n4. kubelet applies without restart → zero downtime\n\nFallback: if the cluster doesn't have the feature gate, Reconcilyx falls back to rolling restart via Deployment patch (bump annotation + rollout)."
+		return "### 🧠 What is In-Place Pod Resizing?\n\nKubernetes 1.27+ introduced **InPlacePodVerticalScaling**, which lets the kubelet update a running container's `resources.requests` and `resources.limits` **without restarting the pod**.\n\nReconcilyx applies it with Server-Side Apply (SSA) against the Pod `resize` subresource, using the `reconcilyx-operator` field manager:\n1. Detector proposes new requests\n2. Approval (or AutoApply mode)\n3. Controller SSA-patches matching Pods via `/resize`\n4. kubelet applies the change without restarting the Pod\n\nThe beta does not fall back to a rolling restart. If the feature gate is disabled or the resize is rejected, execution fails with a feature-gate hint and the proposal can be rolled back from its execution snapshot."
 	case strings.Contains(strings.ToLower(topic), "q-learning") || strings.Contains(strings.ToLower(topic), "rl"):
-		return "### 🧠 Reinforcement Learning (Q-Learning) in Reconcilyx\n\n**Goal:** Train an agent to pick *how much* to cut CPU / memory, not just *whether*.\n\n- **State bucket**: discretized (CPU utilization %, Memory utilization %, Current request bin)\n- **Actions**: ±10%, ±20%, ±30% CPU and Memory\n- **Reward signal** = `(cost_weight * $saved) + (carbon_weight * CO2_saved) - (SLO_weight * regression_count * 100)`\n- **Epsilon-greedy** exploration decaying to 5%\n- **Federated delta sync**: each spoke pushes Q-table deltas → hub aggregates → global snapshot → new spokes bootstrap from the global model\n\nSafety guardrails always override RL: max 60% cut per step, SLO regression threshold rollback within 5 min via pprof."
+		return "### 🧠 Reinforcement Learning (Q-Learning) in Reconcilyx\n\n**Goal:** Train an agent to pick *how much* to cut CPU / memory, not just *whether*.\n\n- **State bucket**: discretized (CPU utilization %, Memory utilization %, Current request bin)\n- **Actions**: ±10%, ±20%, ±30% CPU and Memory\n- **Reward signal** = `(cost_weight * $saved) + (carbon_weight * CO2_saved) - (SLO_weight * regression_count * 100)`\n- **Epsilon-greedy** exploration decaying to 5%\n\nPolicy guardrails and the execution gate remain authoritative over RL output. Federated delta exchange and the model registry are partially wired in v4.0-beta; live rollout is not claimed."
 	case strings.Contains(strings.ToLower(topic), "carbon") || strings.Contains(strings.ToLower(topic), "green"):
-		return "### 🌱 Carbon Awareness Explained\n\nTwo knobs:\n1. **`carbonWeight` in OptimizationPolicy (0–100)** — how much RL reward is CO₂-abatement vs. pure $-saved.\n2. **Carbon provider**: Electricity Maps / WattTime (live) or static (by region).\n\nArbitrage ranking combines both:\n`Score = α*(cost_cut/max_cost_cut) + (1-α)*(carbon_cut/max_carbon_cut)`\nwhere α comes from `(cost / (cost + carbon))`.\n\nWhen carbon weight is ≥ 50%, the engine will also delay non-urgent workloads during high-emission grid windows if the policy allows."
+		return "### 🌱 Carbon Awareness Explained\n\nTwo knobs:\n1. **`carbonWeight` in OptimizationPolicy (0–1)** — how much the evaluation blends CO₂ abatement with pure $-saved.\n2. **Carbon provider**: Electricity Maps / WattTime (live) or static (by region).\n\nArbitrage ranking combines both:\n`Score = α*(cost_cut/max_cost_cut) + (1-α)*(carbon_cut/max_carbon_cut)`\nwhere α comes from `(cost / (cost + carbon))`.\n\nCarbon-aware scheduling during high-emission grid windows is not implemented in v4.0-beta."
 	default:
 		return "### 📖 Topics\n\nAsk about:\n- `explain in-place pod resizing`\n- `explain q-learning` / `reinforcement learning`\n- `explain carbon awareness`\n- `explain SSA` (Server-Side Apply)\n- `explain federated learning`"
 	}

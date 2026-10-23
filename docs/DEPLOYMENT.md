@@ -19,7 +19,7 @@ Because the UI is embedded, no separate hosting is required. A static build of `
 | **Embedded (default)** | Open `http://<hub-host>:8082/`. The UI calls the same origin; no CORS configuration is needed. |
 | **Static (optional)** | Build `ui/` with `npm run build`, host `ui/dist/` anywhere, and set **Settings → Control Plane API URL** to the Hub URL. Add that origin to `RECONCILYX_CORS_ORIGINS`. |
 
-The repository does not currently guarantee a public hosted dashboard. The Vercel project referenced by earlier revisions is not reachable, and the GitHub Pages workflow (`.github/workflows/deploy-ui.yml`) only runs after Pages is enabled in repository settings. Treat self-hosted deployment as the supported path.
+No public hosted dashboard is operated. Treat embedded or self-hosted deployment as the supported path. The optional GitHub Pages workflow (`.github/workflows/deploy-ui.yml`) is unverified and has no claimed deployment URL.
 
 ---
 
@@ -225,7 +225,7 @@ npm run build
 # deploy ui/dist/
 ```
 
-Set the Hub URL either in the UI at runtime or at build time via `VITE_API_BASE`. GitHub Pages deployment is available through `.github/workflows/deploy-ui.yml` once Pages is enabled for the repository; no live public URL is claimed here.
+Set the Hub URL either in the UI at runtime or at build time via `VITE_API_BASE`. The GitHub Pages workflow at `.github/workflows/deploy-ui.yml` is optional and unverified; no live public URL is claimed. Configure `RECONCILYX_CORS_ORIGINS` and the API key for whichever origin hosts the static build.
 
 ---
 

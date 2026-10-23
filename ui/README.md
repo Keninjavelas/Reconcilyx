@@ -1,27 +1,26 @@
 # Reconcilyx Dashboard (ui/)
 
-Enterprise FinOps console for the Reconcilyx operator. Dark-first editorial aesthetic — Vite, TypeScript, React 18, Tailwind, Zustand, Recharts.
+Operator console for the Reconcilyx control plane. Vite + React 18 + TypeScript + Tailwind + Zustand + Recharts, with a dark editorial design system.
 
 ## Quick start
 
 ```bash
 cd ui
-npm install
+npm ci
 
 # local dev (proxies /api and /healthz to http://localhost:8082)
 npm run dev
 
-# typecheck
+# typecheck only
 npm run typecheck
 
-# production build → lands in ui/dist (embedded by ../ui/embed.go)
+# production build -> ui/dist, embedded by ../ui/embed.go
 npm run build
 ```
 
 ## Configure backend
 
-By default the dev server proxies to `http://localhost:8082` where the Go
-`internal/api` server runs. Override with:
+By default the dev server proxies to `http://localhost:8082` where the Go API runs. Override with:
 
 ```bash
 # Copy the example file and edit if needed
@@ -31,49 +30,50 @@ cp .env.example .env.local
 VITE_API_BASE=https://reconcilyx.example.com npm run dev
 ```
 
-If the backend is protected by an API key, set:
+If the backend is protected by an API key, set `VITE_API_KEY=<your-token>` at build time, or save it at runtime under **Settings → Control plane API**. Runtime values are stored in that browser and override the build-time origin.
 
-```bash
-VITE_API_KEY=<your-token>
-```
-
-For a GitHub Pages build, users can instead save an HTTPS endpoint under
-**Settings -> Control Plane API URL**. The setting is stored in that browser's
-local storage and overrides the build-time API URL. The remote API must allow
-the GitHub Pages origin through CORS and must have its own authentication.
+A static build can be hosted separately: set the Hub URL in Settings, allow that origin in `RECONCILYX_CORS_ORIGINS`, and configure the API key. No public hosted instance is operated.
 
 ## Embedding into the operator
 
-The Go binary ships the built UI as a static filesystem via `//go:embed all:dist`
-in [../ui/embed.go](../ui/embed.go). Whenever you change the dashboard:
+The Go binary ships the built UI as a static filesystem via `//go:embed all:dist` in [../ui/embed.go](../ui/embed.go). Whenever you change the console:
 
 1. `npm run build` (emits to `ui/dist`)
-2. `make docker-build` or `go build ./cmd/main.go` — the linker packs the dist dir.
-3. The HTTP handler at `/` serves the SPA on the same port as the JSON API (8082).
+2. `make docker-build` or `go build ./cmd/main.go` — the linker packs the dist directory
+3. The HTTP handler at `/` serves the SPA on the same port as the JSON API (8082)
 
 ## Layout
 
 ```
 src/
- ├─ main.tsx            Hash router entry (works on static hosting)
- ├─ App.tsx             Shell — nav, footer, routes, toasts
- ├─ index.css           Grain overlay, ink-950 bg, panel/Kpi/btn primitives
+ ├─ main.tsx              Hash router entry (works on static hosting)
+ ├─ App.tsx               Shell — nav, footer, routes, toasts, shortcuts, assistant
+ ├─ index.css             Ink canvas, grain, panel/button/type primitives
  ├─ lib/
- │   ├─ types.ts        ProposalListItem, SavingsResponse, etc.
- │   ├─ api.ts          JSON fetch wrapper + 8 endpoint methods
- │   └─ useApi.ts       typed hook w/ loading/error/refetch
- ├─ store/app.ts        Zustand: cluster, ns filter, toasts, formatCurrency, formatCarbonGrams
+ │   ├─ types.ts          API contracts and display types
+ │   ├─ api.ts            Fetch wrapper + proposal/policy/metrics/chat endpoints
+ │   ├─ llm.ts            BYOK provider/key stored in this browser
+ │   └─ useApi.ts         Typed hook with loading/error/refetch
+ ├─ store/app.ts          Zustand: cluster, namespace, selection, toasts, goal, auto-refresh
  ├─ components/
- │   ├─ Toasts.tsx      4-kind notification stack
- │   ├─ KpiCard.tsx     Accent gradient header + delta chip
- │   ├─ Badges.tsx      RiskBadge, ConfidenceBadge, PhaseChip, ApprovalChip
- │   ├─ DataTable.tsx   Generic <T> row/col table w/ empty & click
- │   ├─ SavingsChart.tsx  Dual-axis USD+CO₂ Recharts line
- │   └─ BeforeAfterCard.tsx  Before/after resource delta rows with ✓ better / ⚠ worse chips
+ │   ├─ PageHeader.tsx    Editorial page opener with metrics and actions
+ │   ├─ Icon.tsx          Inline SVG icon set
+ │   ├─ Toasts.tsx        Notification stack
+ │   ├─ KpiCard.tsx       Oversized metric card
+ │   ├─ Badges.tsx        Risk, confidence, phase, and approval chips
+ │   ├─ DataTable.tsx     Generic table with empty and row-click states
+ │   ├─ SavingsChart.tsx  USD area + CO₂ line (ComposedChart)
+ │   ├─ ProposalDetailDrawer.tsx  Proposal inspector and actions
+ │   ├─ BeforeAfterCard.tsx       Resource delta rows
+ │   └─ AiChatDrawer.tsx / KeyboardShortcutsModal.tsx
  └─ pages/
-     ├─ Overview.tsx        4 Kpi + SavingsChart + top proposals
-     ├─ Proposals.tsx       Filter chips + search + DataTable
-     ├─ ProposalDetail.tsx  Summary KPIs, BeforeAfter, timeline, approve/reject/rollback
-     ├─ Savings.tsx         4x KPIs + cluster/ns bars + full line chart
-     └─ Policies.tsx        Policy table + 7-step Create wizard w/ YAML preview & carbon slider
+     ├─ Overview.tsx        KPI band, savings trend, proposal queue, anomalies
+     ├─ Proposals.tsx       Filters, search, bulk actions, mobile card queue, drawer
+     ├─ ProposalDetail.tsx  Full-page proposal view from API detail
+     ├─ Savings.tsx         Daily ledger, cluster/namespace breakdowns, line items
+     ├─ Forecast.tsx        Forecast chart, what-if, observed vs proposed resources
+     ├─ Policies.tsx        Policy catalogue and manifest-accurate create sheet
+     └─ Settings.tsx        Connection test, assistant key, preferences, server env
 ```
+
+The console was exercised against the real response shapes in `internal/api` using a local mock control plane. Cluster-side behaviour still requires a running operator; see [../STATUS.md](../STATUS.md).

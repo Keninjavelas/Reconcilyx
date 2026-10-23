@@ -40,6 +40,15 @@ Use `v4.0.0-beta` in documentation and releases. Do not describe Reconcilyx as p
 
 ## Remediation Log
 
+### 2026-10-23 — P0: public claims truth-reset
+
+- Removed the unreachable Vercel demo link from `README.md` and `FEATURE_MATRIX.md`; replaced it with the embedded-console model. No public hosted instance is claimed.
+- Deleted the non-existent Helm repository (`https://charts.reconcilyx.io`) from `docs/user-guide.md`; installation now uses the bundled `charts/reconcilyx` and states that no remote chart repository is published.
+- Rewrote `docs/user-guide.md` around workflows that exist in the beta: policies, proposal lifecycle, `Observe`/`Propose`/`AutoApply`, CLI and console usage, BYOK ChatOps with confirmation and audit, and GitOps. Removed claims for live Karpenter/eBPF actuation, DCGM GPU scraping, JVM `-Xmx` actuation, executed multi-cloud migration, and complete federated/model-registry rollout.
+- Corrected canned assistant answers in `internal/api/chat.go`: the in-place path is SSA against Pod `resize` by the `reconcilyx-operator` field manager with no rolling-restart fallback; `carbonWeight` is 0–1 and does not schedule around grid windows; the RL answer no longer claims pprof-based rollback or a 60% cut ceiling; pricing fallback is described as bundled rather than monthly-refreshed; the forecast hint no longer points at a non-existent `#/forecast/<workload>` route.
+- Updated `README.md` development order (`npm ci` and `npm run build` before `go build`, because the binary embeds `ui/dist`), `docs/DEPLOYMENT.md`, `ui/README.md`, `PROJECT.md`, `FEATURE_MATRIX.md`, and `GITHUB_ISSUES.md` to match the same reality.
+- Evidence: `go build ./...` and `go vet ./internal/api/` passed after the assistant-text edits (2026-10-23). Gaps that still need a running control plane are listed in `GITHUB_ISSUES.md` Phase 10 rather than being described as done.
+
 ### 2026-10-23 — P0: console redesign and contract-correct UI
 
 - The embedded console was rebuilt on an editorial design system (warm ink canvas, acid-lime accent, serif display type, hairline grids) across Overview, Proposals, Proposal detail, Savings, Forecast, Policies, and Settings.
