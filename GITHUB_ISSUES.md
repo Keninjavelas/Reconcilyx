@@ -74,10 +74,12 @@ Evidence: `InspectJVM`/`InspectGPU` query JMX and DCGM series from Prometheus wi
 
 ## Phase 7
 
-- `[ ]` `P1 Integration` Replace AWS static pricing table with live API client
-- `[ ]` `P1 Integration` Replace GCP static pricing table with live API client
-- `[ ]` `P1 Integration` Replace Azure static pricing table with live API client
-- `[ ]` `P1 Integration` Add retry/cache/error handling around live pricing clients
+- `[x]` `P1 Integration` Replace AWS static pricing table with live API client
+- `[x]` `P1 Integration` Replace GCP static pricing table with live API client
+- `[x]` `P1 Integration` Replace Azure static pricing table with live API client
+- `[x]` `P1 Integration` Add retry/cache/error handling around live pricing clients
+
+Evidence: AWS uses the authenticated Price List Query API (`AWSPriceListService.GetProducts`) with SigV4 signing and optional session tokens; GCP pages through the Cloud Billing Catalog API when an API key is configured and totals the per-vCPU and per-GB component SKUs; Azure uses the anonymous Retail Prices API, so no subscription is required. Each provider keeps its bundled catalog as a fallback and logs when a live refresh fails. `doWithRetry` retries network errors, 429, 5xx responses, and AWS 400 `ThrottlingException` responses up to three times with exponential backoff and honors `Retry-After`; `CachedPricingProvider` caches on-demand, spot, and list results for `RECONCILYX_PRICING_CACHE_TTL_HOURS` (default 1 hour). Unknown instances with no static rate now return an error instead of a fabricated price. Spot prices remain on-demand multipliers (35% AWS, 30% GCP, 32% Azure), not live spot feeds. Evidence: `go build ./...` and `go test ./internal/cloud/...` passed against mock AWS/GCP/Azure endpoints on 2026-10-23, including SigV4 headers, GCP component/pagination parsing, 429/500/throttle retries, fallback, static-gating, and cache tests; calls against real cloud accounts remain unverified.
 
 ## Phase 8
 

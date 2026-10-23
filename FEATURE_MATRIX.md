@@ -20,7 +20,7 @@ No public demo instance is operated. The React console is embedded in the Hub an
 |---|---:|---:|---:|---|
 | Core Engine | 0 | 9 | 1 | Strong prototype; `/resize` + SSA actuation path is wired in controller |
 | Federated Intelligence | 0 | 7 | 0 | Delta emitter, FedAvg aggregator, ConfigMap snapshot, spoke bootstrap, and stable/canary channel selection all implemented; cold-start reduction validated in e2e test |
-| Multi-Cloud Arbitrage | 0 | 5 | 0 | Live AWS/GCP/Azure pricing API via factory; bundled static fallback if env is missing |
+| Multi-Cloud Arbitrage | 0 | 5 | 0 | AWS/GCP/Azure live list-price clients with TTL cache, retries, and bundled fallbacks; spot prices are on-demand estimates; no live-account validation yet |
 | Application Intelligence | 0 | 2 | 3 | JVM JMX heap and DCGM GPU metrics are queried from Prometheus and feed RL state buckets; live exporter validation still pending |
 | BYOK ChatOps | 0 | 7 | 0 | Real CRUD tool-backed answers; confirm-token safety on writes; audit log captures every LLM action (reads + pending-confirm writes) |
 | Shift-Left FinOps | 0 | 3 | 1 | PR logic exists, but runtime wiring and config depth are incomplete |

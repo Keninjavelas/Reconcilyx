@@ -40,6 +40,15 @@ Use `v4.0.0-beta` in documentation and releases. Do not describe Reconcilyx as p
 
 ## Remediation Log
 
+### 2026-10-23 — P1: live cloud pricing clients with retry and cache
+
+- AWS now uses the authenticated Price List Query API (`AWSPriceListService.GetProducts`) with in-process SigV4 signing, Linux/Shared/Used filters, and optional `AWS_SESSION_TOKEN`; credentials are read from `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, and the bundled rate table is used when they are absent.
+- GCP pages through the Cloud Billing Catalog API when `RECONCILYX_PRICING_GCP_API_KEY` (or `GCP_BILLING_API_KEY`) is configured, totaling the per-vCPU and per-GB component SKUs for the predefined e2/n2 machine types. Azure uses the anonymous Retail Prices API and no longer requires a subscription ID.
+- All live calls go through `doWithRetry`: network failures, 429, 5xx responses, and AWS 400 `ThrottlingException` responses retry up to three attempts with exponential backoff and `Retry-After` support. Live failures log a warning and fall back to the bundled catalog; an unknown instance without a static rate returns an error instead of a hardcoded price.
+- `CachedPricingProvider` caches on-demand, spot, and instance-list results for the configured TTL (default one hour) and exposes `Live()` so startup logging reports whether each provider is using a live API.
+- Removed obsolete Helm pricing values (`region`, Azure `subscriptionId`) and wired `pricing.providers.aws.sessionToken`; added a deployment section covering credentials, cache TTL, retries, fallbacks, and the fact that spot prices are estimates.
+- Evidence: `go build ./...` passed; `go test ./internal/cloud/...` passed against mock AWS/GCP/Azure endpoints on 2026-10-23, covering SigV4 headers, GCP component and pagination parsing, 429/500/throttle retries, static gating, fallback, and cache hits. Calls against real cloud accounts and live spot prices remain unverified.
+
 ### 2026-10-23 — P1: JVM/GPU buckets and federated channel rollout
 
 - `InspectJVM` and `InspectGPU` now query JMX (`jvm_memory_max_bytes`/`bytes_committed`/`bytes_used` for heap) and NVIDIA DCGM (`DCGM_FI_DEV_GPU_UTIL`, `DCGM_FI_DEV_FB_USED`, `DCGM_FI_DEV_FB_TOTAL`, `DCGM_FI_DEV_GPU_TEMP`) series from Prometheus. Exporters that omit a container label are applied at workload level; containers with no series are skipped instead of receiving synthetic zeros.

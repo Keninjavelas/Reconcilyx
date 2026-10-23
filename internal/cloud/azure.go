@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"net/url"
@@ -15,11 +16,14 @@ const (
 	azureRetailPricesURL = "https://prices.azure.com/api/retail/prices"
 )
 
+// AzurePricingProvider reads public list prices from the Azure Retail Prices
+// API. The API is anonymous, so no subscription or credentials are required.
 type AzurePricingProvider struct {
-	HTTPClient     *http.Client
-	BaseURL        string
-	subscriptionId string
-	fallback       *staticAzureCatalog
+	HTTPClient *http.Client
+	BaseURL    string
+	Retry      RetryPolicy
+	enableLive bool
+	fallback   *staticAzureCatalog
 }
 
 type staticAzureCatalog struct {
@@ -46,17 +50,20 @@ func NewAzurePricingProvider() *AzurePricingProvider {
 	return &AzurePricingProvider{
 		HTTPClient: &http.Client{Timeout: 15 * time.Second},
 		BaseURL:    azureRetailPricesURL,
+		enableLive: false,
 		fallback:   newStaticAzureCatalog(),
 	}
 }
 
-func NewLiveAzurePricingProvider(subscriptionId string) *AzurePricingProvider {
+func NewLiveAzurePricingProvider() *AzurePricingProvider {
 	p := NewAzurePricingProvider()
-	p.subscriptionId = subscriptionId
+	p.enableLive = true
 	return p
 }
 
 func (az *AzurePricingProvider) Name() ProviderName { return ProviderAzure }
+
+func (az *AzurePricingProvider) Live() bool { return az.enableLive }
 
 func carbonForAzure(region string, cmap map[string]float64) float64 {
 	if c, ok := cmap[region]; ok {
@@ -66,58 +73,64 @@ func carbonForAzure(region string, cmap map[string]float64) float64 {
 }
 
 func (az *AzurePricingProvider) fetchOnDemandLive(ctx context.Context, instanceType, region string) (float64, error) {
-	if az.HTTPClient == nil || az.BaseURL == "" {
-		return 0, fmt.Errorf("live Azure pricing disabled (no client/baseURL)")
+	if !az.enableLive || az.HTTPClient == nil || az.BaseURL == "" {
+		return 0, fmt.Errorf("live Azure pricing disabled (no client or base URL)")
 	}
-	u, _ := url.Parse(az.BaseURL)
-	q := u.Query()
 	filter := fmt.Sprintf("armRegionName eq '%s' and serviceName eq 'Virtual Machines' and armSkuName eq '%s' and priceType eq 'Consumption'", region, instanceType)
-	q.Set("$filter", filter)
-	u.RawQuery = q.Encode()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
-	if err != nil {
-		return 0, err
-	}
-	if az.subscriptionId != "" {
-		req.Header.Set("X-Subscription-Id", az.subscriptionId)
-	}
-	resp, err := az.HTTPClient.Do(req)
+
+	resp, err := doWithRetry(ctx, az.HTTPClient, func() (*http.Request, error) {
+		u, err := url.Parse(az.BaseURL)
+		if err != nil {
+			return nil, err
+		}
+		q := u.Query()
+		q.Set("$filter", filter)
+		u.RawQuery = q.Encode()
+		return http.NewRequestWithContext(ctx, http.MethodGet, u.String(), http.NoBody)
+	}, az.Retry)
 	if err != nil {
 		return 0, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return 0, fmt.Errorf("azure retail prices api status %d", resp.StatusCode)
-	}
+
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
 	if err != nil {
 		return 0, err
 	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return 0, fmt.Errorf("azure retail prices api status %d: %s", resp.StatusCode, truncate(string(body), 256))
+	}
+
 	var doc struct {
 		Items []struct {
-			ArmSkuName      string  `json:"armSkuName"`
-			ArmRegionName   string  `json:"armRegionName"`
-			RetailPrice     float64 `json:"retailPrice"`
-			IsPrimaryMeterRegion bool `json:"isPrimaryMeterRegion"`
-			UnitOfMeasure   string  `json:"unitOfMeasure"`
+			ArmSkuName           string  `json:"armSkuName"`
+			ArmRegionName        string  `json:"armRegionName"`
+			RetailPrice          float64 `json:"retailPrice"`
+			IsPrimaryMeterRegion bool    `json:"isPrimaryMeterRegion"`
+			UnitOfMeasure        string  `json:"unitOfMeasure"`
 		} `json:"Items"`
 	}
 	if err := json.Unmarshal(body, &doc); err != nil {
 		return 0, err
 	}
-	best := 0.0
+
+	var best float64
+	var bestPrimary bool
 	for _, it := range doc.Items {
-		if it.ArmSkuName != instanceType {
+		if it.ArmSkuName != "" && it.ArmSkuName != instanceType {
 			continue
 		}
-		if it.ArmRegionName != region && it.ArmRegionName != "" {
+		if it.ArmRegionName != "" && it.ArmRegionName != region {
 			continue
 		}
 		if it.RetailPrice <= 0 {
 			continue
 		}
-		if best == 0 || (it.IsPrimaryMeterRegion && best > 0) || it.RetailPrice < best {
+		if best == 0 ||
+			(it.IsPrimaryMeterRegion && !bestPrimary) ||
+			(it.IsPrimaryMeterRegion == bestPrimary && it.RetailPrice < best) {
 			best = it.RetailPrice
+			bestPrimary = it.IsPrimaryMeterRegion
 		}
 	}
 	if best <= 0 {
@@ -127,15 +140,18 @@ func (az *AzurePricingProvider) fetchOnDemandLive(ctx context.Context, instanceT
 }
 
 func (az *AzurePricingProvider) OnDemandPrice(ctx context.Context, instanceType, region string) (float64, error) {
-	if az.HTTPClient != nil && az.BaseURL != "" {
+	if az.enableLive {
 		if v, err := az.fetchOnDemandLive(ctx, instanceType, region); err == nil && v > 0 {
 			return v, nil
+		} else if err != nil {
+			slog.Warn("Live Azure pricing unavailable; using bundled fallback",
+				"instance", instanceType, "region", region, "error", err.Error())
 		}
 	}
 	if rate, ok := az.fallback.rates[instanceType]; ok {
 		return rate, nil
 	}
-	return 0.085, nil
+	return 0, fmt.Errorf("no Azure price for %s in %s and no local fallback", instanceType, region)
 }
 
 func (az *AzurePricingProvider) SpotPrice(ctx context.Context, instanceType, region string) (float64, error) {
@@ -153,12 +169,17 @@ func (az *AzurePricingProvider) ListMatchingInstances(ctx context.Context, vCPU,
 		{Provider: ProviderAzure, Region: region, Name: "Standard_D2s_v5", VCPU: 2.0, MemoryGB: 8.0, OnDemandPrice: 0.0960, SpotPrice: 0.0307, CarbonIntensity: carbon},
 		{Provider: ProviderAzure, Region: region, Name: "Standard_D4s_v5", VCPU: 4.0, MemoryGB: 16.0, OnDemandPrice: 0.1920, SpotPrice: 0.0614, CarbonIntensity: carbon},
 	}
-	if az.HTTPClient != nil && az.BaseURL != "" {
+	if az.enableLive {
 		for i := range catalog {
 			live, err := az.fetchOnDemandLive(ctx, catalog[i].Name, region)
 			if err == nil && live > 0 {
 				catalog[i].OnDemandPrice = live
 				catalog[i].SpotPrice = live * 0.32
+				continue
+			}
+			if err != nil {
+				slog.Warn("Live Azure price refresh failed; keeping bundled price",
+					"instance", catalog[i].Name, "region", region, "error", err.Error())
 			}
 		}
 	}

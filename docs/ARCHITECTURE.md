@@ -23,7 +23,7 @@ The codebase currently consists of four main layers:
 |---|---|---|
 | Core actuation | `⚙️ Partial` | Proposal lifecycle, rollback, and `/resize` SSA are implemented; independent end-to-end cluster validation is still pending |
 | Federated learning | `⚙️ Partial` | Aggregation, bootstrap, emitters, live reward updates, and stable/canary channel selection exist; production multi-cluster rollout is not claimed |
-| Multi-cloud arbitrage | `⚙️ Partial` | Arbitrage logic exists; pricing providers support live APIs with static fallbacks |
+| Multi-cloud arbitrage | `⚙️ Partial` | AWS Price List Query (SigV4), GCP Cloud Billing Catalog, and Azure Retail Prices clients with TTL caching, retries, and bundled fallbacks; spot prices are on-demand estimates |
 | Carbon and app intelligence | `⚙️ Partial` | JVM JMX heap and NVIDIA DCGM metrics are queried from Prometheus and feed the RL state buckets; live exporter validation is pending |
 | ChatOps | `⚙️ Partial` | Tool-backed reads, confirmation tokens, and audit logging exist; LLM quality depends on the configured provider |
 | Shift-left GitOps | `⚙️ Partial` | PR helpers exist, but merge-path wiring and validation are incomplete |
@@ -47,7 +47,7 @@ The beta architecture is focused on five hardening goals:
 The following areas should be treated as in development until upgraded by evidence:
 
 - Federated learning end-to-end updates and cross-cluster channel rollout
-- Live cloud pricing
+- Live pricing calls against real cloud accounts (clients are unit-tested against mock endpoints)
 - GPU/JVM exporter telemetry against real clusters
 - Agentic write execution
 - eBPF telemetry

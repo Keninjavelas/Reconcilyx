@@ -3,42 +3,51 @@ package cloud
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
-	"net/url"
+	"sort"
+	"strings"
 	"time"
 )
 
 const (
-	awsPriceListURL = "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/current/%s/index.json"
+	awsPricingEndpoint = "https://api.pricing.us-east-1.amazonaws.com"
+	awsPricingService  = "pricing"
+	awsPricingRegion   = "us-east-1"
 )
 
 type AWSPricingProvider struct {
-	HTTPClient *http.Client
-	BaseURL    string
-	apiKey     string
-	enableLive bool
-	fallback   *staticAWSCatalog
+	HTTPClient   *http.Client
+	BaseURL      string
+	Retry        RetryPolicy
+	accessKeyID  string
+	secretKey    string
+	sessionToken string
+	enableLive   bool
+	fallback     *staticAWSCatalog
 }
 
 type staticAWSCatalog struct {
-	rates   map[string]float64
-	catalog []InstanceType
-	carbon  map[string]float64
+	rates  map[string]float64
+	carbon map[string]float64
 }
 
 func newStaticAWSCatalog() *staticAWSCatalog {
 	return &staticAWSCatalog{
 		rates: map[string]float64{
-			"c6i.large":   0.085,
-			"c6i.xlarge":  0.170,
-			"m6i.large":   0.096,
-			"m6i.xlarge":  0.192,
-			"t4g.medium":  0.0336,
-			"t4g.large":   0.0672,
+			"c6i.large":  0.085,
+			"c6i.xlarge": 0.170,
+			"m6i.large":  0.096,
+			"m6i.xlarge": 0.192,
+			"t4g.medium": 0.0336,
+			"t4g.large":  0.0672,
 		},
 		carbon: map[string]float64{
 			"us-east-1":      385.0,
@@ -52,20 +61,27 @@ func newStaticAWSCatalog() *staticAWSCatalog {
 func NewAWSPricingProvider() *AWSPricingProvider {
 	return &AWSPricingProvider{
 		HTTPClient: &http.Client{Timeout: 15 * time.Second},
-		BaseURL:    awsPriceListURL,
+		BaseURL:    awsPricingEndpoint,
 		enableLive: false,
 		fallback:   newStaticAWSCatalog(),
 	}
 }
 
-func NewLiveAWSPricingProvider(apiKey string) *AWSPricingProvider {
+// NewLiveAWSPricingProvider enables the AWS Price List Query API. Live lookups
+// require SigV4 credentials; callers without credentials should use the
+// bundled static catalog.
+func NewLiveAWSPricingProvider(accessKeyID, secretKey, sessionToken string) *AWSPricingProvider {
 	p := NewAWSPricingProvider()
-	p.enableLive = true
-	p.apiKey = apiKey
+	p.enableLive = accessKeyID != "" && secretKey != ""
+	p.accessKeyID = accessKeyID
+	p.secretKey = secretKey
+	p.sessionToken = sessionToken
 	return p
 }
 
 func (a *AWSPricingProvider) Name() ProviderName { return ProviderAWS }
+
+func (a *AWSPricingProvider) Live() bool { return a.enableLive }
 
 func carbonForAWS(region string, cmap map[string]float64) float64 {
 	if c, ok := cmap[region]; ok {
@@ -75,78 +91,103 @@ func carbonForAWS(region string, cmap map[string]float64) float64 {
 }
 
 func (a *AWSPricingProvider) fetchOnDemandLive(ctx context.Context, instanceType, region string) (float64, error) {
-	if a.HTTPClient == nil || a.BaseURL == "" {
-		return 0, fmt.Errorf("live AWS pricing disabled (no client or base URL)")
+	if !a.enableLive || a.HTTPClient == nil || a.BaseURL == "" {
+		return 0, fmt.Errorf("live AWS pricing disabled (no credentials or client)")
 	}
-	endpoint := fmt.Sprintf(a.BaseURL, url.PathEscape(region))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	payload, err := json.Marshal(map[string]any{
+		"ServiceCode": "AmazonEC2",
+		"Filters": []map[string]string{
+			{"Type": "TERM_MATCH", "Field": "instanceType", "Value": instanceType},
+			{"Type": "TERM_MATCH", "Field": "region", "Value": region},
+			{"Type": "TERM_MATCH", "Field": "operatingSystem", "Value": "Linux"},
+			{"Type": "TERM_MATCH", "Field": "tenancy", "Value": "Shared"},
+			{"Type": "TERM_MATCH", "Field": "preInstalledSw", "Value": "NA"},
+			{"Type": "TERM_MATCH", "Field": "capacitystatus", "Value": "Used"},
+		},
+		"MaxResults": 10,
+	})
 	if err != nil {
 		return 0, err
 	}
-	if a.apiKey != "" {
-		req.Header.Set("X-Api-Key", a.apiKey)
-	}
-	resp, err := a.HTTPClient.Do(req)
+
+	resp, err := doWithRetry(ctx, a.HTTPClient, func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.BaseURL, bytes.NewReader(payload))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/x-amz-json-1.1")
+		req.Header.Set("X-Amz-Target", "AWSPriceListService.GetProducts")
+		signAWSRequest(req, payload, a.accessKeyID, a.secretKey, a.sessionToken, awsPricingRegion, awsPricingService, time.Now().UTC())
+		return req, nil
+	}, a.Retry)
 	if err != nil {
 		return 0, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return 0, fmt.Errorf("pricing api status %d", resp.StatusCode)
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 20*1024*1024))
+
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
 	if err != nil {
 		return 0, err
 	}
-	var doc struct {
-		Products map[string]struct {
-			Attributes struct {
-				InstanceType string `json:"instanceType"`
-			} `json:"attributes"`
-		} `json:"products"`
-		Terms struct {
-			OnDemand map[string]map[string]struct {
-				PriceDimensions map[string]struct {
-					PricePerUnit map[string]string `json:"pricePerUnit"`
-				} `json:"priceDimensions"`
-			} `json:"OnDemand"`
-		} `json:"terms"`
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return 0, fmt.Errorf("aws pricing api status %d: %s", resp.StatusCode, truncate(string(raw), 256))
 	}
-	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&doc); err != nil {
+
+	var doc struct {
+		PriceList []string `json:"PriceList"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
 		return 0, err
 	}
-	for sku, prod := range doc.Products {
-		if prod.Attributes.InstanceType != instanceType {
+	for _, item := range doc.PriceList {
+		var parsed struct {
+			Product struct {
+				Attributes struct {
+					InstanceType string `json:"instanceType"`
+				} `json:"attributes"`
+			} `json:"product"`
+			Terms struct {
+				OnDemand map[string]map[string]struct {
+					PriceDimensions map[string]struct {
+						PricePerUnit map[string]string `json:"pricePerUnit"`
+					} `json:"priceDimensions"`
+				} `json:"OnDemand"`
+			} `json:"terms"`
+		}
+		if err := json.Unmarshal([]byte(item), &parsed); err != nil {
 			continue
 		}
-		terms, ok := doc.Terms.OnDemand[sku]
-		if !ok {
+		if parsed.Product.Attributes.InstanceType != "" && parsed.Product.Attributes.InstanceType != instanceType {
 			continue
 		}
-		for _, term := range terms {
-			for _, dim := range term.PriceDimensions {
-				if price, ok := dim.PricePerUnit["USD"]; ok {
-					var v float64
-					if _, err := fmt.Sscanf(price, "%f", &v); err == nil && v > 0 {
-						return v, nil
+		for _, term := range parsed.Terms.OnDemand {
+			for _, dim := range term {
+				for _, price := range dim.PriceDimensions {
+					if usd, ok := price.PricePerUnit["USD"]; ok {
+						if v, err := strconvParseFloat64(usd); err == nil && v > 0 {
+							return v, nil
+						}
 					}
 				}
 			}
 		}
 	}
-	return 0, fmt.Errorf("instance %s not found in AWS offer index", instanceType)
+	return 0, fmt.Errorf("instance %s not found in AWS price list for %s", instanceType, region)
 }
 
 func (a *AWSPricingProvider) OnDemandPrice(ctx context.Context, instanceType, region string) (float64, error) {
-	if a.HTTPClient != nil && a.BaseURL != "" {
+	if a.enableLive {
 		if v, err := a.fetchOnDemandLive(ctx, instanceType, region); err == nil && v > 0 {
 			return v, nil
+		} else if err != nil {
+			slog.Warn("Live AWS pricing unavailable; using bundled fallback",
+				"instance", instanceType, "region", region, "error", err.Error())
 		}
 	}
 	if rate, ok := a.fallback.rates[instanceType]; ok {
 		return rate, nil
 	}
-	return 0.10, nil
+	return 0, fmt.Errorf("no AWS price for %s in %s and no local fallback", instanceType, region)
 }
 
 func (a *AWSPricingProvider) SpotPrice(ctx context.Context, instanceType, region string) (float64, error) {
@@ -166,12 +207,17 @@ func (a *AWSPricingProvider) ListMatchingInstances(ctx context.Context, vCPU, me
 		{Provider: ProviderAWS, Region: region, Name: "c6i.xlarge", VCPU: 4.0, MemoryGB: 8.0, OnDemandPrice: 0.1700, SpotPrice: 0.0595, CarbonIntensity: carbon},
 		{Provider: ProviderAWS, Region: region, Name: "m6i.xlarge", VCPU: 4.0, MemoryGB: 16.0, OnDemandPrice: 0.1920, SpotPrice: 0.0672, CarbonIntensity: carbon},
 	}
-	if a.HTTPClient != nil && a.BaseURL != "" {
+	if a.enableLive {
 		for i := range catalog {
 			live, err := a.fetchOnDemandLive(ctx, catalog[i].Name, region)
 			if err == nil && live > 0 {
 				catalog[i].OnDemandPrice = live
 				catalog[i].SpotPrice = live * 0.35
+				continue
+			}
+			if err != nil {
+				slog.Warn("Live AWS price refresh failed; keeping bundled price",
+					"instance", catalog[i].Name, "region", region, "error", err.Error())
 			}
 		}
 	}
@@ -194,4 +240,87 @@ func (a *AWSPricingProvider) ListMatchingInstances(ctx context.Context, vCPU, me
 		})
 	}
 	return matched, nil
+}
+
+func signAWSRequest(req *http.Request, body []byte, accessKeyID, secretKey, sessionToken, region, service string, now time.Time) {
+	amzDate := now.UTC().Format("20060102T150405Z")
+	dateStamp := now.UTC().Format("20060102")
+
+	req.Header.Set("X-Amz-Date", amzDate)
+	if sessionToken != "" {
+		req.Header.Set("X-Amz-Security-Token", sessionToken)
+	}
+
+	host := req.URL.Host
+	req.Host = host
+
+	headers := map[string]string{
+		"content-type": req.Header.Get("Content-Type"),
+		"host":         host,
+		"x-amz-date":   amzDate,
+		"x-amz-target": req.Header.Get("X-Amz-Target"),
+	}
+	if sessionToken != "" {
+		headers["x-amz-security-token"] = sessionToken
+	}
+	names := make([]string, 0, len(headers))
+	for name := range headers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var canonicalHeaders strings.Builder
+	for _, name := range names {
+		canonicalHeaders.WriteString(name)
+		canonicalHeaders.WriteString(":")
+		canonicalHeaders.WriteString(strings.TrimSpace(headers[name]))
+		canonicalHeaders.WriteString("\n")
+	}
+	signedHeaders := strings.Join(names, ";")
+
+	canonicalURI := req.URL.EscapedPath()
+	if canonicalURI == "" {
+		canonicalURI = "/"
+	}
+	payloadHash := sha256Hex(body)
+	canonicalRequest := strings.Join([]string{
+		req.Method,
+		canonicalURI,
+		req.URL.Query().Encode(),
+		canonicalHeaders.String(),
+		signedHeaders,
+		payloadHash,
+	}, "\n")
+
+	scope := dateStamp + "/" + region + "/" + service + "/aws4_request"
+	stringToSign := "AWS4-HMAC-SHA256\n" + amzDate + "\n" + scope + "\n" + sha256Hex([]byte(canonicalRequest))
+
+	signingKey := hmacSHA256([]byte("AWS4"+secretKey), dateStamp)
+	signingKey = hmacSHA256(signingKey, region)
+	signingKey = hmacSHA256(signingKey, service)
+	signingKey = hmacSHA256(signingKey, "aws4_request")
+	signature := hex.EncodeToString(hmacSHA256(signingKey, stringToSign))
+
+	req.Header.Set("Authorization", fmt.Sprintf(
+		"AWS4-HMAC-SHA256 Credential=%s/%s, SignedHeaders=%s, Signature=%s",
+		accessKeyID, scope, signedHeaders, signature,
+	))
+}
+
+func sha256Hex(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func hmacSHA256(key []byte, data string) []byte {
+	h := hmac.New(sha256.New, key)
+	h.Write([]byte(data))
+	return h.Sum(nil)
+}
+
+func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max]
 }

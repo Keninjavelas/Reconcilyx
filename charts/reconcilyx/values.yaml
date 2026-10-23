@@ -98,20 +98,17 @@ pricing:
   providers:
     aws:
       enabled: true
-      region: "us-east-1"
-      # Credentials — if set, live AWS Price List API is used (otherwise static fallback).
+      # Credentials — if set, the AWS Price List Query API is used (otherwise static fallback).
       accessKeyId: ""
       secretAccessKey: ""
+      sessionToken: ""
     gcp:
       enabled: true
-      region: "us-central1"
       # Cloud Billing Catalog API key. Empty = static fallback.
       apiKey: ""
     azure:
       enabled: true
-      region: "eastus"
-      # Subscription ID. Empty = static fallback (Azure Retail Prices API is public, but sub id enriches data).
-      subscriptionId: ""
+      # Azure Retail Prices API is public; no credentials or subscription are required.
 
 # Federated Learning Collective Brain Configuration
 federated:

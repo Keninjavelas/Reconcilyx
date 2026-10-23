@@ -113,6 +113,7 @@ These are known limits, not configuration mistakes:
 - **JVM `-Xmx` rewriting** exists as an engine helper and test path; it is not wired into the live actuator.
 - **Multi-cloud migration** produces a proposal and a generated Velero backup/restore script. Reconcilyx does not execute the migration.
 - **Federated learning** supports stable/canary channel selection (`RECONCILYX_MODEL_CHANNEL`) and canary rollback; a production multi-cluster rollout is not claimed.
+- **Cloud pricing**: AWS, GCP, and Azure list-price clients are implemented and fall back to a bundled catalog. Spot prices are estimates derived from on-demand prices, not live spot-market feeds, and the clients have not been validated against real cloud accounts.
 - **Workload kinds**: execution supports Deployments. Other kinds may be evaluated but are not actuated by the in-place resize path.
 
 See [FEATURE_MATRIX.md](../FEATURE_MATRIX.md) for the conservative inventory and [STATUS.md](../STATUS.md) for evidence.

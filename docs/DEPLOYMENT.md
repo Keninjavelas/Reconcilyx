@@ -243,7 +243,31 @@ Demoting a canary makes canary-opt-in spokes fall back to the stable release on 
 
 ---
 
-## 7. Static UI (Optional)
+## 7. Multi-Cloud Pricing (Optional)
+
+Pricing providers query live list prices when credentials are configured and otherwise use a bundled catalog. Disable any provider with `RECONCILYX_PRICING_<AWS|GCP|AZURE>_ENABLED=false`.
+
+| Provider | Live source | Requirements |
+|---|---|---|
+| AWS | Price List Query API (`pricing.us-east-1.amazonaws.com`), SigV4 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, optional `AWS_SESSION_TOKEN` |
+| GCP | Cloud Billing Catalog API | `RECONCILYX_PRICING_GCP_API_KEY` or `GCP_BILLING_API_KEY` |
+| Azure | Retail Prices API | None; the endpoint is anonymous |
+
+With Helm, set `pricing.providers.aws.accessKeyId`, `pricing.providers.aws.secretAccessKey`, `pricing.providers.aws.sessionToken`, and `pricing.providers.gcp.apiKey` in `values.yaml` or with `--set`.
+
+Operational behavior:
+
+- Results are cached for `RECONCILYX_PRICING_CACHE_TTL_HOURS` (default `1`).
+- Network errors, HTTP 429, HTTP 5xx, and AWS `ThrottlingException` (returned as HTTP 400) are retried up to three attempts with exponential backoff; `Retry-After` is honored.
+- A failed live lookup logs a warning and falls back to the bundled rate for that instance. If the instance is not in the bundled catalog, the lookup returns an error rather than a fabricated price.
+- AWS credentials come from the process environment; IAM role/instance-profile discovery is not implemented. Without static credentials, AWS uses the bundled catalog.
+- Spot prices are estimates derived from on-demand list prices (AWS 35%, GCP 30%, Azure 32%). They are not live spot-market feeds.
+
+The clients are covered by unit tests against mock HTTP endpoints; live calls against real cloud accounts have not been validated.
+
+---
+
+## 8. Static UI (Optional)
 
 The static build can be served from any file host:
 

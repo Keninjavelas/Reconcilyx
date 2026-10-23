@@ -100,8 +100,6 @@ spec:
               value: {{ .Values.pricing.cacheTTLHours | quote }}
             - name: RECONCILYX_PRICING_AWS_ENABLED
               value: {{ .Values.pricing.providers.aws.enabled | quote }}
-            - name: RECONCILYX_PRICING_AWS_REGION
-              value: {{ .Values.pricing.providers.aws.region | quote }}
             {{- if .Values.pricing.providers.aws.accessKeyId }}
             - name: AWS_ACCESS_KEY_ID
               value: {{ .Values.pricing.providers.aws.accessKeyId | quote }}
@@ -110,21 +108,17 @@ spec:
             - name: AWS_SECRET_ACCESS_KEY
               value: {{ .Values.pricing.providers.aws.secretAccessKey | quote }}
             {{- end }}
+            {{- if .Values.pricing.providers.aws.sessionToken }}
+            - name: AWS_SESSION_TOKEN
+              value: {{ .Values.pricing.providers.aws.sessionToken | quote }}
+            {{- end }}
             - name: RECONCILYX_PRICING_GCP_ENABLED
               value: {{ .Values.pricing.providers.gcp.enabled | quote }}
-            - name: RECONCILYX_PRICING_GCP_REGION
-              value: {{ .Values.pricing.providers.gcp.region | quote }}
             {{- if .Values.pricing.providers.gcp.apiKey }}
             - name: RECONCILYX_PRICING_GCP_API_KEY
               value: {{ .Values.pricing.providers.gcp.apiKey | quote }}
             {{- end }}
             - name: RECONCILYX_PRICING_AZURE_ENABLED
               value: {{ .Values.pricing.providers.azure.enabled | quote }}
-            - name: RECONCILYX_PRICING_AZURE_REGION
-              value: {{ .Values.pricing.providers.azure.region | quote }}
-            {{- if .Values.pricing.providers.azure.subscriptionId }}
-            - name: RECONCILYX_PRICING_AZURE_SUB_ID
-              value: {{ .Values.pricing.providers.azure.subscriptionId | quote }}
-            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}

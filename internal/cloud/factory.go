@@ -7,17 +7,14 @@ import (
 )
 
 type PricingConfig struct {
-	CacheTTL       time.Duration
-	AWSEnabled     bool
-	AWSRegion      string
-	AWSAccessKeyID string
-	AWSSecretKey   string
-	GCPEnabled     bool
-	GCPRegion      string
-	GCPAPIKey      string
-	AzureEnabled   bool
-	AzureRegion    string
-	AzureSubId     string
+	CacheTTL        time.Duration
+	AWSEnabled      bool
+	AWSAccessKeyID  string
+	AWSSecretKey    string
+	AWSSessionToken string
+	GCPEnabled      bool
+	GCPAPIKey       string
+	AzureEnabled    bool
 }
 
 func PricingConfigFromEnv() PricingConfig {
@@ -35,19 +32,11 @@ func PricingConfigFromEnv() PricingConfig {
 	if v := os.Getenv("RECONCILYX_PRICING_AWS_ENABLED"); v != "" {
 		cfg.AWSEnabled = parseBoolEnv(v, true)
 	}
-	if v := os.Getenv("RECONCILYX_PRICING_AWS_REGION"); v != "" {
-		cfg.AWSRegion = v
-	}
 	cfg.AWSAccessKeyID = os.Getenv("AWS_ACCESS_KEY_ID")
 	cfg.AWSSecretKey = os.Getenv("AWS_SECRET_ACCESS_KEY")
-	if cfg.AWSRegion == "" {
-		cfg.AWSRegion = os.Getenv("AWS_REGION")
-	}
+	cfg.AWSSessionToken = os.Getenv("AWS_SESSION_TOKEN")
 	if v := os.Getenv("RECONCILYX_PRICING_GCP_ENABLED"); v != "" {
 		cfg.GCPEnabled = parseBoolEnv(v, true)
-	}
-	if v := os.Getenv("RECONCILYX_PRICING_GCP_REGION"); v != "" {
-		cfg.GCPRegion = v
 	}
 	cfg.GCPAPIKey = os.Getenv("RECONCILYX_PRICING_GCP_API_KEY")
 	if cfg.GCPAPIKey == "" {
@@ -55,13 +44,6 @@ func PricingConfigFromEnv() PricingConfig {
 	}
 	if v := os.Getenv("RECONCILYX_PRICING_AZURE_ENABLED"); v != "" {
 		cfg.AzureEnabled = parseBoolEnv(v, true)
-	}
-	if v := os.Getenv("RECONCILYX_PRICING_AZURE_REGION"); v != "" {
-		cfg.AzureRegion = v
-	}
-	cfg.AzureSubId = os.Getenv("RECONCILYX_PRICING_AZURE_SUB_ID")
-	if cfg.AzureSubId == "" {
-		cfg.AzureSubId = os.Getenv("AZURE_SUBSCRIPTION_ID")
 	}
 	return cfg
 }
@@ -84,11 +66,7 @@ func NewPricingProvider(name ProviderName, cfg PricingConfig) *CachedPricingProv
 			return nil
 		}
 		if cfg.AWSAccessKeyID != "" && cfg.AWSSecretKey != "" {
-			p := NewLiveAWSPricingProvider(cfg.AWSAccessKeyID)
-			if cfg.AWSRegion != "" {
-				_ = cfg.AWSRegion
-			}
-			raw = p
+			raw = NewLiveAWSPricingProvider(cfg.AWSAccessKeyID, cfg.AWSSecretKey, cfg.AWSSessionToken)
 		} else {
 			raw = NewAWSPricingProvider()
 		}
@@ -105,11 +83,8 @@ func NewPricingProvider(name ProviderName, cfg PricingConfig) *CachedPricingProv
 		if !cfg.AzureEnabled {
 			return nil
 		}
-		if cfg.AzureSubId != "" {
-			raw = NewLiveAzurePricingProvider(cfg.AzureSubId)
-		} else {
-			raw = NewAzurePricingProvider()
-		}
+		// The Azure Retail Prices API is anonymous; no subscription required.
+		raw = NewLiveAzurePricingProvider()
 	default:
 		return nil
 	}

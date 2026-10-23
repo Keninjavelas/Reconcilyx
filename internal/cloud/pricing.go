@@ -74,6 +74,14 @@ func (c *CachedPricingProvider) Name() ProviderName {
 	return c.provider.Name()
 }
 
+// Live reports whether the wrapped provider queries a live pricing API.
+func (c *CachedPricingProvider) Live() bool {
+	if live, ok := c.provider.(interface{ Live() bool }); ok {
+		return live.Live()
+	}
+	return false
+}
+
 func (c *CachedPricingProvider) getPrice(kind, instanceType, region string, loader func(context.Context, string, string) (float64, error), ctx context.Context) (float64, error) {
 	key := priceKey{kind: kind, instanceType: instanceType, region: region}
 

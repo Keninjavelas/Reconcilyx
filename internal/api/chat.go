@@ -35,15 +35,15 @@ type ChatRequest struct {
 }
 
 type ChatResponsePayload struct {
-	Answer                string                 `json:"answer"`
-	Function              string                 `json:"function"`
-	FastPath              bool                   `json:"fastPath"`
-	ChartData             map[string]interface{} `json:"chartData,omitempty"`
-	ConfirmationRequired  bool                   `json:"confirmationRequired,omitempty"`
-	ConfirmationToken     string                 `json:"confirmationToken,omitempty"`
-	ConfirmationDesc      string                 `json:"confirmationDescription,omitempty"`
-	ActionStatus          string                 `json:"actionStatus,omitempty"`
-	ActionTarget          string                 `json:"actionTarget,omitempty"`
+	Answer               string                 `json:"answer"`
+	Function             string                 `json:"function"`
+	FastPath             bool                   `json:"fastPath"`
+	ChartData            map[string]interface{} `json:"chartData,omitempty"`
+	ConfirmationRequired bool                   `json:"confirmationRequired,omitempty"`
+	ConfirmationToken    string                 `json:"confirmationToken,omitempty"`
+	ConfirmationDesc     string                 `json:"confirmationDescription,omitempty"`
+	ActionStatus         string                 `json:"actionStatus,omitempty"`
+	ActionTarget         string                 `json:"actionTarget,omitempty"`
 }
 
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
@@ -483,7 +483,7 @@ func (s *Server) respondArbitrage(args map[string]interface{}) string {
 			return strings.Join(lines, "\n")
 		}
 	}
-	return "### 🌐 Multi-Cloud Arbitrage\n\nLive ranking uses current AWS / GCP / Azure on-demand & spot rates from the pricing factory (see `internal/cloud/factory.go`).\n\nTo see concrete migration candidates, try:\n\n- `evaluate arbitrage for payment-service`\n- `rank workloads by cost`\n\nTip: set `GCP_BILLING_API_KEY`, AWS credentials, and/or `AZURE_SUB_ID` env vars to enable live pricing lookups. Otherwise a bundled static fallback is used."
+	return "### 🌐 Multi-Cloud Arbitrage\n\nRanking uses current AWS / GCP / Azure on-demand list prices from the pricing factory (see `internal/cloud/factory.go`); spot prices are estimates derived from those on-demand rates.\n\nTo see concrete migration candidates, try:\n\n- `evaluate arbitrage for payment-service`\n- `rank workloads by cost`\n\nTip: set AWS credentials and/or `GCP_BILLING_API_KEY` to enable live list-price lookups. Azure uses the public Retail Prices API by default. Without AWS or GCP credentials, the bundled static fallback is used."
 }
 
 func (s *Server) respondForecast(args map[string]interface{}) string {
@@ -501,12 +501,12 @@ func (s *Server) respondAnomalies() string {
 		return fmt.Sprintf("Failed to collect anomalies: `%s`.", err.Error())
 	}
 	type anomalyRow struct {
-		Time     time.Time
-		Workload string
+		Time      time.Time
+		Workload  string
 		Namespace string
-		Score    int32
-		Severity string
-		Proposal string
+		Score     int32
+		Severity  string
+		Proposal  string
 	}
 	rows := []anomalyRow{}
 	for _, p := range list.Items {
@@ -709,7 +709,9 @@ func (s *Server) respondWorkloads(args map[string]interface{}) string {
 		}
 	}
 
-	sort.Slice(rows, func(i, j int) bool { return rows[i].kind < rows[j].kind || (rows[i].kind == rows[j].kind && rows[i].namespace < rows[j].namespace) })
+	sort.Slice(rows, func(i, j int) bool {
+		return rows[i].kind < rows[j].kind || (rows[i].kind == rows[j].kind && rows[i].namespace < rows[j].namespace)
+	})
 	_ = totalCPU
 	_ = totalMem
 

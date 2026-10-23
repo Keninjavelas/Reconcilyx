@@ -231,7 +231,7 @@ func main() {
 		"cache_ttl_hours", pricingCfg.CacheTTL.Hours(),
 	)
 	for _, p := range pricingProviders {
-		setupLog.Info("Loaded pricing provider", "name", p.Name())
+		setupLog.Info("Loaded pricing provider", "name", p.Name(), "live", p.Live())
 	}
 	pp := make([]cloud.PricingProvider, 0, len(pricingProviders))
 	for _, p := range pricingProviders {

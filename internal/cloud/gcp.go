@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -18,9 +20,52 @@ const (
 type GCPPricingProvider struct {
 	HTTPClient *http.Client
 	BaseURL    string
+	Retry      RetryPolicy
 	apiKey     string
 	enableLive bool
 	fallback   *staticGCPCatalog
+}
+
+type gcpMachineSpec struct {
+	family string
+	vcpu   float64
+	memGB  float64
+}
+
+// Live GCP list prices are published per vCPU-hour and per GB-hour, not per
+// machine type. These specs let the client total the component SKUs for the
+// predefined machine types it quotes.
+var gcpLiveMachineSpecs = map[string]gcpMachineSpec{
+	"e2-standard-2": {family: "e2", vcpu: 2, memGB: 8},
+	"e2-standard-4": {family: "e2", vcpu: 4, memGB: 16},
+	"n2-standard-2": {family: "n2", vcpu: 2, memGB: 8},
+	"n2-standard-4": {family: "n2", vcpu: 4, memGB: 16},
+}
+
+type gcpBillingSKU struct {
+	Description string `json:"description"`
+	Category    struct {
+		ResourceFamily string `json:"resourceFamily"`
+		UsageType      string `json:"usageType"`
+	} `json:"category"`
+	ServiceRegions []string `json:"serviceRegions"`
+	PricingInfo    []struct {
+		PricingExpression struct {
+			UsageUnit   string `json:"usageUnit"`
+			TieredRates []struct {
+				UnitPrice struct {
+					CurrencyCode string  `json:"currencyCode"`
+					Units        string  `json:"units"`
+					Nanos        float64 `json:"nanos"`
+				} `json:"unitPrice"`
+			} `json:"tieredRates"`
+		} `json:"pricingExpression"`
+	} `json:"pricingInfo"`
+}
+
+type gcpBillingDoc struct {
+	NextPageToken string          `json:"nextPageToken"`
+	Skus          []gcpBillingSKU `json:"skus"`
 }
 
 type staticGCPCatalog struct {
@@ -55,12 +100,14 @@ func NewGCPPricingProvider() *GCPPricingProvider {
 
 func NewLiveGCPPricingProvider(apiKey string) *GCPPricingProvider {
 	p := NewGCPPricingProvider()
-	p.enableLive = true
+	p.enableLive = apiKey != ""
 	p.apiKey = apiKey
 	return p
 }
 
 func (g *GCPPricingProvider) Name() ProviderName { return ProviderGCP }
+
+func (g *GCPPricingProvider) Live() bool { return g.enableLive }
 
 func carbonForGCP(region string, cmap map[string]float64) float64 {
 	if c, ok := cmap[region]; ok {
@@ -70,101 +117,117 @@ func carbonForGCP(region string, cmap map[string]float64) float64 {
 }
 
 func (g *GCPPricingProvider) fetchOnDemandLive(ctx context.Context, instanceType, region string) (float64, error) {
-	if g.HTTPClient == nil || g.BaseURL == "" || g.apiKey == "" {
-		return 0, fmt.Errorf("live GCP pricing disabled (need HTTPClient, BaseURL, and API key)")
+	if !g.enableLive || g.HTTPClient == nil || g.BaseURL == "" || g.apiKey == "" {
+		return 0, fmt.Errorf("live GCP pricing disabled (need credentials, client, and base URL)")
 	}
-	u, _ := url.Parse(g.BaseURL)
-	q := u.Query()
-	q.Set("key", g.apiKey)
-	categoryFilter := fmt.Sprintf("resourceFamily = ComputeEngine AND region = %s", region)
-	q.Set("filter", categoryFilter)
-	u.RawQuery = q.Encode()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
-	if err != nil {
-		return 0, err
+	spec, ok := gcpLiveMachineSpecs[instanceType]
+	if !ok {
+		return 0, fmt.Errorf("gcp live pricing does not know machine type %s", instanceType)
 	}
-	resp, err := g.HTTPClient.Do(req)
-	if err != nil {
-		return 0, err
+
+	const maxPages = 20
+	var pageToken string
+	var corePrice, ramPrice float64
+	for page := 0; page < maxPages; page++ {
+		token := pageToken
+		resp, err := doWithRetry(ctx, g.HTTPClient, func() (*http.Request, error) {
+			u, err := url.Parse(g.BaseURL)
+			if err != nil {
+				return nil, err
+			}
+			q := u.Query()
+			q.Set("key", g.apiKey)
+			q.Set("pageSize", "5000")
+			q.Set("currencyCode", "USD")
+			if token != "" {
+				q.Set("pageToken", token)
+			}
+			u.RawQuery = q.Encode()
+			return http.NewRequestWithContext(ctx, http.MethodGet, u.String(), http.NoBody)
+		}, g.Retry)
+		if err != nil {
+			return 0, err
+		}
+
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 20*1024*1024))
+		resp.Body.Close()
+		if readErr != nil {
+			return 0, readErr
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return 0, fmt.Errorf("gcp billing api status %d: %s", resp.StatusCode, truncate(string(body), 256))
+		}
+
+		var doc gcpBillingDoc
+		if err := json.Unmarshal(body, &doc); err != nil {
+			return 0, err
+		}
+		core, ram := gcpComponentPrices(doc.Skus, spec.family, region)
+		if core > 0 {
+			corePrice = core
+		}
+		if ram > 0 {
+			ramPrice = ram
+		}
+		if corePrice > 0 && ramPrice > 0 {
+			return spec.vcpu*corePrice + spec.memGB*ramPrice, nil
+		}
+		if doc.NextPageToken == "" || doc.NextPageToken == pageToken {
+			break
+		}
+		pageToken = doc.NextPageToken
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return 0, fmt.Errorf("gcp billing api status %d", resp.StatusCode)
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 20*1024*1024))
-	if err != nil {
-		return 0, err
-	}
-	var doc struct {
-		Skus []struct {
-			SkuId       string   `json:"skuId"`
-			Description string   `json:"description"`
-			Category    struct {
-				ResourceFamily string `json:"resourceFamily"`
-				UsageType      string `json:"usageType"`
-			} `json:"category"`
-			ServiceRegions []string `json:"serviceRegions"`
-			PricingInfo    []struct {
-				PricingExpression struct {
-					DisplayQuantity float64 `json:"displayQuantity"`
-					TieredRates     []struct {
-						UnitPrice struct {
-							CurrencyCode string  `json:"currencyCode"`
-							Units        string  `json:"units"`
-							Nanos        float64 `json:"nanos"`
-						} `json:"unitPrice"`
-					} `json:"tieredRates"`
-				} `json:"pricingExpression"`
-			} `json:"pricingInfo"`
-		} `json:"skus"`
-	}
-	if err := json.Unmarshal(body, &doc); err != nil {
-		return 0, err
-	}
-	for _, sku := range doc.Skus {
+	return 0, fmt.Errorf("gcp component prices for %s/%s not found", region, instanceType)
+}
+
+func gcpComponentPrices(skus []gcpBillingSKU, family, region string) (core, ram float64) {
+	corePrefix := strings.ToUpper(family) + " INSTANCE CORE"
+	ramPrefix := strings.ToUpper(family) + " INSTANCE RAM"
+	for _, sku := range skus {
 		if sku.Category.ResourceFamily != "Compute" || sku.Category.UsageType != "OnDemand" {
 			continue
 		}
-		found := false
-		for _, r := range sku.ServiceRegions {
-			if r == region {
-				found = true
-				break
-			}
-		}
-		if !found {
+		desc := strings.ToUpper(sku.Description)
+		if strings.Contains(desc, "CUSTOM") || !gcpSKUInRegion(sku, region) {
 			continue
 		}
-		if !containsGCPInstance(sku.Description, instanceType) {
+		price := gcpSKUHourlyPrice(sku)
+		if price <= 0 {
 			continue
 		}
-		for _, pi := range sku.PricingInfo {
-			for _, tr := range pi.PricingExpression.TieredRates {
-				u1, _ := strconvParseFloat64(tr.UnitPrice.Units)
-				price := u1 + tr.UnitPrice.Nanos/1e9
-				if price > 0 {
-					return price, nil
-				}
+		if core == 0 && strings.HasPrefix(desc, corePrefix) {
+			core = price
+		}
+		if ram == 0 && strings.HasPrefix(desc, ramPrefix) {
+			ram = price
+		}
+	}
+	return core, ram
+}
+
+func gcpSKUInRegion(sku gcpBillingSKU, region string) bool {
+	for _, r := range sku.ServiceRegions {
+		if r == region {
+			return true
+		}
+	}
+	return false
+}
+
+func gcpSKUHourlyPrice(sku gcpBillingSKU) float64 {
+	for _, pi := range sku.PricingInfo {
+		if pi.PricingExpression.UsageUnit != "" && !strings.EqualFold(pi.PricingExpression.UsageUnit, "h") {
+			continue
+		}
+		for _, tr := range pi.PricingExpression.TieredRates {
+			units, _ := strconvParseFloat64(tr.UnitPrice.Units)
+			price := units + tr.UnitPrice.Nanos/1e9
+			if price > 0 {
+				return price
 			}
 		}
 	}
-	return 0, fmt.Errorf("gcp sku for %s/%s not found", region, instanceType)
-}
-
-func containsGCPInstance(desc, instanceType string) bool {
-	if desc == "" {
-		return false
-	}
-	return indexOf(desc, instanceType) >= 0
-}
-
-func indexOf(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
-		}
-	}
-	return -1
+	return 0
 }
 
 func strconvParseFloat64(s string) (float64, error) {
@@ -177,15 +240,18 @@ func strconvParseFloat64(s string) (float64, error) {
 }
 
 func (g *GCPPricingProvider) OnDemandPrice(ctx context.Context, instanceType, region string) (float64, error) {
-	if g.HTTPClient != nil && g.BaseURL != "" && g.apiKey != "" {
+	if g.enableLive {
 		if v, err := g.fetchOnDemandLive(ctx, instanceType, region); err == nil && v > 0 {
 			return v, nil
+		} else if err != nil {
+			slog.Warn("Live GCP pricing unavailable; using bundled fallback",
+				"instance", instanceType, "region", region, "error", err.Error())
 		}
 	}
 	if rate, ok := g.fallback.rates[instanceType]; ok {
 		return rate, nil
 	}
-	return 0.09, nil
+	return 0, fmt.Errorf("no GCP price for %s in %s and no local fallback", instanceType, region)
 }
 
 func (g *GCPPricingProvider) SpotPrice(ctx context.Context, instanceType, region string) (float64, error) {
@@ -204,12 +270,17 @@ func (g *GCPPricingProvider) ListMatchingInstances(ctx context.Context, vCPU, me
 		{Provider: ProviderGCP, Region: region, Name: "e2-standard-4", VCPU: 4.0, MemoryGB: 16.0, OnDemandPrice: 0.1340, SpotPrice: 0.0402, CarbonIntensity: carbon},
 		{Provider: ProviderGCP, Region: region, Name: "n2-standard-4", VCPU: 4.0, MemoryGB: 16.0, OnDemandPrice: 0.1640, SpotPrice: 0.0492, CarbonIntensity: carbon},
 	}
-	if g.HTTPClient != nil && g.BaseURL != "" && g.apiKey != "" {
+	if g.enableLive {
 		for i := range catalog {
 			live, err := g.fetchOnDemandLive(ctx, catalog[i].Name, region)
 			if err == nil && live > 0 {
 				catalog[i].OnDemandPrice = live
 				catalog[i].SpotPrice = live * 0.30
+				continue
+			}
+			if err != nil {
+				slog.Warn("Live GCP price refresh failed; keeping bundled price",
+					"instance", catalog[i].Name, "region", region, "error", err.Error())
 			}
 		}
 	}
