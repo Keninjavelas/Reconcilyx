@@ -51,7 +51,9 @@ func TestSimpleQAgent_Recommend_ActionSpaceCoversAdjacents(t *testing.T) {
 	state := newTestState(0.5, 256*1024*1024, 1000, 1024)
 	seenCPUAdj := make(map[float64]bool)
 	seenMemAdj := make(map[float64]bool)
-	for i := 0; i < 200; i++ {
+	// 10% of 2000 draws is ~200 uniform explorations across 25 actions, making
+	// coverage of every adjustment effectively deterministic.
+	for i := 0; i < 2000; i++ {
 		res, err := a.Recommend(context.Background(), state)
 		require.NoError(t, err)
 		cpuAdj := res.Action.Adjustment[string(corev1.ResourceCPU)].Percentage
