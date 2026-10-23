@@ -29,9 +29,9 @@ No public demo instance is operated. The React console is embedded in the Hub an
 | Real-Time eBPF Telemetry | 0 | 0 | 0 | ⏳ **Moved to v5.0 planned** — Cilium/Pixie/Tetragon gRPC out of scope for v4.0-beta. Fallback = Prometheus WorkloadInspector (1 min granularity). Stub emits WARN on first use. |
 | Model Registry & A/B Testing | 0 | 5 | 0 | Converged snapshots publish to stable, unstable ones to canary; spokes select a channel and operators can roll back canary; live multi-cluster validation pending |
 | Observability & Monitoring | 0 | 5 | 0 | Good instrumentation foundation, but not fully validated end-to-end |
-| User Experience | 0 | 4 | 2 | Embedded console covers proposals, savings, forecast, policies, and settings; responsive proposal queue, assistant drawer, and confirmation prompts. UI behaviour was exercised against a mock control plane, not a live cluster. |
-| Deployment & Packaging | 0 | 5 | 1 | Helm/CLI, embedded UI, and a Kind + ngrok evaluation guide exist; no public hosted instance is operated, and backend validation remains pending |
-| Security | 0 | 6 | 1 | API-key auth and CORS are covered by tests over a real listener; auto-merge webhook requires a Reconcilyx marker, a `reconcilyx/` head branch, and verified signatures; federated endpoints reuse the same X-API-Key header |
+| User Experience | 0 | 4 | 2 | Embedded console covers proposals, savings, forecast, policies, and settings; responsive proposal queue, assistant drawer, and confirmation prompts. Overview, Proposals, and Policies rendered live Kind-backed data on 2026-10-23 with zero console errors; Savings/Forecast/Settings were last exercised against a mock control plane. |
+| Deployment & Packaging | 0 | 5 | 1 | Helm/CLI, embedded UI, and a Kind + ngrok evaluation guide exist; the release manager was exercised in a container against Kind, but a VPS/TLS-proxy deployment remains unverified and no public hosted instance is operated |
+| Security | 0 | 6 | 1 | API-key auth and CORS were exercised against a running manager (401/200, allowed/denied origins, preflight); auto-merge webhook rejects unsigned/wrong-token events with 403 and requires a Reconcilyx marker plus a `reconcilyx/` head branch; federated endpoints reuse the same X-API-Key header |
 | Integrations | 0 | 4 | 1 | Prometheus + GitOps (manifest patching, external approval, auto-merge webhook) + live cloud pricing + live carbon; Karpenter + eBPF moved to v5.0 |
 | Documentation | 0 | 4 | 2 | README now lists real features + v5.0 planned section; FEATURE_MATRIX reflects reality |
 | Roadmap | 0 | 0 | 8 | Planned items only (now includes eBPF + node consolidation deferred to v5.0) |
@@ -45,13 +45,13 @@ No public demo instance is operated. The React console is embedded in the Hub an
 2. `go test ./...` passes with envtest binaries installed
    Status: complete on `2026-07-31`
 3. API/UI contracts are validated against a running backend
-   Status: pending — contracts were exercised against a mock control plane; live backend still required
+   Status: partial on 2026-10-23 — the embedded console rendered live Kind-backed data on Overview (3 proposals, 1 policy, fleet `hub` READY), Proposals (3 rows with phases), and Policies (`demo/autoscaler-test`, AutoApply) with zero console messages; Savings, Forecast, and Settings were not re-exercised against the live backend
 4. CLI actions report and propagate real API failures
    Status: pending
 5. Live actuation uses the intended Kubernetes mutation strategy in a production-like cluster
-   Status: pending — unit/envtest coverage exists; Kind run blocked while Docker engine is stopped
+   Status: partial on 2026-10-23 — the manager resized both `demo/web` pods in place through the Pod `resize` subresource on Kind v1.36.1 and reached `Stabilizing`; a production-like cluster and Prometheus-backed stabilization completion remain unverified
 6. The embedded console is served by the Hub, and its CORS/API-key guidance is validated against a running control plane
-   Status: partial — middleware validated over a real HTTP listener in tests; deployed control plane not exercised
+   Status: complete on 2026-10-23 — the Hub served the embedded console, API-key auth returned 401/200 as configured, and CORS allowed the configured origin (trailing slash normalized) while omitting the header for a disallowed origin; exercised over plain HTTP, not a TLS reverse proxy
 
 ## Maintenance Note
 
