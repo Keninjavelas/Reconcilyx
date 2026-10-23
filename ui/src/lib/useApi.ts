@@ -1,40 +1,53 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useAppStore } from "@/store/app";
+
+interface ApiState<T> {
+  data?: T;
+  error?: string;
+  loading: boolean;
+  fetchedAt?: string;
+}
 
 export function useApi<T, A extends unknown[]>(
   loader: (...args: A) => Promise<T>,
   ...args: A
-): { data: T | undefined; error?: string; loading: boolean; refetch: () => void } {
-  const [data, setData] = useState<T | undefined>(undefined);
-  const [error, setError] = useState<string | undefined>(undefined);
-  const [loading, setLoading] = useState(true);
-  const [epoch, setEpoch] = useState(0);
+): ApiState<T> & { refetch: () => void } {
+  const argsKey = JSON.stringify(args);
+  const loaderRef = useRef(loader);
+  const argsRef = useRef(args);
+  loaderRef.current = loader;
+  argsRef.current = args;
+
+  const refreshEpoch = useAppStore((s) => s.refreshEpoch);
+  const [localEpoch, setLocalEpoch] = useState(0);
+  const [state, setState] = useState<ApiState<T>>({ loading: true });
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
-    setError(undefined);
-    loader(...args)
-      .then((d) => {
-        if (!cancelled) {
-          setData(d);
-          setLoading(false);
-        }
+    setState((prev) => ({ ...prev, loading: true, error: undefined }));
+
+    loaderRef
+      .current(...argsRef.current)
+      .then((data) => {
+        if (cancelled) return;
+        setState({ data, loading: false, fetchedAt: new Date().toISOString() });
       })
-      .catch((e: unknown) => {
-        if (!cancelled) {
-          setError(e instanceof Error ? e.message : String(e));
-          setLoading(false);
-        }
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setState((prev) => ({
+          data: prev.data,
+          loading: false,
+          error: error instanceof Error ? error.message : String(error),
+          fetchedAt: new Date().toISOString(),
+        }));
       });
+
     return () => {
       cancelled = true;
     };
-  }, [epoch, ...args]);
+  }, [argsKey, refreshEpoch, localEpoch]);
 
-  return {
-    data,
-    error,
-    loading,
-    refetch: () => setEpoch((n) => n + 1),
-  };
+  const refetch = useCallback(() => setLocalEpoch((n) => n + 1), []);
+
+  return { ...state, refetch };
 }

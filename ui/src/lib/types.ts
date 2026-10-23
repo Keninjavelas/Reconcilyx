@@ -1,38 +1,42 @@
-export type ApprovalState =
-  | "Pending"
-  | "Approved"
-  | "Rejected"
-  | "AutoApproved";
+export type ApprovalState = "Pending" | "Approved" | "Rejected";
 
 export type ProposalPhase =
   | "Detected"
   | "Evaluating"
   | "Approved"
   | "AwaitingExternalApproval"
-  | "AwaitingHumanApproval"
+  | "Rejected"
+  | "Expired"
   | "Scheduled"
   | "Executing"
   | "Verifying"
   | "Stabilizing"
   | "Completed"
-  | "Rollback"
-  | "Rejected";
+  | "Failed"
+  | "RollbackRequired"
+  | "RollingBack"
+  | "RollbackVerification"
+  | "RolledBack";
 
 export type ExecutionState =
-  | "None"
-  | "Planned"
-  | "InProgress"
-  | "Succeeded"
-  | "Failed"
-  | "RolledBack";
+  | "Pending"
+  | "Applying"
+  | "Stabilizing"
+  | "Verified"
+  | "Reverted"
+  | "Failed";
 
 export type RecommendationType =
   | "RightSize"
-  | "RightSizeCPU"
-  | "RightSizeMemory"
-  | "Idle"
-  | "ScaleDownReplicas"
-  | "NoChange";
+  | "ScaleToZero"
+  | "ReduceCPURequest"
+  | "ReduceMemoryRequest"
+  | "MigrateCloud";
+
+export interface ProposalRef {
+  name: string;
+  namespace: string;
+}
 
 export interface ProposalListItem {
   name: string;
@@ -41,9 +45,9 @@ export interface ProposalListItem {
   workloadKind: string;
   workloadName: string;
   recommendation: RecommendationType;
-  approvalState: ApprovalState;
-  phase: ProposalPhase;
-  executionState?: ExecutionState;
+  approvalState: ApprovalState | "";
+  phase: ProposalPhase | "";
+  executionState?: ExecutionState | "";
   riskScore: number;
   confidenceScore: number;
   rationale?: string;
@@ -56,6 +60,135 @@ export interface ProposalListItem {
   memoryAfter?: string;
   createdAt: string;
   externalPRID?: string;
+}
+
+export interface MigrationPlan {
+  sourceCluster?: string;
+  targetCloud: string;
+  targetRegion: string;
+  targetInstance: string;
+  costDeltaUSD: number;
+  carbonSavedGrams: number;
+  migrationScript?: string;
+}
+
+export interface RawProposal {
+  metadata: {
+    name: string;
+    namespace: string;
+    creationTimestamp?: string;
+    resourceVersion?: string;
+    generation?: number;
+    labels?: Record<string, string>;
+    annotations?: Record<string, string>;
+  };
+  spec: {
+    targetClusterName?: string;
+    targetWorkload: {
+      apiVersion?: string;
+      kind: string;
+      namespace?: string;
+      name: string;
+    };
+    recommendation: RecommendationType;
+    observedResources?: {
+      currentResources?: {
+        requests?: Record<string, string>;
+        limits?: Record<string, string>;
+      };
+      p95Usage?: Record<string, string>;
+    };
+    proposedResources?: {
+      requests?: Record<string, string>;
+      limits?: Record<string, string>;
+    };
+    expectedImpact?: {
+      resourceDelta?: Record<string, string>;
+      estimatedSavingsUSD?: string;
+      carbonSavedGramsCO2?: string;
+    };
+    decisionMetadata?: {
+      confidenceScore: number;
+      riskScore: number;
+      rationale?: string;
+    };
+    migrationPlan?: MigrationPlan;
+  };
+  status?: {
+    phase?: ProposalPhase;
+    approvalState?: ApprovalState;
+    executionState?: ExecutionState;
+    policyApplied?: string;
+    lastEvaluationTime?: string;
+    expirationTime?: string;
+    reason?: string;
+    executionSnapshot?: {
+      resourceVersion: string;
+      generation: number;
+      containerResources: Record<string, { resources?: unknown }>;
+      replicaCount: number;
+      annotations?: Record<string, string>;
+      timestamp: string;
+    };
+    executionMetadata?: {
+      executionID: string;
+      fieldManager: string;
+      policyVersion: string;
+      proposalVersion: string;
+      telemetryTimestamp: string;
+    };
+    conditions?: {
+      type: string;
+      status: string;
+      reason?: string;
+      message?: string;
+      lastTransitionTime?: string;
+    }[];
+    yieldCount?: number;
+    externalPRID?: string;
+  };
+}
+
+export interface RawProposalEvent {
+  metadata?: { name?: string; creationTimestamp?: string };
+  type?: string;
+  reason?: string;
+  message?: string;
+  count?: number;
+  firstTimestamp?: string;
+  lastTimestamp?: string;
+  eventTime?: string;
+}
+
+export interface ProposalTimelineEvent {
+  at: string;
+  reason: string;
+  message: string;
+  type: "Normal" | "Warning";
+  count?: number;
+}
+
+export interface ProposalDetail {
+  summary: ProposalListItem;
+  raw: RawProposal;
+  rationale: string;
+  events: ProposalTimelineEvent[];
+  observed: {
+    cpu?: string;
+    memory?: string;
+    p95Cpu?: string;
+    p95Memory?: string;
+  };
+  proposed: {
+    cpu?: string;
+    memory?: string;
+  };
+  expected: {
+    savingsUSD?: string;
+    carbonSavedGrams?: number;
+    resourceDelta?: Record<string, string>;
+  };
+  migrationPlan?: MigrationPlan;
 }
 
 export interface SavingsPoint {
@@ -77,38 +210,83 @@ export interface SavingsResponse {
   refreshed: string;
 }
 
-export interface OptimizationPolicySpec {
-  mode?: "Observe" | "Propose" | "AutoApply" | "ManualApproval";
+export type PolicyObjective = "Cost" | "Performance" | "Efficiency";
+export type PolicyMode = "Observe" | "Propose" | "AutoApply";
+export type GitProvider = "mock" | "github" | "gitlab";
+
+export interface LabelSelector {
+  matchLabels?: Record<string, string>;
+  matchExpressions?: { key: string; operator: string; values?: string[] }[];
+}
+
+export interface RawPolicySpec {
+  objective: PolicyObjective;
+  mode: PolicyMode;
   targetSelectors?: {
-    namespaceSelector?: { matchLabels?: Record<string, string> };
-    workloadSelector?: { matchLabels?: Record<string, string> };
+    namespaceSelector?: LabelSelector | null;
+    workloadSelector?: LabelSelector | null;
+  };
+  resourceConstraints?: {
+    minCPU?: string;
+    maxCPU?: string;
+    minMemory?: string;
+    maxMemory?: string;
   };
   safetyConstraints?: {
-    carbonWeight?: number;
-    maxCPURequestIncreasePct?: number;
-    maxMemoryRequestIncreasePct?: number;
-    stabilizationWindowSeconds?: number;
-  };
-  analysis?: {
-    minConfidenceScore?: number;
-    maxRiskScore?: number;
     minReplicas?: number;
+    maxLatencyIncreaseMs?: number;
+    cooldownPeriod?: string;
+    riskTolerance?: number;
+    confidenceRequirement?: number;
+    carbonWeight?: number;
+  };
+  rollbackConstraints?: {
+    errorRateThresholdPercent?: number;
+    oomKilledWindow?: string;
+  };
+  recommendationGovernance?: {
+    allowedRecommendations?: RecommendationType[];
+  };
+  workloadProtection?: {
+    excludedContainers?: string[];
   };
   gitOps?: {
     enabled?: boolean;
-    provider?: "mock" | "github" | "gitlab";
+    provider?: GitProvider;
+    owner?: string;
+    repo?: string;
+    baseBranch?: string;
+    manifestsPath?: string;
     autoMerge?: boolean;
   };
 }
 
-export interface PolicyListItem {
+export interface RawPolicy {
+  apiVersion?: string;
+  kind?: string;
+  metadata: {
+    name: string;
+    namespace: string;
+    creationTimestamp?: string;
+  };
+  spec: RawPolicySpec;
+}
+
+export interface PolicyView {
   name: string;
   namespace: string;
-  mode: string;
-  workloadsMatched: number;
-  proposalsActive: number;
+  objective: PolicyObjective;
+  mode: PolicyMode;
   carbonWeight: number;
-  createdAt: string;
+  riskTolerance?: number;
+  confidenceRequirement?: number;
+  minReplicas?: number;
+  targetSummary: string;
+  gitOpsEnabled: boolean;
+  gitOpsProvider: GitProvider;
+  repository?: string;
+  createdAt?: string;
+  raw: RawPolicy;
 }
 
 export interface ForecastPoint {
@@ -123,27 +301,6 @@ export interface ForecastResponse {
   workload: string;
   namespace: string;
   series: ForecastPoint[];
-}
-
-export interface ProposalDetail {
-  summary: ProposalListItem;
-  rationale: string;
-  predictedImpact: {
-    forecastConfidence: number;
-    anomalySeverity: number;
-    rlReward: number;
-    ruleHits: string[];
-  };
-  gitOps?: {
-    provider: string;
-    prID?: string;
-    prURL?: string;
-    mergeStatus?: string;
-  };
-  execution?: {
-    snapshots: { before: string; after: string };
-    events: { at: string; message: string; level: "info" | "warn" | "error" }[];
-  };
 }
 
 export interface ChatResponse {
@@ -206,4 +363,9 @@ export interface AuditEntry {
   proposal?: string;
   namespace?: string;
   reason?: string;
+}
+
+export interface HealthResponse {
+  status: string;
+  time: string;
 }

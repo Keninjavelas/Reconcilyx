@@ -1,14 +1,15 @@
 import { useAppStore } from "@/store/app";
 
 const SHORTCUTS = [
-  { key: "g d", desc: "Go to Overview Dashboard" },
-  { key: "g p", desc: "Go to Proposals Inventory" },
-  { key: "g f", desc: "Go to Forecast & What-If" },
-  { key: "g o", desc: "Go to Policies" },
-  { key: "g s", desc: "Go to Settings" },
-  { key: "g c  /  Ctrl+K", desc: "Open AI Assistant Drawer" },
-  { key: "?", desc: "Show Keyboard Shortcuts Help" },
-  { key: "Esc", desc: "Close Modals / Clear Selection" },
+  { key: "g d", desc: "Overview" },
+  { key: "g p", desc: "Proposals" },
+  { key: "g f", desc: "Forecast" },
+  { key: "g s", desc: "Savings" },
+  { key: "g o", desc: "Policies" },
+  { key: "g x", desc: "Settings" },
+  { key: "⌘ K", desc: "Open the assistant" },
+  { key: "?", desc: "Show this reference" },
+  { key: "Esc", desc: "Dismiss overlays" },
 ];
 
 export default function KeyboardShortcutsModal() {
@@ -19,42 +20,41 @@ export default function KeyboardShortcutsModal() {
 
   return (
     <div
-      className="fixed inset-0 z-50 overflow-y-auto bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in"
+      className="overlay fixed inset-0 z-[60] flex items-center justify-center p-4"
       onClick={() => setOpen(false)}
+      role="presentation"
     >
       <div
-        className="w-full max-w-md bg-ink-950 border border-white/10 rounded-2xl p-6 shadow-2xl space-y-6"
-        onClick={(e) => e.stopPropagation()}
+        className="panel w-full max-w-md animate-fade-in-up"
+        onClick={(event) => event.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Keyboard shortcuts"
       >
-        <div className="flex items-center justify-between border-b border-white/10 pb-4">
-          <div className="flex items-center gap-2">
-            <span className="text-lg">⌨️</span>
-            <h3 className="font-display text-lg text-white">Keyboard Shortcuts</h3>
+        <div className="panel-header">
+          <div>
+            <div className="eyebrow">Reference</div>
+            <h2 className="panel-title mt-1">Keyboard shortcuts</h2>
           </div>
-          <button
-            onClick={() => setOpen(false)}
-            className="text-ink-400 hover:text-white p-1 rounded-lg hover:bg-white/5"
-          >
-            ✕
+          <button className="btn-icon" onClick={() => setOpen(false)} aria-label="Close shortcuts">
+            <span aria-hidden>×</span>
           </button>
         </div>
-
-        <div className="space-y-2">
-          {SHORTCUTS.map((s) => (
+        <div className="px-5 py-2 sm:px-6">
+          {SHORTCUTS.map((shortcut) => (
             <div
-              key={s.key}
-              className="flex items-center justify-between py-2 border-b border-white/5 text-sm"
+              key={shortcut.key}
+              className="flex items-center justify-between border-b border-white/[0.055] py-3 last:border-0"
             >
-              <span className="text-ink-300">{s.desc}</span>
-              <kbd className="px-2.5 py-1 rounded bg-white/10 border border-white/10 text-mint-400 font-mono text-xs font-semibold">
-                {s.key}
+              <span className="text-[13px] text-ink-300">{shortcut.desc}</span>
+              <kbd className="rounded border border-white/[0.12] bg-white/[0.04] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.1em] text-ink-100">
+                {shortcut.key}
               </kbd>
             </div>
           ))}
         </div>
-
-        <div className="text-xs text-ink-500 text-center">
-          Press <kbd className="px-1.5 py-0.5 rounded bg-white/5 border border-white/10">Esc</kbd> or click anywhere outside to close.
+        <div className="border-t border-white/[0.08] px-5 py-3 text-[11px] text-ink-500 sm:px-6">
+          Shortcuts are inactive while typing in a field.
         </div>
       </div>
     </div>

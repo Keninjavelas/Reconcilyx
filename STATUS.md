@@ -40,6 +40,17 @@ Use `v4.0.0-beta` in documentation and releases. Do not describe Reconcilyx as p
 
 ## Remediation Log
 
+### 2026-10-23 — P0: console redesign and contract-correct UI
+
+- The embedded console was rebuilt on an editorial design system (warm ink canvas, acid-lime accent, serif display type, hairline grids) across Overview, Proposals, Proposal detail, Savings, Forecast, Policies, and Settings.
+- Every page was re-pointed at the real API contracts: proposal envelopes, `{proposal, events}` detail, raw `OptimizationPolicy` resources, `{status,time}` health, and audit `items`. Invented KPI endpoints and stale fields were removed.
+- Proposals gained a responsive card queue below `lg` with selection, bulk approve/reject, rollback, and a detail drawer; desktop keeps the table.
+- Policies now creates a real `optimization.reconcilyx.io/v1alpha1` policy with a live manifest preview. Settings tests the control plane, stores the assistant key and monthly goal in the browser, and documents server-side environment variables instead of faking saves.
+- Savings now aggregates the real per-proposal series by creation date and labels it as a ledger, not a billing statement. Forecast and Savings charts use `ComposedChart` so the CO₂ line renders; animations are disabled for deterministic rendering.
+- Accessibility fixes: labeled proposal checkboxes and actions, non-control form groups no longer wrap buttons in `<label>`, and the monthly goal input validates. Auto-refresh and the savings goal now persist in the browser.
+- Removed the unused legacy `services/api.ts` client and unreferenced starter assets.
+- Evidence: `npm run build` (tsc + Vite) passed. Browser interaction run at a 638 px viewport against a local mock control plane verified bulk approve, drawer approve, reject, rollback, policy creation and list refresh, health test (75 ms), assistant save and chat round-trip, shortcuts, and persisted preferences with zero console errors and no horizontal overflow (`scrollWidth` 623 ≤ 638). Desktop pages were separately checked at 1440 px. This validates UI behaviour against mock API shapes, not the operator against a live cluster.
+
 ### 2026-10-23 — P0: JIT gate accepts engine-generated RightSize proposals
 
 - `internal/controller/actuator.go` and `internal/controller/execution_gate.go` now share `isActuatableRecommendation`, removing the drift that rejected every engine-generated `RightSize` proposal at execution time.

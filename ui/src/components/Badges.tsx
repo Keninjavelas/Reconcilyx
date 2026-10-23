@@ -1,64 +1,80 @@
 import clsx from "clsx";
 
-export function RiskBadge({ score, label }: { score: number; label?: string }) {
-  const level =
-    score >= 70 ? "high" : score >= 40 ? "med" : score >= 15 ? "low" : "none";
-  const style = {
-    high: "bg-ember-500/15 text-ember-400 border-ember-500/30",
-    med:  "bg-amber-500/15 text-amber-400 border-amber-500/30",
-    low:  "bg-sky-500/15 text-sky-400 border-sky-500/30",
-    none: "bg-white/[0.03] text-ink-100/70 border-white/10",
-  }[level];
+function humanize(value: string): string {
+  return value
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/([A-Z])([A-Z][a-z])/g, "$1 $2")
+    .trim();
+}
+
+export function RiskBadge({ score }: { score: number }) {
+  const tone =
+    score >= 70
+      ? "border-ember-500/35 bg-ember-500/10 text-ember-400"
+      : score >= 40
+        ? "border-amber-500/35 bg-amber-500/10 text-amber-400"
+        : "border-white/10 bg-white/[0.03] text-ink-300";
   return (
-    <span className={clsx("chip border", style)}>
-      {label ?? "Risk"} · {score}
+    <span className={clsx("chip border", tone)} title={`Risk score ${score} of 100`}>
+      Risk {score}
     </span>
   );
 }
 
 export function ConfidenceBadge({ score }: { score: number }) {
-  const level =
-    score >= 85 ? "high" : score >= 60 ? "med" : score >= 35 ? "low" : "low";
-  const style = {
-    high: "bg-mint-500/15 text-mint-400 border-mint-500/30",
-    med:  "bg-sky-500/15 text-sky-400 border-sky-500/30",
-    low:  "bg-white/[0.03] text-ink-100/70 border-white/10",
-  }[level];
+  const tone =
+    score >= 80
+      ? "border-mint-500/35 bg-mint-500/10 text-mint-500"
+      : score >= 55
+        ? "border-sky-500/35 bg-sky-500/10 text-sky-400"
+        : "border-white/10 bg-white/[0.03] text-ink-300";
   return (
-    <span className={clsx("chip border", style)}>
-      Conf · {score}
+    <span className={clsx("chip border", tone)} title={`Confidence score ${score} of 100`}>
+      Conf {score}
     </span>
   );
 }
 
+const phaseTones: Record<string, string> = {
+  Detected: "border-white/10 bg-white/[0.03] text-ink-300",
+  Evaluating: "border-sky-500/35 bg-sky-500/10 text-sky-400",
+  Approved: "border-mint-500/35 bg-mint-500/10 text-mint-500",
+  AwaitingExternalApproval: "border-amber-500/35 bg-amber-500/10 text-amber-400",
+  Rejected: "border-white/10 bg-white/[0.02] text-ink-400",
+  Expired: "border-white/10 bg-white/[0.02] text-ink-400",
+  Scheduled: "border-sky-500/35 bg-sky-500/10 text-sky-400",
+  Executing: "border-sky-500/35 bg-sky-500/10 text-sky-400",
+  Verifying: "border-amber-500/35 bg-amber-500/10 text-amber-400",
+  Stabilizing: "border-amber-500/35 bg-amber-500/10 text-amber-400",
+  Completed: "border-mint-500/35 bg-mint-500/10 text-mint-500",
+  Failed: "border-ember-500/35 bg-ember-500/10 text-ember-400",
+  RollbackRequired: "border-ember-500/35 bg-ember-500/10 text-ember-400",
+  RollingBack: "border-ember-500/35 bg-ember-500/10 text-ember-400",
+  RollbackVerification: "border-amber-500/35 bg-amber-500/10 text-amber-400",
+  RolledBack: "border-white/10 bg-white/[0.03] text-ink-300",
+};
+
 export function PhaseChip({ phase }: { phase: string }) {
-  const map: Record<string, string> = {
-    Detected: "bg-white/[0.03] text-ink-100/70 border-white/10",
-    Evaluating: "bg-sky-500/10 text-sky-400 border-sky-500/30",
-    Approved: "bg-mint-500/10 text-mint-400 border-mint-500/30",
-    AwaitingExternalApproval: "bg-amber-500/10 text-amber-400 border-amber-500/30",
-    AwaitingHumanApproval: "bg-amber-500/10 text-amber-400 border-amber-500/30",
-    Scheduled: "bg-sky-500/10 text-sky-400 border-sky-500/30",
-    Executing: "bg-sky-500/10 text-sky-400 border-sky-500/30",
-    Verifying: "bg-amber-500/10 text-amber-400 border-amber-500/30",
-    Stabilizing: "bg-amber-500/10 text-amber-400 border-amber-500/30",
-    Completed: "bg-mint-500/10 text-mint-400 border-mint-500/30",
-    Rollback: "bg-ember-500/10 text-ember-400 border-ember-500/30",
-    Rejected: "bg-white/[0.03] text-ink-100/50 border-white/10",
-  };
+  const label = phase ? humanize(phase) : "Unknown phase";
   return (
-    <span className={clsx("chip border", map[phase] ?? "bg-white/[0.03] text-ink-100/70 border-white/10")}>
-      {phase}
+    <span className={clsx("chip border", phaseTones[phase] ?? "border-white/10 bg-white/[0.03] text-ink-300")}>
+      {label}
     </span>
   );
 }
 
 export function ApprovalChip({ state }: { state: string }) {
-  const style =
-    state === "Approved" || state === "AutoApproved"
-      ? "bg-mint-500/10 text-mint-400 border-mint-500/30"
+  const tone =
+    state === "Approved"
+      ? "border-mint-500/35 bg-mint-500/10 text-mint-500"
       : state === "Rejected"
-        ? "bg-ember-500/10 text-ember-400 border-ember-500/30"
-        : "bg-amber-500/10 text-amber-400 border-amber-500/30";
-  return <span className={clsx("chip border", style)}>{state}</span>;
+        ? "border-ember-500/35 bg-ember-500/10 text-ember-400"
+        : state === "Pending"
+          ? "border-amber-500/35 bg-amber-500/10 text-amber-400"
+          : "border-white/10 bg-white/[0.03] text-ink-300";
+  return <span className={clsx("chip border", tone)}>{state || "Not reported"}</span>;
+}
+
+export function RecommendationLabel({ value }: { value: string }) {
+  return <span className="font-mono text-[12px] text-ink-100">{humanize(value)}</span>;
 }

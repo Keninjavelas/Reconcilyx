@@ -29,9 +29,21 @@ interface AppState {
   clearSelectedProposals: () => void;
   toggleAutoRefresh: () => void;
   setShortcutsOpen: (open: boolean) => void;
+  setMonthlySavingsGoalUSD: (goal: number) => void;
 }
 
 const uid = () => Math.random().toString(36).slice(2, 9);
+const goalStorageKey = "reconcilyx_monthly_goal_usd";
+const autoRefreshStorageKey = "reconcilyx_auto_refresh";
+
+function initialGoal(): number {
+  const stored = Number(localStorage.getItem(goalStorageKey));
+  return Number.isFinite(stored) && stored > 0 ? stored : 5000;
+}
+
+function initialAutoRefresh(): boolean {
+  return localStorage.getItem(autoRefreshStorageKey) !== "false";
+}
 
 export const useAppStore = create<AppState>((set) => ({
   cluster: "hub",
@@ -39,12 +51,17 @@ export const useAppStore = create<AppState>((set) => ({
   refreshEpoch: 0,
   toasts: [],
   selectedProposals: [],
-  autoRefresh: true,
+  autoRefresh: initialAutoRefresh(),
   shortcutsOpen: false,
-  monthlySavingsGoalUSD: 5000,
+  monthlySavingsGoalUSD: initialGoal(),
   setCluster: (c) => set({ cluster: c }),
   setNamespaceFilter: (n) => set({ namespaceFilter: n }),
   refresh: () => set((s) => ({ refreshEpoch: s.refreshEpoch + 1 })),
+  setMonthlySavingsGoalUSD: (goal) => {
+    if (!Number.isFinite(goal) || goal <= 0) return;
+    localStorage.setItem(goalStorageKey, String(goal));
+    set({ monthlySavingsGoalUSD: goal });
+  },
   pushToast: (t) => {
     const id = uid();
     const toast: Toast = { id, ...t };
@@ -62,7 +79,12 @@ export const useAppStore = create<AppState>((set) => ({
     })),
   selectAllProposals: (names) => set({ selectedProposals: names }),
   clearSelectedProposals: () => set({ selectedProposals: [] }),
-  toggleAutoRefresh: () => set((s) => ({ autoRefresh: !s.autoRefresh })),
+  toggleAutoRefresh: () =>
+    set((s) => {
+      const next = !s.autoRefresh;
+      localStorage.setItem(autoRefreshStorageKey, String(next));
+      return { autoRefresh: next };
+    }),
   setShortcutsOpen: (open) => set({ shortcutsOpen: open }),
 }));
 

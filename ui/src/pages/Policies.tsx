@@ -1,49 +1,142 @@
-import { useMemo, useState } from "react";
-import DataTable from "@/components/DataTable";
-import { useApi } from "@/lib/useApi";
-import { api } from "@/lib/api";
-import type { PolicyListItem } from "@/lib/types";
+import { useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
+import PageHeader from "@/components/PageHeader";
+import DataTable from "@/components/DataTable";
+import Icon from "@/components/Icon";
+import { api } from "@/lib/api";
+import { useApi } from "@/lib/useApi";
+import type {
+  GitProvider,
+  PolicyMode,
+  PolicyObjective,
+  PolicyView,
+  RawPolicy,
+  RawPolicySpec,
+  RecommendationType,
+} from "@/lib/types";
 import { useAppStore } from "@/store/app";
 
+const OBJECTIVES: PolicyObjective[] = ["Cost", "Performance", "Efficiency"];
+const MODES: PolicyMode[] = ["Observe", "Propose", "AutoApply"];
+const PROVIDERS: GitProvider[] = ["mock", "github", "gitlab"];
+const RECOMMENDATIONS: { value: RecommendationType; label: string }[] = [
+  { value: "RightSize", label: "Right-size" },
+  { value: "ScaleToZero", label: "Scale to zero" },
+  { value: "ReduceCPURequest", label: "Reduce CPU" },
+  { value: "ReduceMemoryRequest", label: "Reduce memory" },
+  { value: "MigrateCloud", label: "Migrate cloud" },
+];
+
+const MODE_COPY: Record<PolicyMode, string> = {
+  Observe: "Record findings, never propose.",
+  Propose: "Queue proposals for human review.",
+  AutoApply: "Approve low-risk proposals automatically.",
+};
+
+const MODE_STYLE: Record<PolicyMode, string> = {
+  Observe: "border-sky-500/35 bg-sky-500/10 text-sky-400",
+  Propose: "border-amber-500/35 bg-amber-500/10 text-amber-400",
+  AutoApply: "border-mint-500/35 bg-mint-500/10 text-mint-500",
+};
+
 export default function Policies() {
-  const { data } = useApi(api.policies.list);
-  const policies = data ?? [];
+  const policiesQuery = useApi(api.policies.list);
+  const policies = policiesQuery.data ?? [];
   const pushToast = useAppStore((s) => s.pushToast);
   const [showWizard, setShowWizard] = useState(false);
 
+  const autoApply = policies.filter((policy) => policy.mode === "AutoApply").length;
+  const carbonLed = policies.filter((policy) => policy.carbonWeight > 0).length;
+  const gitOpsArmed = policies.filter((policy) => policy.gitOpsEnabled).length;
+
+  async function createPolicy(policy: RawPolicy) {
+    const created = await api.policies.create(policy);
+    pushToast({
+      kind: "success",
+      title: "Policy created",
+      message: `${created.metadata?.namespace ?? policy.metadata.namespace}/${created.metadata?.name ?? policy.metadata.name}`,
+    });
+    setShowWizard(false);
+    policiesQuery.refetch();
+  }
+
   return (
-    <div className="space-y-6 animate-fade-in-up">
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <div className="eyebrow">Policy catalogue</div>
-          <h1 className="mt-1 font-display text-4xl tracking-tight">Policies</h1>
-          <p className="mt-2 max-w-2xl text-ink-100/70">
-            OptimizationPolicies bind your workloads to rules. Each policy carries its own
-            carbonWeight — turning cost-first and carbon-first dials independently.
-          </p>
+    <div className="space-y-10 lg:space-y-14">
+      <PageHeader
+        index="05"
+        eyebrow="Governance"
+        title={
+          <>
+            Rules that <span className="editorial text-mint-500">earn trust</span> before they act.
+          </>
+        }
+        description="An OptimizationPolicy decides which workloads are in scope, how much risk is tolerable, and whether a human or the controller pulls the trigger. Every field below maps directly to the OptimizationPolicy custom resource."
+        actions={
+          <button className="btn-primary" onClick={() => setShowWizard(true)}>
+            <Icon name="plus" size={14} />
+            New policy
+          </button>
+        }
+        meta={
+          <>
+            <span>{policiesQuery.data ? `${policies.length} policies` : "Policies not loaded"}</span>
+            <span>{policiesQuery.data ? `${autoApply} auto-apply` : "—"}</span>
+            <span>{policiesQuery.data ? `${carbonLed} carbon-led` : "—"}</span>
+            <span>{policiesQuery.data ? `${gitOpsArmed} GitOps` : "—"}</span>
+          </>
+        }
+      />
+
+      {policiesQuery.error ? (
+        <div
+          role="alert"
+          className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-ember-500/30 bg-ember-500/[0.06] px-4 py-3 text-[12px] text-ember-300"
+        >
+          <span className="break-words">
+            Policies could not be loaded.
+            <span className="ml-2 text-ink-400">{policiesQuery.error}</span>
+          </span>
+          <button className="btn-ghost h-8 px-3 text-[11px]" onClick={policiesQuery.refetch}>
+            Retry
+          </button>
         </div>
-        <button className="btn-primary" onClick={() => setShowWizard(true)}>
-          + New policy
-        </button>
-      </div>
+      ) : null}
 
       <div className="panel">
-        <DataTable<PolicyListItem>
+        <div className="panel-header">
+          <div>
+            <div className="eyebrow">Catalogue</div>
+            <div className="panel-title mt-1">Active optimization policies.</div>
+          </div>
+          <span className="font-mono text-[9px] uppercase tracking-[0.14em] text-ink-500">
+            {policiesQuery.data ? `${policies.length} resources` : "reading cluster…"}
+          </span>
+        </div>
+        <DataTable<PolicyView>
           rows={policies}
-          rowKey={(r) => `${r.namespace}/${r.name}`}
-          empty="No OptimizationPolicies yet. Create one to start generating proposals."
+          rowKey={(policy) => `${policy.namespace}/${policy.name}`}
+          empty={
+            policiesQuery.loading && !policiesQuery.data
+              ? "Loading policies…"
+              : "No OptimizationPolicies exist yet. Create one to start generating proposals."
+          }
           columns={[
             {
-              key: "name",
+              key: "policy",
               title: "Policy",
-              render: (r) => (
-                <div>
-                  <div className="font-medium">
-                    {r.namespace}/{r.name}
+              render: (policy) => (
+                <div className="min-w-[190px]">
+                  <div className="text-[13px] text-ink-100">
+                    {policy.namespace}/{policy.name}
                   </div>
-                  <div className="text-xs font-mono text-ink-500">
-                    created {new Date(r.createdAt).toLocaleDateString()}
+                  <div className="mt-0.5 flex items-center gap-2 font-mono text-[9px] uppercase tracking-[0.1em] text-ink-500">
+                    <span>{policy.objective}</span>
+                    {policy.createdAt ? (
+                      <>
+                        <span className="text-ink-700">/</span>
+                        <span>{new Date(policy.createdAt).toLocaleDateString()}</span>
+                      </>
+                    ) : null}
                   </div>
                 </div>
               ),
@@ -51,41 +144,75 @@ export default function Policies() {
             {
               key: "mode",
               title: "Mode",
-              render: (r) => (
-                <ModeChip mode={r.mode} />
+              render: (policy) => (
+                <span className={clsx("chip border", MODE_STYLE[policy.mode])}>{policy.mode}</span>
               ),
             },
             {
-              key: "workloadsMatched",
-              title: "Workloads matched",
-              className: "text-right",
-              render: (r) => (
-                <div className="text-right font-mono">{r.workloadsMatched}</div>
+              key: "targets",
+              title: "Targets",
+              render: (policy) => (
+                <div
+                  className="max-w-[340px] truncate font-mono text-[10px] text-ink-300"
+                  title={policy.targetSummary}
+                >
+                  {policy.targetSummary}
+                </div>
               ),
             },
             {
-              key: "proposalsActive",
-              title: "Active proposals",
-              className: "text-right",
-              render: (r) => (
-                <div className="text-right font-mono">{r.proposalsActive}</div>
-              ),
-            },
-            {
-              key: "carbonWeight",
-              title: "Carbon weight",
-              render: (r) => (
-                <div>
-                  <div className="flex items-center justify-between text-xs text-ink-500 mb-1">
-                    <span>cost ↔ carbon</span>
-                    <span className="font-mono">{r.carbonWeight.toFixed(2)}</span>
+              key: "guardrails",
+              title: "Guardrails",
+              render: (policy) => (
+                <div className="space-y-0.5 font-mono text-[9px] uppercase tracking-[0.08em] text-ink-500">
+                  <div>
+                    risk ≤ <span className="text-ink-200">{policy.riskTolerance ?? "unset"}</span>
                   </div>
-                  <div className="h-1.5 w-full rounded-full bg-white/5 overflow-hidden relative">
-                    <div className="absolute inset-0 bg-gradient-to-r from-mint-500/40 via-ink-900 to-amber-500/40" />
+                  <div>
+                    confidence ≥ <span className="text-ink-200">{policy.confidenceRequirement ?? "unset"}</span>
+                  </div>
+                  <div>
+                    replicas ≥ <span className="text-ink-200">{policy.minReplicas ?? "unset"}</span>
+                  </div>
+                </div>
+              ),
+            },
+            {
+              key: "carbon",
+              title: "Carbon weight",
+              render: (policy) => (
+                <div className="w-[120px]">
+                  <div className="flex items-baseline justify-between">
+                    <span className="font-mono text-[9px] uppercase tracking-[0.08em] text-ink-500">
+                      cost
+                    </span>
+                    <span className="num text-[10px] text-ink-200">
+                      {Math.round(policy.carbonWeight * 100)}%
+                    </span>
+                  </div>
+                  <div className="mt-1.5 h-[3px] w-full overflow-hidden bg-white/[0.06]">
                     <div
-                      className="absolute top-[-3px] w-2 h-4 rounded-full border-2 border-ink-900 bg-white"
-                      style={{ left: `calc(${r.carbonWeight * 100}% - 4px)` }}
+                      className="h-full bg-mint-500"
+                      style={{
+                        width: `${policy.carbonWeight > 0 ? Math.max(2, policy.carbonWeight * 100) : 0}%`,
+                      }}
                     />
+                  </div>
+                </div>
+              ),
+            },
+            {
+              key: "gitops",
+              title: "Actuation",
+              render: (policy) => (
+                <div className="min-w-[120px]">
+                  <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-300">
+                    {policy.gitOpsEnabled ? policy.gitOpsProvider : "live patch"}
+                  </div>
+                  <div className="mt-0.5 font-mono text-[9px] text-ink-500">
+                    {policy.gitOpsEnabled
+                      ? policy.repository ?? "repository unset"
+                      : "in-place resize"}
                   </div>
                 </div>
               ),
@@ -97,429 +224,654 @@ export default function Policies() {
       {showWizard ? (
         <CreatePolicyWizard
           onClose={() => setShowWizard(false)}
-          onCreate={async (body) => {
-            try {
-              const created = await api.policies.create(body);
-              const ns = created.metadata?.namespace ?? body.metadata.namespace;
-              const nm = created.metadata?.name ?? body.metadata.name;
-              pushToast({
-                kind: "success",
-                title: "Policy created",
-                message: `${ns}/${nm}`,
-              });
-              setShowWizard(false);
-            } catch (e) {
-              pushToast({
-                kind: "error",
-                title: "Policy create failed",
-                message: e instanceof Error ? e.message : String(e),
-              });
-            }
-          }}
+          onCreate={createPolicy}
         />
       ) : null}
     </div>
   );
 }
 
-function ModeChip({ mode }: { mode: PolicyListItem["mode"] }) {
-  const map: Record<string, string> = {
-    Optimize: "bg-white/[0.04] text-mint-400 border-mint-500/30",
-    AnalyzeOnly: "bg-white/[0.04] text-sky-400 border-sky-500/30",
-    AutoApply: "bg-amber-500/10 text-amber-400 border-amber-500/30",
-  };
-  const cls = map[mode] ?? "bg-white/[0.04] text-ink-100/70 border-white/10";
-  return (
-    <span className={clsx("chip border", cls)}>
-      {mode}
-    </span>
-  );
-}
-
-type Body = {
-  metadata: { name: string; namespace: string };
-  spec?: any;
-};
-
 function CreatePolicyWizard({
   onClose,
   onCreate,
 }: {
   onClose: () => void;
-  onCreate: (b: Body) => Promise<void>;
+  onCreate: (policy: RawPolicy) => Promise<void>;
 }) {
-  const [step, setStep] = useState(0);
   const [name, setName] = useState("cost-and-carbon-policy");
-  const [namespace, setNamespace] = useState("production");
-  const [mode, setMode] = useState<PolicyListItem["mode"]>("Optimize");
-  const [nsLabelKey, setNsLabelKey] = useState("kubernetes.io/metadata.name");
-  const [nsLabelValue, setNsLabelValue] = useState("production");
-  const [wklLabelKey, setWklLabelKey] = useState("app");
-  const [wklLabelValue, setWklLabelValue] = useState("*");
+  const [namespace, setNamespace] = useState("default");
+  const [objective, setObjective] = useState<PolicyObjective>("Efficiency");
+  const [mode, setMode] = useState<PolicyMode>("Propose");
+  const [nsLabelValue, setNsLabelValue] = useState("");
+  const [workloadKey, setWorkloadKey] = useState("app");
+  const [workloadValue, setWorkloadValue] = useState("");
   const [carbonWeight, setCarbonWeight] = useState(0.3);
-  const [maxIncreasePct, setMaxIncreasePct] = useState(10);
-  const [stabilizationWindow, setStabilizationWindow] = useState(30);
-  const [minConfidence, setMinConfidence] = useState(60);
-  const [maxRiskScore, setMaxRiskScore] = useState(60);
+  const [riskTolerance, setRiskTolerance] = useState(60);
+  const [confidenceRequirement, setConfidenceRequirement] = useState(70);
   const [minReplicas, setMinReplicas] = useState(2);
-  const [gitOpsProvider, setGitOpsProvider] = useState<"mock" | "github" | "gitlab" | "ado">("mock");
-  const [autoMerge, setAutoMerge] = useState(true);
-  const pushToast = useAppStore((s) => s.pushToast);
+  const [errorRate, setErrorRate] = useState(5);
+  const [allowed, setAllowed] = useState<RecommendationType[]>(
+    RECOMMENDATIONS.map((item) => item.value),
+  );
+  const [excludedContainers, setExcludedContainers] = useState("istio-proxy");
+  const [gitOpsEnabled, setGitOpsEnabled] = useState(false);
+  const [gitProvider, setGitProvider] = useState<GitProvider>("mock");
+  const [gitOwner, setGitOwner] = useState("");
+  const [gitRepo, setGitRepo] = useState("");
+  const [gitBaseBranch, setGitBaseBranch] = useState("main");
+  const [gitPath, setGitPath] = useState("manifests/");
+  const [autoMerge, setAutoMerge] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [submitError, setSubmitError] = useState<string | undefined>(undefined);
 
-  const steps = [
-    "Name & mode",
-    "Target workloads",
-    "Carbon & safety",
-    "Risk analysis",
-    "Rollback guard",
-    "GitOps",
-    "Review YAML",
-  ];
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
 
-  const preview: Body = useMemo(() => ({
-    metadata: { name, namespace },
-    spec: {
-      mode,
-      targetSelectors: {
-        namespaceMatchLabels: { [nsLabelKey]: nsLabelValue },
-        workloadLabelSelector: {
-          matchLabels: wklLabelValue === "*" ? undefined : { [wklLabelKey]: wklLabelValue },
+  const nameValid = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(name) && name.length <= 63;
+  const namespaceValid =
+    /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(namespace) && namespace.length <= 63;
+  const canCreate = nameValid && namespaceValid && !creating;
+
+  const draft = useMemo<RawPolicy>(() => {
+    const targetSelectors: RawPolicySpec["targetSelectors"] = {};
+    if (nsLabelValue.trim()) {
+      targetSelectors.namespaceSelector = {
+        matchLabels: { "kubernetes.io/metadata.name": nsLabelValue.trim() },
+      };
+    }
+    if (workloadKey.trim() && workloadValue.trim()) {
+      targetSelectors.workloadSelector = {
+        matchLabels: { [workloadKey.trim()]: workloadValue.trim() },
+      };
+    }
+
+    const excluded = excludedContainers
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+
+    return {
+      apiVersion: "optimization.reconcilyx.io/v1alpha1",
+      kind: "OptimizationPolicy",
+      metadata: { name, namespace },
+      spec: {
+        objective,
+        mode,
+        targetSelectors:
+          Object.keys(targetSelectors).length > 0 ? targetSelectors : undefined,
+        safetyConstraints: {
+          minReplicas,
+          riskTolerance,
+          confidenceRequirement,
+          carbonWeight,
+        },
+        rollbackConstraints: {
+          errorRateThresholdPercent: errorRate,
+        },
+        recommendationGovernance: {
+          allowedRecommendations: allowed,
+        },
+        workloadProtection: excluded.length > 0 ? { excludedContainers: excluded } : undefined,
+        gitOps: {
+          enabled: gitOpsEnabled,
+          provider: gitProvider,
+          owner: gitOwner.trim() || undefined,
+          repo: gitRepo.trim() || undefined,
+          baseBranch: gitBaseBranch.trim() || "main",
+          manifestsPath: gitPath.trim() || undefined,
+          autoMerge,
         },
       },
-      safetyConstraints: {
-        carbonWeight,
-        stabilizationWindowMinutes: stabilizationWindow,
-        maxIncreasePct,
-        maxRiskScore,
-        killSwitch: true,
-      },
-      analysis: {
-        minConfidence: minConfidence / 100,
-        minReplicas,
-      },
-      gitOps: {
-        enabled: gitOpsProvider !== "mock" ? true : false,
-        provider: gitOpsProvider,
-        autoMerge,
-      },
-    },
-  } as unknown as Body), [
-    name, namespace, mode, nsLabelKey, nsLabelValue, wklLabelKey, wklLabelValue,
-    carbonWeight, maxIncreasePct, stabilizationWindow, minConfidence, maxRiskScore,
-    minReplicas, gitOpsProvider, autoMerge,
+    };
+  }, [
+    name,
+    namespace,
+    objective,
+    mode,
+    nsLabelValue,
+    workloadKey,
+    workloadValue,
+    carbonWeight,
+    riskTolerance,
+    confidenceRequirement,
+    minReplicas,
+    errorRate,
+    allowed,
+    excludedContainers,
+    gitOpsEnabled,
+    gitProvider,
+    gitOwner,
+    gitRepo,
+    gitBaseBranch,
+    gitPath,
+    autoMerge,
   ]);
 
-  const yaml = useMemo(
-    () => buildYaml(preview),
-    [preview],
-  );
+  const manifest = useMemo(() => toYaml(stripUndefined(draft)), [draft]);
 
-  async function submit() {
+  function toggleRecommendation(value: RecommendationType) {
+    setAllowed((current) =>
+      current.includes(value) ? current.filter((item) => item !== value) : [...current, value],
+    );
+  }
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    if (!canCreate) return;
+    setCreating(true);
+    setSubmitError(undefined);
     try {
-      await onCreate(preview);
-    } catch (e) {
-      pushToast({
-        kind: "error",
-        title: "Submit failed",
-        message: e instanceof Error ? e.message : String(e),
-      });
+      await onCreate(draft);
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setCreating(false);
     }
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-ink-950/80 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in-up">
-      <div className="panel w-full max-w-3xl max-h-[90vh] overflow-y-auto">
-        <div className="panel-header">
+    <div
+      className="overlay fixed inset-0 z-50 flex items-start justify-center overflow-y-auto p-4 sm:p-6"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="new-policy-title"
+        className="panel my-4 w-full max-w-5xl animate-fade-in-up"
+      >
+        <div className="panel-header items-center">
           <div>
-            <div className="eyebrow">
-              Step {step + 1} of {steps.length}
+            <div className="eyebrow">New OptimizationPolicy</div>
+            <div id="new-policy-title" className="panel-title mt-1">
+              Define the contract, then let the controller work.
             </div>
-            <div className="panel-title">{steps[step]}</div>
           </div>
-          <button className="btn-ghost" onClick={onClose}>
-            ✕
+          <button className="btn-icon h-9 w-9" onClick={onClose} aria-label="Close">
+            <Icon name="close" size={16} />
           </button>
         </div>
 
-        <div className="px-6 mb-4">
-          <div className="h-1 w-full rounded-full bg-white/5 overflow-hidden">
-            <div
-              className="h-full bg-gradient-to-r from-mint-500 to-sky-500 transition-all duration-300"
-              style={{ width: `${((step + 1) / steps.length) * 100}%` }}
-            />
-          </div>
-        </div>
-
-        <div className="px-6 pb-6 space-y-5">
-          {step === 0 ? (
-            <>
-              <Field label="Policy name">
-                <input className="input" value={name} onChange={(e) => setName(e.target.value)} />
-              </Field>
-              <Field label="Namespace">
-                <input className="input" value={namespace} onChange={(e) => setNamespace(e.target.value)} />
-              </Field>
-              <Field label="Mode">
-                <div className="grid grid-cols-3 gap-2">
-                  {(["AnalyzeOnly", "Optimize", "AutoApply"] as const).map((m) => (
-                    <button
-                      key={m}
-                      onClick={() => setMode(m)}
-                      className={clsx(
-                        "rounded-xl border px-4 py-3 text-left transition-all",
-                        mode === m
-                          ? "bg-white/[0.04] border-mint-500/30 text-mint-400"
-                          : "border-white/5 hover:bg-white/[0.03]",
-                      )}
-                    >
-                      <div className="font-medium">{m}</div>
-                      <div className="text-xs text-ink-500 mt-0.5">
-                        {m === "AnalyzeOnly"
-                          ? "Report only, never act."
-                          : m === "Optimize"
-                            ? "Human review before apply."
-                            : "Auto-approve low-risk changes."}
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              </Field>
-            </>
-          ) : null}
-
-          {step === 1 ? (
-            <>
-              <Field label="Namespace match label key">
-                <input className="input" value={nsLabelKey} onChange={(e) => setNsLabelKey(e.target.value)} />
-              </Field>
-              <Field label="Namespace match label value">
-                <input className="input" value={nsLabelValue} onChange={(e) => setNsLabelValue(e.target.value)} />
-              </Field>
-              <Field label="Workload match label key">
-                <input className="input" value={wklLabelKey} onChange={(e) => setWklLabelKey(e.target.value)} />
-              </Field>
-              <Field label="Workload match label value (use * for all)">
-                <input className="input" value={wklLabelValue} onChange={(e) => setWklLabelValue(e.target.value)} />
-              </Field>
-            </>
-          ) : null}
-
-          {step === 2 ? (
-            <>
-              <Field label="Carbon weight — cost (0.00) ↔ CO₂ (1.00)">
-                <div className="mt-2 font-mono text-lg text-center">{carbonWeight.toFixed(2)}</div>
-                <input
-                  type="range"
-                  min={0}
-                  max={1}
-                  step={0.05}
-                  className="slider w-full"
-                  value={carbonWeight}
-                  onChange={(e) => setCarbonWeight(Number(e.target.value))}
-                />
-                <div className="mt-2 flex justify-between text-xs text-ink-500">
-                  <span>Cost-first (0.00)</span>
-                  <span>Balanced (0.30 default)</span>
-                  <span>Carbon-first (1.00)</span>
-                </div>
-                <div className="mt-3 text-sm text-ink-100/70 leading-relaxed panel !border-white/5 !bg-white/[0.02] !p-4">
-                  Multi-objective reward:{" "}
-                  <span className="font-mono text-mint-400">
-                    (1−w)·σ(costSaved/50) + w·σ(carbonSaved/50000)
-                  </span>
-                  . Raising w makes the RL prefer carbon-saving recommendations even when the
-                  USD payback is slower.
-                </div>
-              </Field>
-              <Field label="Max CPU/memory increase %">
-                <input
-                  type="number"
-                  className="input"
-                  value={maxIncreasePct}
-                  onChange={(e) => setMaxIncreasePct(Number(e.target.value))}
-                />
-              </Field>
-              <Field label={`Stabilization window (${stabilizationWindow} min)`}>
-                <input
-                  type="number"
-                  className="input"
-                  value={stabilizationWindow}
-                  onChange={(e) => setStabilizationWindow(Number(e.target.value))}
-                />
-              </Field>
-            </>
-          ) : null}
-
-          {step === 3 ? (
-            <>
-              <Field label={`Min. forecast confidence (${minConfidence} %)`}>
-                <input
-                  type="range"
-                  min={0}
-                  max={100}
-                  className="slider w-full"
-                  value={minConfidence}
-                  onChange={(e) => setMinConfidence(Number(e.target.value))}
-                />
-              </Field>
-              <Field label={`Max risk score allowed (${maxRiskScore})`}>
-                <input
-                  type="range"
-                  min={0}
-                  max={100}
-                  className="slider w-full"
-                  value={maxRiskScore}
-                  onChange={(e) => setMaxRiskScore(Number(e.target.value))}
-                />
-              </Field>
-              <Field label={`Min replicas to consider (${minReplicas})`}>
-                <input
-                  type="number"
-                  min={1}
-                  className="input"
-                  value={minReplicas}
-                  onChange={(e) => setMinReplicas(Number(e.target.value))}
-                />
-              </Field>
-            </>
-          ) : null}
-
-          {step === 4 ? (
-            <>
-              <Field label="Rollback guardrails">
-                <div className="panel !border-white/5 !bg-white/[0.02] !p-5 space-y-2 text-sm text-ink-100/80">
-                  <p>✓ In-place SSA rollback to pre-execution snapshot within 10 seconds.</p>
-                  <p>✓ Auto-rollback on error-rate increase &gt; 10 % (15 min window).</p>
-                  <p>✓ Auto-rollback on P95 latency &gt; safety.maxIncreasePct.</p>
-                  <p>✓ Kill-switch: `reconcilyx/reject-all: "true"` namespace label.</p>
-                </div>
-              </Field>
-            </>
-          ) : null}
-
-          {step === 5 ? (
-            <>
-              <Field label="GitOps provider">
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                  {(["mock", "github", "gitlab", "ado"] as const).map((p) => (
-                    <button
-                      key={p}
-                      onClick={() => setGitOpsProvider(p)}
-                      className={clsx(
-                        "rounded-xl border px-4 py-3 text-left transition-all",
-                        gitOpsProvider === p
-                          ? "bg-white/[0.04] border-mint-500/30 text-mint-400"
-                          : "border-white/5 hover:bg-white/[0.03]",
-                      )}
-                    >
-                      <div className="font-medium uppercase tracking-wide text-xs">{p}</div>
-                      <div className="text-xs text-ink-500 mt-1">
-                        {p === "mock" ? "Disabled / dry-run" : "Open PRs on change"}
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              </Field>
-              <Field label="Auto-merge on approval + CI green">
-                <label className="flex items-center gap-3 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={autoMerge}
-                    onChange={(e) => setAutoMerge(e.target.checked)}
-                    className="w-4 h-4 accent-mint-500"
-                  />
-                  <span className="text-sm text-ink-100/80">Arm merge-queue arming</span>
-                </label>
-              </Field>
-            </>
-          ) : null}
-
-          {step === 6 ? (
-            <>
-              <Field label="Preview manifest">
-                <div className="relative">
-                  <button
-                    onClick={() => {
-                      navigator.clipboard.writeText(yaml);
-                      pushToast({ kind: "success", title: "Copied YAML", message: "CRD manifest copied to clipboard!" });
-                    }}
-                    className="absolute top-2 right-2 px-3 py-1 text-xs rounded-lg bg-white/10 hover:bg-white/20 text-white font-medium transition"
+        <form onSubmit={submit}>
+          <div className="grid gap-0 lg:grid-cols-[1.1fr_0.9fr]">
+            <div className="max-h-[calc(100vh-14rem)] space-y-7 overflow-y-auto p-5 scrollbar-thin sm:p-6">
+              <section className="space-y-4">
+                <div className="eyebrow">Identity</div>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <Field label="Policy name" hint={!nameValid ? "Lowercase DNS label, max 63 characters." : undefined} invalid={!nameValid}>
+                    <input
+                      className="input font-mono text-[12px]"
+                      value={name}
+                      onChange={(event) => setName(event.target.value)}
+                      autoFocus
+                    />
+                  </Field>
+                  <Field
+                    label="Namespace"
+                    hint={!namespaceValid ? "Lowercase DNS label, max 63 characters." : undefined}
+                    invalid={!namespaceValid}
                   >
-                    📋 Copy YAML
-                  </button>
-                  <pre className="overflow-x-auto font-mono text-xs p-4 rounded-xl bg-black/40 border border-white/10 text-ink-100/90 max-h-[420px]">
-                    {yaml}
-                  </pre>
+                    <input
+                      className="input font-mono text-[12px]"
+                      value={namespace}
+                      onChange={(event) => setNamespace(event.target.value)}
+                    />
+                  </Field>
                 </div>
-              </Field>
-            </>
-          ) : null}
-        </div>
+              </section>
 
-        <div className="px-6 pb-6 flex flex-wrap items-center justify-between gap-3">
-          <button
-            className="btn-ghost"
-            onClick={() => (step > 0 ? setStep(step - 1) : onClose())}
-          >
-            {step > 0 ? "← Back" : "Cancel"}
-          </button>
-          {step < steps.length - 1 ? (
-            <button className="btn-primary" onClick={() => setStep(step + 1)}>
-              Continue →
-            </button>
-          ) : (
-            <button className="btn-primary" onClick={submit}>
-              Create policy
-            </button>
-          )}
-        </div>
+              <section className="space-y-4 border-t border-white/[0.08] pt-6">
+                <div className="eyebrow">Intent</div>
+                <Field label="Objective">
+                  <div className="grid grid-cols-3 gap-2">
+                    {OBJECTIVES.map((value) => (
+                      <ChoiceButton
+                        key={value}
+                        active={objective === value}
+                        onClick={() => setObjective(value)}
+                        title={value}
+                        description={
+                          value === "Cost"
+                            ? "Minimize spend first."
+                            : value === "Performance"
+                              ? "Protect headroom first."
+                              : "Balance both signals."
+                        }
+                      />
+                    ))}
+                  </div>
+                </Field>
+                <Field label="Mode">
+                  <div className="grid grid-cols-3 gap-2">
+                    {MODES.map((value) => (
+                      <ChoiceButton
+                        key={value}
+                        active={mode === value}
+                        onClick={() => setMode(value)}
+                        title={value}
+                        description={MODE_COPY[value]}
+                      />
+                    ))}
+                  </div>
+                </Field>
+              </section>
+
+              <section className="space-y-4 border-t border-white/[0.08] pt-6">
+                <div>
+                  <div className="eyebrow">Target scope</div>
+                  <p className="mt-1.5 text-[11px] leading-relaxed text-ink-500">
+                    Leave either value blank to match every namespace or workload.
+                  </p>
+                </div>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <Field label="Namespace name">
+                    <input
+                      className="input font-mono text-[12px]"
+                      value={nsLabelValue}
+                      onChange={(event) => setNsLabelValue(event.target.value)}
+                      placeholder="all namespaces"
+                    />
+                  </Field>
+                  <div className="grid grid-cols-[0.8fr_1.2fr] gap-2">
+                    <Field label="Label key">
+                      <input
+                        className="input font-mono text-[12px]"
+                        value={workloadKey}
+                        onChange={(event) => setWorkloadKey(event.target.value)}
+                      />
+                    </Field>
+                    <Field label="Label value">
+                      <input
+                        className="input font-mono text-[12px]"
+                        value={workloadValue}
+                        onChange={(event) => setWorkloadValue(event.target.value)}
+                        placeholder="all workloads"
+                      />
+                    </Field>
+                  </div>
+                </div>
+              </section>
+
+              <section className="space-y-4 border-t border-white/[0.08] pt-6">
+                <div className="eyebrow">Guardrails</div>
+                <Field
+                  label={`Carbon weight — ${Math.round(carbonWeight * 100)}% toward carbon`}
+                  hint="0 is cost-only; 1 is carbon-only. The evaluator uses this to blend both signals."
+                >
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={carbonWeight}
+                    onChange={(event) => setCarbonWeight(Number(event.target.value))}
+                    className="range"
+                  />
+                  <div className="flex justify-between font-mono text-[9px] text-ink-600">
+                    <span>cost first</span>
+                    <span>balanced</span>
+                    <span>carbon first</span>
+                  </div>
+                </Field>
+                <div className="grid gap-4 sm:grid-cols-3">
+                  <NumberField
+                    label="Risk tolerance"
+                    value={riskTolerance}
+                    min={0}
+                    max={100}
+                    onChange={setRiskTolerance}
+                    suffix="≤"
+                  />
+                  <NumberField
+                    label="Confidence"
+                    value={confidenceRequirement}
+                    min={0}
+                    max={100}
+                    onChange={setConfidenceRequirement}
+                    suffix="≥"
+                  />
+                  <NumberField
+                    label="Min replicas"
+                    value={minReplicas}
+                    min={1}
+                    max={100}
+                    onChange={setMinReplicas}
+                    suffix="≥"
+                  />
+                </div>
+                <NumberField
+                  label="Rollback above error rate"
+                  value={errorRate}
+                  min={0}
+                  max={100}
+                  onChange={setErrorRate}
+                  suffix="%"
+                />
+              </section>
+
+              <section className="space-y-4 border-t border-white/[0.08] pt-6">
+                <div className="eyebrow">Recommendation governance</div>
+                <div className="flex flex-wrap gap-2">
+                  {RECOMMENDATIONS.map((item) => {
+                    const active = allowed.includes(item.value);
+                    return (
+                      <button
+                        key={item.value}
+                        type="button"
+                        onClick={() => toggleRecommendation(item.value)}
+                        className={clsx(
+                          "chip border transition",
+                          active
+                            ? "border-mint-500/40 bg-mint-500/10 text-mint-500"
+                            : "border-white/[0.12] bg-transparent text-ink-500 hover:text-ink-300",
+                        )}
+                        aria-pressed={active}
+                      >
+                        {active ? <Icon name="check" size={10} /> : null}
+                        {item.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                {allowed.length === 0 ? (
+                  <p className="text-[11px] text-ember-400">
+                    At least one recommendation should be allowed, or this policy can never propose anything.
+                  </p>
+                ) : null}
+                <Field
+                  label="Excluded containers"
+                  hint="Comma-separated. Optimization is skipped when any of these containers is present."
+                >
+                  <input
+                    className="input font-mono text-[12px]"
+                    value={excludedContainers}
+                    onChange={(event) => setExcludedContainers(event.target.value)}
+                    placeholder="istio-proxy, linkerd-proxy"
+                  />
+                </Field>
+              </section>
+
+              <section className="space-y-4 border-t border-white/[0.08] pt-6">
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <div className="eyebrow">GitOps actuation</div>
+                    <p className="mt-1.5 text-[11px] leading-relaxed text-ink-500">
+                      When enabled, approved proposals open a pull request instead of patching the cluster.
+                    </p>
+                  </div>
+                  <label className="flex shrink-0 cursor-pointer items-center gap-2 text-[11px] text-ink-300">
+                    <input
+                      type="checkbox"
+                      checked={gitOpsEnabled}
+                      onChange={(event) => setGitOpsEnabled(event.target.checked)}
+                      className="h-4 w-4 accent-mint-500"
+                    />
+                    Enabled
+                  </label>
+                </div>
+
+                {gitOpsEnabled ? (
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-3 gap-2">
+                      {PROVIDERS.map((provider) => (
+                        <ChoiceButton
+                          key={provider}
+                          active={gitProvider === provider}
+                          onClick={() => setGitProvider(provider)}
+                          title={provider}
+                          description={
+                            provider === "mock"
+                              ? "Dry run, no remote calls."
+                              : `Open PRs on ${provider}.`
+                          }
+                        />
+                      ))}
+                    </div>
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <Field label="Owner / namespace">
+                        <input
+                          className="input font-mono text-[12px]"
+                          value={gitOwner}
+                          onChange={(event) => setGitOwner(event.target.value)}
+                          placeholder="acme"
+                        />
+                      </Field>
+                      <Field label="Repository">
+                        <input
+                          className="input font-mono text-[12px]"
+                          value={gitRepo}
+                          onChange={(event) => setGitRepo(event.target.value)}
+                          placeholder="cluster-manifests"
+                        />
+                      </Field>
+                      <Field label="Base branch">
+                        <input
+                          className="input font-mono text-[12px]"
+                          value={gitBaseBranch}
+                          onChange={(event) => setGitBaseBranch(event.target.value)}
+                        />
+                      </Field>
+                      <Field label="Manifests path">
+                        <input
+                          className="input font-mono text-[12px]"
+                          value={gitPath}
+                          onChange={(event) => setGitPath(event.target.value)}
+                        />
+                      </Field>
+                    </div>
+                    <label className="flex cursor-pointer items-center gap-2 text-[11px] text-ink-300">
+                      <input
+                        type="checkbox"
+                        checked={autoMerge}
+                        onChange={(event) => setAutoMerge(event.target.checked)}
+                        className="h-4 w-4 accent-mint-500"
+                      />
+                      Auto-merge once required checks pass
+                    </label>
+                  </div>
+                ) : null}
+              </section>
+            </div>
+
+            <aside className="flex min-h-0 flex-col border-t border-white/[0.08] bg-ink-950/60 lg:border-l lg:border-t-0">
+              <div className="flex items-center justify-between gap-3 border-b border-white/[0.08] px-5 py-3">
+                <span className="eyebrow">Manifest preview</span>
+                <button
+                  type="button"
+                  className="btn-ghost h-7 px-2.5 text-[10px]"
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(manifest);
+                    } catch {
+                      /* clipboard may be unavailable outside a secure context */
+                    }
+                  }}
+                >
+                  <Icon name="copy" size={11} />
+                  Copy
+                </button>
+              </div>
+              <pre className="max-h-[32rem] flex-1 overflow-auto p-5 font-mono text-[10.5px] leading-relaxed text-ink-300 scrollbar-thin">
+                {manifest}
+              </pre>
+              <div className="border-t border-white/[0.08] px-5 py-3 font-mono text-[9px] uppercase leading-relaxed tracking-[0.12em] text-ink-600">
+                Posted to /api/policies · stored as a custom resource
+              </div>
+            </aside>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-white/[0.08] px-5 py-4 sm:px-6">
+            <div className="min-w-0 text-[11px] leading-relaxed text-ember-400">
+              {submitError ? <span className="break-words">{submitError}</span> : null}
+            </div>
+            <div className="flex items-center gap-2">
+              <button type="button" className="btn-ghost" onClick={onClose}>
+                Cancel
+              </button>
+              <button type="submit" className="btn-primary" disabled={!canCreate || allowed.length === 0}>
+                {creating ? "Creating…" : "Create policy"}
+              </button>
+            </div>
+          </div>
+        </form>
       </div>
     </div>
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function ChoiceButton({
+  active,
+  onClick,
+  title,
+  description,
+}: {
+  active: boolean;
+  onClick: () => void;
+  title: string;
+  description: string;
+}) {
   return (
-    <div>
-      <div className="text-xs uppercase tracking-widest text-ink-500 mb-2">{label}</div>
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={clsx(
+        "rounded-xl border px-3 py-2.5 text-left transition",
+        active
+          ? "border-mint-500/45 bg-mint-500/[0.07]"
+          : "border-white/[0.1] bg-transparent hover:border-white/20 hover:bg-white/[0.03]",
+      )}
+    >
+      <div
+        className={clsx(
+          "font-mono text-[10px] uppercase tracking-[0.1em]",
+          active ? "text-mint-500" : "text-ink-300",
+        )}
+      >
+        {title}
+      </div>
+      <div className="mt-1 text-[10px] leading-snug text-ink-500">{description}</div>
+    </button>
+  );
+}
+
+function Field({
+  label,
+  hint,
+  invalid,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  invalid?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="block">
+      <span className={clsx("field-label", invalid && "text-ember-400")}>{label}</span>
       {children}
+      {hint ? (
+        <span className={clsx("mt-1.5 block text-[10px] leading-snug", invalid ? "text-ember-400" : "text-ink-500")}>
+          {hint}
+        </span>
+      ) : null}
     </div>
   );
 }
 
-function buildYaml(p: Body): string {
-  const lines: string[] = [];
-  lines.push("apiVersion: reconcilyx.io/v1alpha1");
-  lines.push("kind: OptimizationPolicy");
-  lines.push("metadata:");
-  lines.push(`  name: ${p.metadata.name}`);
-  lines.push(`  namespace: ${p.metadata.namespace}`);
-  lines.push("spec:");
-  const spec = p.spec as NonNullable<Body["spec"]>;
-  lines.push(`  mode: ${spec.mode}`);
-  lines.push("  targetSelectors:");
-  lines.push("    namespaceMatchLabels:");
-  for (const [k, v] of Object.entries(spec.targetSelectors?.namespaceMatchLabels ?? {})) {
-    lines.push(`      ${k}: ${v}`);
-  }
-  if (spec.targetSelectors?.workloadLabelSelector?.matchLabels) {
-    lines.push("    workloadLabelSelector:");
-    lines.push("      matchLabels:");
-    for (const [k, v] of Object.entries(spec.targetSelectors.workloadLabelSelector.matchLabels)) {
-      lines.push(`        ${k}: ${v}`);
+function NumberField({
+  label,
+  value,
+  min,
+  max,
+  onChange,
+  suffix,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  onChange: (value: number) => void;
+  suffix: string;
+}) {
+  return (
+    <Field label={label}>
+      <div className="relative">
+        <input
+          type="number"
+          className="input pr-9 font-mono text-[12px]"
+          value={value}
+          min={min}
+          max={max}
+          onChange={(event) => {
+            const next = Number(event.target.value);
+            if (Number.isFinite(next)) onChange(Math.min(max, Math.max(min, next)));
+          }}
+        />
+        <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 font-mono text-[10px] text-ink-500">
+          {suffix}
+        </span>
+      </div>
+    </Field>
+  );
+}
+
+function stripUndefined(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stripUndefined);
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      if (entry === undefined) continue;
+      out[key] = stripUndefined(entry);
     }
+    return out;
   }
-  lines.push("  safetyConstraints:");
-  lines.push(`    carbonWeight: ${(spec.safetyConstraints?.carbonWeight ?? 0.3).toFixed(2)}`);
-  lines.push(`    maxIncreasePct: ${spec.safetyConstraints?.maxIncreasePct ?? 10}`);
-  lines.push(`    stabilizationWindowMinutes: ${spec.safetyConstraints?.stabilizationWindowMinutes ?? 30}`);
-  lines.push(`    maxRiskScore: ${spec.safetyConstraints?.maxRiskScore ?? 60}`);
-  lines.push("  analysis:");
-  lines.push(`    minConfidence: ${Number(spec.analysis?.minConfidence ?? 0.6).toFixed(2)}`);
-  lines.push(`    minReplicas: ${spec.analysis?.minReplicas ?? 2}`);
-  lines.push("  gitOps:");
-  lines.push(`    enabled: ${spec.gitOps?.enabled ? "true" : "false"}`);
-  lines.push(`    provider: ${spec.gitOps?.provider ?? "mock"}`);
-  lines.push(`    autoMerge: ${spec.gitOps?.autoMerge ? "true" : "false"}`);
-  return lines.join("\n");
+  return value;
+}
+
+function toYaml(value: unknown, indent = 0): string {
+  const pad = " ".repeat(indent);
+
+  if (value === null) return "null";
+  if (typeof value === "string") {
+    const needsQuotes = value === "" || /[:#\[\]{}",&*!|>'"%@`]/.test(value) || /^\s|\s$/.test(value);
+    return needsQuotes ? JSON.stringify(value) : value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+
+  if (Array.isArray(value)) {
+    if (value.length === 0) return "[]";
+    return value
+      .map((entry) =>
+        entry !== null && typeof entry === "object"
+          ? `${pad}-\n${toYaml(entry, indent + 2)}`
+          : `${pad}- ${toYaml(entry, indent + 2)}`,
+      )
+      .join("\n");
+  }
+
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (entries.length === 0) return "{}";
+    return entries
+      .map(([key, entry]) => {
+        if (entry !== null && typeof entry === "object") {
+          const isEmpty = Array.isArray(entry) ? entry.length === 0 : Object.keys(entry).length === 0;
+          if (isEmpty) return `${pad}${key}: ${Array.isArray(entry) ? "[]" : "{}"}`;
+          return `${pad}${key}:\n${toYaml(entry, indent + 2)}`;
+        }
+        return `${pad}${key}: ${toYaml(entry, indent + 2)}`;
+      })
+      .join("\n");
+  }
+
+  return String(value);
 }

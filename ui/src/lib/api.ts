@@ -5,10 +5,16 @@ import type {
   ClusterItem,
   ForecastPoint,
   ForecastResponse,
-  OptimizationPolicySpec,
+  HealthResponse,
+  LabelSelector,
+  PolicyView,
   ProposalDetail,
   ProposalListItem,
-  PolicyListItem,
+  ProposalRef,
+  ProposalTimelineEvent,
+  RawPolicy,
+  RawProposal,
+  RawProposalEvent,
   SavingsResponse,
   WhatIfRequest,
   WhatIfResponse,
@@ -84,13 +90,122 @@ async function json<T>(path: string, opts: FetchOpts = {}): Promise<T> {
   const res = await fetch(url.toString(), { ...opts, headers });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    throw new Error(`HTTP ${res.status} ${res.statusText} — ${body.slice(0, 200)}`);
+    throw new Error(`HTTP ${res.status} ${res.statusText} — ${body.slice(0, 240)}`);
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
 }
 
 type ListEnvelope<T> = { items: T[]; total: number };
+
+function asString(value: string | number | undefined): string | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  return String(value);
+}
+
+function asNumber(value: string | number | undefined): number | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+function formatCarbonHuman(grams?: number): string | undefined {
+  if (grams === undefined || grams <= 0) return undefined;
+  if (grams >= 1_000_000) return `${(grams / 1_000_000).toFixed(2)} tonnes CO₂`;
+  if (grams >= 1000) return `${(grams / 1000).toFixed(1)} kg CO₂`;
+  return `${Math.round(grams)} g CO₂`;
+}
+
+function toProposalListItem(p: RawProposal): ProposalListItem {
+  const spec = p.spec;
+  const before = spec.observedResources?.currentResources?.requests ?? {};
+  const after = spec.proposedResources?.requests ?? {};
+  const impact = spec.expectedImpact ?? {};
+  const carbon = asNumber(impact.carbonSavedGramsCO2);
+
+  return {
+    name: p.metadata.name,
+    namespace: p.metadata.namespace || spec.targetWorkload?.namespace || "default",
+    cluster: spec.targetClusterName,
+    workloadKind: spec.targetWorkload?.kind || "Workload",
+    workloadName: spec.targetWorkload?.name || p.metadata.name,
+    recommendation: spec.recommendation,
+    approvalState: p.status?.approvalState ?? "",
+    phase: p.status?.phase ?? "",
+    executionState: p.status?.executionState ?? "",
+    riskScore: spec.decisionMetadata?.riskScore ?? 0,
+    confidenceScore: spec.decisionMetadata?.confidenceScore ?? 0,
+    rationale: spec.decisionMetadata?.rationale,
+    estimatedSavings: asString(impact.estimatedSavingsUSD),
+    carbonSavedGrams: carbon,
+    carbonSavedHuman: formatCarbonHuman(carbon),
+    cpuBefore: asString(before.cpu),
+    cpuAfter: asString(after.cpu),
+    memoryBefore: asString(before.memory),
+    memoryAfter: asString(after.memory),
+    createdAt: p.metadata.creationTimestamp ?? new Date().toISOString(),
+    externalPRID: p.status?.externalPRID,
+  };
+}
+
+function eventTime(e: RawProposalEvent): string {
+  return (
+    e.lastTimestamp ??
+    e.eventTime ??
+    e.firstTimestamp ??
+    e.metadata?.creationTimestamp ??
+    new Date().toISOString()
+  );
+}
+
+function toTimelineEvent(e: RawProposalEvent): ProposalTimelineEvent {
+  return {
+    at: eventTime(e),
+    reason: e.reason ?? "Event",
+    message: e.message ?? "",
+    type: e.type === "Warning" ? "Warning" : "Normal",
+    count: e.count,
+  };
+}
+
+function selectorLabels(selector?: LabelSelector | null): string[] {
+  if (!selector?.matchLabels) return [];
+  return Object.entries(selector.matchLabels).map(([key, value]) =>
+    key === "kubernetes.io/metadata.name" ? value : `${key}=${value}`,
+  );
+}
+
+function policyTargetSummary(policy: RawPolicy): string {
+  const nsLabels = selectorLabels(policy.spec.targetSelectors?.namespaceSelector);
+  const workloadLabels = selectorLabels(policy.spec.targetSelectors?.workloadSelector);
+  const ns = nsLabels.length > 0 ? nsLabels.join(", ") : "all namespaces";
+  const workload = workloadLabels.length > 0 ? workloadLabels.join(", ") : "all workloads";
+  return `${ns} · ${workload}`;
+}
+
+function toPolicyView(p: RawPolicy): PolicyView {
+  const spec = p.spec;
+  const gitOps = spec.gitOps ?? {};
+  const repository =
+    gitOps.owner && gitOps.repo ? `${gitOps.owner}/${gitOps.repo}` : gitOps.repo || undefined;
+
+  return {
+    name: p.metadata.name,
+    namespace: p.metadata.namespace || "default",
+    objective: spec.objective,
+    mode: spec.mode,
+    carbonWeight: spec.safetyConstraints?.carbonWeight ?? 0,
+    riskTolerance: spec.safetyConstraints?.riskTolerance,
+    confidenceRequirement: spec.safetyConstraints?.confidenceRequirement,
+    minReplicas: spec.safetyConstraints?.minReplicas,
+    targetSummary: policyTargetSummary(p),
+    gitOpsEnabled: Boolean(gitOps.enabled),
+    gitOpsProvider: gitOps.provider ?? "mock",
+    repository,
+    createdAt: p.metadata.creationTimestamp,
+    raw: p,
+  };
+}
 
 export const api = {
   proposals: {
@@ -107,32 +222,71 @@ export const api = {
         (env) => env.items ?? [],
       );
     },
-    detail(name: string): Promise<ProposalDetail> {
-      return json<ProposalDetail>(`/api/proposals/${encodeURIComponent(name)}`);
-    },
-    approve(name: string, reason?: string): Promise<void> {
-      return json<void>(`/api/proposals/${encodeURIComponent(name)}/approve`, {
-        method: "POST",
-        body: JSON.stringify({ reason: reason ?? "Approved via UI" }),
+    detail(name: string, namespace = "default"): Promise<ProposalDetail> {
+      return json<{ proposal: RawProposal; events?: RawProposalEvent[] }>(
+        `/api/proposals/${encodeURIComponent(name)}`,
+        { params: { namespace } },
+      ).then((env) => {
+        const raw = env.proposal;
+        const spec = raw.spec;
+        const observed = spec.observedResources?.currentResources?.requests ?? {};
+        const p95 = spec.observedResources?.p95Usage ?? {};
+        const proposed = spec.proposedResources?.requests ?? {};
+        const impact = spec.expectedImpact ?? {};
+        const events = (env.events ?? [])
+          .map(toTimelineEvent)
+          .sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
+
+        return {
+          summary: toProposalListItem(raw),
+          raw,
+          rationale: spec.decisionMetadata?.rationale ?? "",
+          events,
+          observed: {
+            cpu: asString(observed.cpu),
+            memory: asString(observed.memory),
+            p95Cpu: asString(p95.cpu),
+            p95Memory: asString(p95.memory),
+          },
+          proposed: {
+            cpu: asString(proposed.cpu),
+            memory: asString(proposed.memory),
+          },
+          expected: {
+            savingsUSD: asString(impact.estimatedSavingsUSD),
+            carbonSavedGrams: asNumber(impact.carbonSavedGramsCO2),
+            resourceDelta: impact.resourceDelta,
+          },
+          migrationPlan: spec.migrationPlan,
+        };
       });
     },
-    reject(name: string, reason?: string): Promise<void> {
-      return json<void>(`/api/proposals/${encodeURIComponent(name)}/reject`, {
+    approve(ref: ProposalRef, reason = "Approved via UI"): Promise<void> {
+      return json<void>(`/api/proposals/${encodeURIComponent(ref.name)}/approve`, {
         method: "POST",
-        body: JSON.stringify({ reason: reason ?? "Rejected via UI" }),
+        params: { namespace: ref.namespace },
+        body: JSON.stringify({ reason }),
       });
     },
-    rollback(name: string, reason?: string): Promise<void> {
-      return json<void>(`/api/proposals/${encodeURIComponent(name)}/rollback`, {
+    reject(ref: ProposalRef, reason = "Rejected via UI"): Promise<void> {
+      return json<void>(`/api/proposals/${encodeURIComponent(ref.name)}/reject`, {
         method: "POST",
-        body: JSON.stringify({ reason: reason ?? "Rollback requested via UI" }),
+        params: { namespace: ref.namespace },
+        body: JSON.stringify({ reason }),
       });
     },
-    bulkApprove(names: string[], reason?: string): Promise<void[]> {
-      return Promise.all(names.map((n) => api.proposals.approve(n, reason ?? "Bulk approved via UI")));
+    rollback(ref: ProposalRef, reason = "Rollback requested via UI"): Promise<void> {
+      return json<void>(`/api/proposals/${encodeURIComponent(ref.name)}/rollback`, {
+        method: "POST",
+        params: { namespace: ref.namespace },
+        body: JSON.stringify({ reason }),
+      });
     },
-    bulkReject(names: string[], reason?: string): Promise<void[]> {
-      return Promise.all(names.map((n) => api.proposals.reject(n, reason ?? "Bulk rejected via UI")));
+    bulkApprove(refs: ProposalRef[], reason?: string): Promise<void[]> {
+      return Promise.all(refs.map((ref) => api.proposals.approve(ref, reason ?? "Bulk approved via UI")));
+    },
+    bulkReject(refs: ProposalRef[], reason?: string): Promise<void[]> {
+      return Promise.all(refs.map((ref) => api.proposals.reject(ref, reason ?? "Bulk rejected via UI")));
     },
   },
   savings: {
@@ -154,15 +308,15 @@ export const api = {
     },
   },
   policies: {
-    list(): Promise<PolicyListItem[]> {
-      return json<ListEnvelope<PolicyListItem>>("/api/policies").then((env) => env.items ?? []);
+    list(): Promise<PolicyView[]> {
+      return json<ListEnvelope<RawPolicy>>("/api/policies").then((env) =>
+        (env.items ?? []).map(toPolicyView),
+      );
     },
-    create(
-      body: OptimizationPolicySpec & { metadata?: { name: string; namespace: string }; name?: string; namespace?: string },
-    ): Promise<{ metadata?: { name: string; namespace: string }; name: string }> {
-      return json<{ metadata?: { name: string; namespace: string }; name: string }>("/api/policies", {
+    create(policy: RawPolicy): Promise<RawPolicy> {
+      return json<RawPolicy>("/api/policies", {
         method: "POST",
-        body: JSON.stringify(body),
+        body: JSON.stringify(policy),
       });
     },
   },
@@ -180,14 +334,14 @@ export const api = {
   },
   audit: {
     tail(limit = 20): Promise<AuditEntry[]> {
-      return json<{ entries: AuditEntry[] }>("/api/audit", { params: { limit } }).then(
-        (res) => res.entries ?? [],
+      return json<{ items: AuditEntry[] }>("/api/audit", { params: { limit } }).then(
+        (res) => res.items ?? [],
       );
     },
   },
   healthz: {
-    get(): Promise<{ ok: boolean; refreshed: string }> {
-      return json("/healthz");
+    get(): Promise<HealthResponse> {
+      return json<HealthResponse>("/healthz");
     },
   },
   chat: {

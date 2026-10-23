@@ -1,22 +1,47 @@
-import { useParams, Link } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useApi } from "@/lib/useApi";
 import { api } from "@/lib/api";
 import type { ProposalDetail } from "@/lib/types";
 import BeforeAfterCard from "@/components/BeforeAfterCard";
 import KpiCard from "@/components/KpiCard";
+import Icon from "@/components/Icon";
 import { ApprovalChip, ConfidenceBadge, PhaseChip, RiskBadge } from "@/components/Badges";
 import { formatCarbonGrams, formatCurrency, useAppStore } from "@/store/app";
+import clsx from "clsx";
+
+const ROLLBACK_PHASES = new Set([
+  "Verifying",
+  "Stabilizing",
+  "Completed",
+  "Failed",
+  "RollbackRequired",
+  "RollbackVerification",
+]);
 
 export default function ProposalDetailPage() {
   const { name } = useParams();
+  const [searchParams] = useSearchParams();
+  const namespace = searchParams.get("namespace") ?? "default";
   const pushToast = useAppStore((s) => s.pushToast);
+  const refresh = useAppStore((s) => s.refresh);
 
-  const { data, loading, error } = useApi<ProposalDetail, [string]>(api.proposals.detail, name ?? "");
+  const { data, loading, error, refetch } = useApi(
+    (proposalName: string, proposalNamespace: string) =>
+      api.proposals.detail(proposalName, proposalNamespace),
+    name ?? "",
+    namespace,
+  );
 
-  if (loading) {
+  if (loading && !data) {
     return (
-      <div className="flex h-64 items-center justify-center text-ink-500">
-        Loading proposal…
+      <div className="space-y-6">
+        <div className="skeleton h-4 w-40 rounded" />
+        <div className="skeleton h-16 w-2/3 rounded-xl" />
+        <div className="skeleton h-44 w-full rounded-2xl" />
+        <div className="grid gap-4 xl:grid-cols-3">
+          <div className="skeleton h-80 rounded-2xl xl:col-span-2" />
+          <div className="skeleton h-80 rounded-2xl" />
+        </div>
       </div>
     );
   }
@@ -24,14 +49,28 @@ export default function ProposalDetailPage() {
   if (error || !data) {
     return (
       <div className="space-y-6">
-        <Link to="/proposals" className="text-sm text-ink-500 hover:text-mint-400">
-          ← Back to proposals
+        <Link
+          to="/proposals"
+          className="link-arrow font-mono text-[10px] uppercase tracking-[0.14em] text-ink-500 hover:text-mint-500"
+        >
+          <Icon name="arrow-left" size={12} />
+          All proposals
         </Link>
         <div className="panel">
-          <div className="px-6 py-12 text-center">
-            <div className="font-medium text-ember-400">Proposal not found</div>
-            <div className="mt-1 text-sm text-ink-500">
-              {error ?? `No proposal with name ${name ?? ""}.`}
+          <div className="px-6 py-16 text-center">
+            <div className="font-display text-[22px] tracking-[-0.03em] text-ink-50">
+              Proposal unavailable
+            </div>
+            <p className="mx-auto mt-2 max-w-[52ch] text-[13px] leading-relaxed text-ink-400">
+              {error ?? `No proposal named ${name ?? ""} exists in namespace ${namespace}.`}
+            </p>
+            <div className="mt-5 flex justify-center gap-2">
+              <button className="btn-ghost" onClick={refetch}>
+                Retry
+              </button>
+              <Link to="/proposals" className="btn-primary">
+                Back to proposals
+              </Link>
             </div>
           </div>
         </div>
@@ -39,240 +78,388 @@ export default function ProposalDetailPage() {
     );
   }
 
-  const p = data;
+  const detail: ProposalDetail = data;
+  const summary = detail.summary;
+  const phase = summary.phase;
+  const approval = summary.approvalState;
+  const canReview = approval === "Pending";
+  const canRollback = ROLLBACK_PHASES.has(phase);
+  const hasSnapshot = Boolean(detail.raw.status?.executionSnapshot);
+  const savings = detail.expected.savingsUSD;
+  const carbon = detail.expected.carbonSavedGrams;
+  const resourceDelta = detail.expected.resourceDelta ?? {};
+  const conditions = detail.raw.status?.conditions ?? [];
 
   async function approve() {
     try {
-      await api.proposals.approve(p.summary.name);
-      pushToast({ kind: "success", title: "Approved proposal", message: p.summary.name });
-    } catch (e) {
-      pushToast({ kind: "error", title: "Approve failed", message: e instanceof Error ? e.message : String(e) });
+      await api.proposals.approve({ name: summary.name, namespace: summary.namespace });
+      pushToast({ kind: "success", title: "Proposal approved", message: summary.name });
+      refresh();
+      refetch();
+    } catch (err) {
+      pushToast({
+        kind: "error",
+        title: "Approval failed",
+        message: err instanceof Error ? err.message : String(err),
+      });
     }
   }
+
   async function reject() {
     try {
-      await api.proposals.reject(p.summary.name);
-      pushToast({ kind: "warn", title: "Rejected proposal", message: p.summary.name });
-    } catch (e) {
-      pushToast({ kind: "error", title: "Reject failed", message: e instanceof Error ? e.message : String(e) });
+      await api.proposals.reject({ name: summary.name, namespace: summary.namespace });
+      pushToast({ kind: "warn", title: "Proposal rejected", message: summary.name });
+      refresh();
+      refetch();
+    } catch (err) {
+      pushToast({
+        kind: "error",
+        title: "Rejection failed",
+        message: err instanceof Error ? err.message : String(err),
+      });
     }
   }
+
   async function rollback() {
     try {
-      await api.proposals.rollback(p.summary.name);
-      pushToast({ kind: "warn", title: "Rollback scheduled", message: p.summary.name });
-    } catch (e) {
-      pushToast({ kind: "error", title: "Rollback failed", message: e instanceof Error ? e.message : String(e) });
+      await api.proposals.rollback({ name: summary.name, namespace: summary.namespace });
+      pushToast({ kind: "warn", title: "Rollback requested", message: summary.name });
+      refresh();
+      refetch();
+    } catch (err) {
+      pushToast({
+        kind: "error",
+        title: "Rollback failed",
+        message: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
   return (
-    <div className="space-y-6 animate-fade-in-up">
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <Link to="/proposals" className="text-sm text-ink-500 hover:text-mint-400">← Back to proposals</Link>
-          <h1 className="mt-1 font-display text-4xl tracking-tight">
-            {p.summary.namespace}/{p.summary.workloadName}
-          </h1>
-          <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-ink-100/70">
-            <span className="font-mono">{p.summary.workloadKind}</span>
-            <PhaseChip phase={p.summary.phase} />
-            <ApprovalChip state={p.summary.approvalState} />
-            <span className="font-mono text-xs text-ink-500">
-              created {new Date(p.summary.createdAt).toLocaleString()}
-            </span>
-          </div>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <button className="btn-ghost hover:text-ember-400 hover:bg-ember-500/10 hover:border-ember-500/30" onClick={reject}>
-            Reject
-          </button>
-          <button
-            className="btn-ghost hover:border-ember-500/30 hover:bg-ember-500/10" onClick={rollback}>
-            Rollback
-          </button>
-          <button className="btn-primary" onClick={approve}>
-            Approve proposal
-          </button>
-        </div>
+    <div className="space-y-8">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <Link
+          to="/proposals"
+          className="link-arrow font-mono text-[10px] uppercase tracking-[0.14em] text-ink-500 hover:text-mint-500"
+        >
+          <Icon name="arrow-left" size={12} />
+          All proposals
+        </Link>
+        <span className="font-mono text-[9px] uppercase tracking-[0.14em] text-ink-600">
+          {namespace} / {summary.name}
+        </span>
       </div>
 
-      <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-        <KpiCard
-          eyebrow="Est. monthly savings"
-          value={formatCurrency(Number(p.summary.estimatedSavings ?? 0))}
-          sub="Per workload/month"
-          accent="mint"
-          icon="💲"
-        />
-        <KpiCard
-          eyebrow="Carbon saved"
-          value={p.summary.carbonSavedHuman ?? formatCarbonGrams(p.summary.carbonSavedGrams ?? 0)}
-          sub="Estimated workload-month reduction"
-          accent="amber"
-          icon="🌿"
-        />
-        <KpiCard
-          eyebrow="Confidence vs risk"
-          value={`${p.summary.confidenceScore} %`}
-          sub={
-            <div className="flex flex-wrap gap-2">
-              <ConfidenceBadge score={p.summary.confidenceScore} />
-              <RiskBadge score={p.summary.riskScore} />
+      <header className="border-b border-white/[0.1] pb-8">
+        <div className="flex flex-wrap items-start justify-between gap-6">
+          <div className="min-w-0 max-w-3xl">
+            <div className="flex items-center gap-3">
+              <span className="font-mono text-[10px] tracking-[0.2em] text-mint-500">02 / PROPOSAL</span>
+              <span className="h-px w-8 bg-white/20" aria-hidden />
+              <span className="eyebrow">{summary.workloadKind}</span>
             </div>
-          }
-          accent="sky"
-          icon="🎯"
+            <h1 className="mt-4 break-words font-display text-[clamp(2rem,4.2vw,3.75rem)] font-medium leading-[0.95] tracking-[-0.055em] text-ink-50">
+              {summary.namespace}/<span className="editorial italic text-mint-500">{summary.workloadName}</span>
+            </h1>
+            <div className="mt-4 flex flex-wrap items-center gap-2">
+              <PhaseChip phase={phase} />
+              <ApprovalChip state={approval} />
+              <ConfidenceBadge score={summary.confidenceScore} />
+              <RiskBadge score={summary.riskScore} />
+            </div>
+            <div className="mt-4 font-mono text-[10px] uppercase tracking-[0.12em] text-ink-500">
+              Created {new Date(summary.createdAt).toLocaleString()}
+              {detail.raw.status?.policyApplied ? ` · policy ${detail.raw.status.policyApplied}` : ""}
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {canReview ? (
+              <>
+                <button className="btn-primary" onClick={approve}>
+                  Approve proposal
+                </button>
+                <button className="btn-danger" onClick={reject}>
+                  Reject
+                </button>
+              </>
+            ) : null}
+            {canRollback ? (
+              <button
+                className="btn-ghost"
+                onClick={rollback}
+                disabled={!hasSnapshot}
+                title={hasSnapshot ? "Restore the pre-actuation snapshot" : "No execution snapshot is available"}
+              >
+                Roll back
+              </button>
+            ) : null}
+            {!canReview && !canRollback ? (
+              <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-ink-500">
+                No actions in this phase
+              </span>
+            ) : null}
+          </div>
+        </div>
+      </header>
+
+      <section className="grid grid-cols-1 gap-px overflow-hidden rounded-2xl border border-white/[0.09] bg-white/[0.07] sm:grid-cols-2 xl:grid-cols-4">
+        <KpiCard
+          className="bg-ink-900"
+          label="Monthly savings"
+          value={savings ? formatCurrency(Number(savings)) : "—"}
+          detail="Estimated by the analyzer from observed resource usage."
         />
         <KpiCard
-          eyebrow="RL weighted reward"
-          value={p.predictedImpact.rlReward.toFixed(2)}
-          sub={`rules: ${p.predictedImpact.ruleHits.join(", ")}`}
-          accent="mint"
-          icon="🧠"
+          className="bg-ink-900"
+          label="Carbon abatement"
+          value={
+            summary.carbonSavedHuman ??
+            (carbon !== undefined ? formatCarbonGrams(carbon) : "—")
+          }
+          detail="Grid-intensity-adjusted estimate for the same window."
+        />
+        <KpiCard
+          className="bg-ink-900"
+          label="Confidence"
+          value={`${summary.confidenceScore}`}
+          detail="Analyzer confidence out of 100."
+        />
+        <KpiCard
+          className="bg-ink-900"
+          label="Risk"
+          value={`${summary.riskScore}`}
+          detail={
+            summary.riskScore >= 70
+              ? "High risk — review the rationale before approval."
+              : summary.riskScore >= 40
+                ? "Moderate risk — the execution gate applies extra checks."
+                : "Low risk under the active policy constraints."
+          }
         />
       </section>
 
-      <section className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-        <div className="xl:col-span-2 space-y-6">
+      <section className="grid gap-4 xl:grid-cols-3">
+        <div className="space-y-4 xl:col-span-2">
           <BeforeAfterCard
-            title="Resource changes"
+            eyebrow="In-place pod resize"
+            title="Requested resource change"
             rows={[
-              { label: "CPU request", before: p.summary.cpuBefore ?? "—", after: p.summary.cpuAfter ?? "—", lowerIsBetter: true },
-              { label: "Memory request", before: p.summary.memoryBefore ?? "—", after: p.summary.memoryAfter ?? "—", lowerIsBetter: true },
-              { label: "Est. monthly cost", before: "current", after: formatCurrency(Number(p.summary.estimatedSavings ?? 0)), lowerIsBetter: false },
-              { label: "Est. monthly carbon", before: "current", after: p.summary.carbonSavedHuman ?? formatCarbonGrams(p.summary.carbonSavedGrams ?? 0), lowerIsBetter: false },
+              {
+                label: "CPU request",
+                before: summary.cpuBefore ?? "—",
+                after: summary.cpuAfter ?? "—",
+                note: "Observed current request vs. proposed request",
+              },
+              {
+                label: "Memory request",
+                before: summary.memoryBefore ?? "—",
+                after: summary.memoryAfter ?? "—",
+                note: "Observed current request vs. proposed request",
+              },
             ]}
           />
 
           <div className="panel">
             <div className="panel-header">
               <div>
-                <div className="eyebrow">Engine rationale</div>
-                <div className="panel-title">Why did the engine recommend this?</div>
+                <div className="eyebrow">Analyzer rationale</div>
+                <div className="panel-title mt-1">Why this proposal exists.</div>
               </div>
             </div>
-            <div className="px-6 py-5 text-ink-100/80 leading-relaxed space-y-4">
-              <p>{p.rationale}</p>
-              <div>
-                <div className="text-xs uppercase tracking-widest text-ink-500 mb-2">Rules fired</div>
-                <ul className="space-y-1 text-sm">
-                  {p.predictedImpact.ruleHits.map((h) => (
-                    <li key={h} className="font-mono text-mint-400">{h}</li>
-                  ))}
-                </ul>
-              </div>
+            <div className="px-5 py-5 sm:px-6">
+              <p className="text-[13px] leading-relaxed text-ink-300">
+                {detail.rationale || "The analyzer did not record a rationale for this proposal."}
+              </p>
+              {summary.rationale && summary.rationale !== detail.rationale ? (
+                <p className="mt-3 border-t border-white/[0.07] pt-3 text-[12px] leading-relaxed text-ink-500">
+                  {summary.rationale}
+                </p>
+              ) : null}
             </div>
           </div>
 
           <div className="panel">
             <div className="panel-header">
               <div>
-                <div className="eyebrow">Governance log</div>
-                <div className="panel-title">Proposal timeline</div>
+                <div className="eyebrow">Event timeline</div>
+                <div className="panel-title mt-1">What the control plane recorded.</div>
               </div>
+              <span className="font-mono text-[9px] uppercase tracking-[0.14em] text-ink-500">
+                {detail.events.length} events
+              </span>
             </div>
-            <ol className="relative border-l-2 border-white/5 ml-6 my-2">
-              {(p.execution?.events ?? []).map((e, i) => (
-                <li key={i} className="relative pl-8 pb-6 last:pb-4">
-                  <span
-                    className={`absolute -left-[9px] top-1.5 w-4 h-4 rounded-full border-4 border-ink-900 ${
-                      e.level === "error" ? "bg-ember-400" : e.level === "warn" ? "bg-amber-400" : "bg-mint-400"
-                    }`}
-                    aria-hidden
-                  />
-                  <div className="flex flex-wrap items-baseline gap-3">
-                    <span className="font-mono text-xs text-ink-500">
-                      {new Date(e.at).toLocaleString()}
-                    </span>
-                    <span className="text-sm">{e.message}</span>
-                  </div>
-                </li>
-              ))}
-            </ol>
+            {detail.events.length === 0 ? (
+              <div className="px-5 py-10 text-center text-[12px] leading-relaxed text-ink-500">
+                No Kubernetes events recorded for this proposal yet.
+              </div>
+            ) : (
+              <ol className="px-5 py-2 sm:px-6">
+                {detail.events.map((event, index) => (
+                  <li
+                    key={`${event.at}-${index}`}
+                    className="flex gap-3 border-b border-white/[0.055] py-3.5 last:border-0"
+                  >
+                    <span
+                      className={clsx(
+                        "mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full",
+                        event.type === "Warning" ? "bg-ember-500" : "bg-mint-500",
+                      )}
+                      aria-hidden
+                    />
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-baseline gap-2">
+                        <span className="text-[12px] text-ink-200">{event.reason}</span>
+                        <span className="font-mono text-[9px] text-ink-500">
+                          {new Date(event.at).toLocaleString()}
+                        </span>
+                        {event.count && event.count > 1 ? (
+                          <span className="font-mono text-[9px] text-ink-500">×{event.count}</span>
+                        ) : null}
+                      </div>
+                      <p className="mt-1 break-words text-[12px] leading-relaxed text-ink-400">
+                        {event.message}
+                      </p>
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            )}
           </div>
         </div>
 
-        <div className="space-y-6">
+        <div className="space-y-4">
           <div className="panel">
             <div className="panel-header">
               <div>
-                <div className="eyebrow">Execution state</div>
-                <div className="panel-title">What happens next?</div>
+                <div className="eyebrow">Telemetry baseline</div>
+                <div className="panel-title mt-1">Observed before approval.</div>
               </div>
             </div>
-            <div className="px-6 py-5 space-y-4 text-sm">
-              <div>
-                <div className="text-ink-500 text-xs">Snapshot before</div>
-                <div className="font-mono">{p.execution?.snapshots?.before ?? "—"}</div>
-              </div>
-              <div>
-                <div className="text-ink-500 text-xs">Snapshot after</div>
-                <div className="font-mono">{p.execution?.snapshots?.after ?? "—"}</div>
-              </div>
-              <div>
-                <div className="text-ink-500 text-xs">GitOps provider</div>
-                <div className="font-mono">{p.gitOps?.provider ?? "mock"}</div>
-                {p.gitOps?.mergeStatus ? (
-                  <div className="mt-1 text-xs text-mint-400">{p.gitOps.mergeStatus}</div>
-                ) : null}
-              </div>
-            </div>
+            <dl className="divide-y divide-white/[0.055]">
+              <MetricRow label="Observed CPU request" value={detail.observed.cpu ?? "—"} />
+              <MetricRow label="Observed memory request" value={detail.observed.memory ?? "—"} />
+              <MetricRow label="P95 CPU usage" value={detail.observed.p95Cpu ?? "not reported"} />
+              <MetricRow label="P95 memory usage" value={detail.observed.p95Memory ?? "not reported"} />
+              <MetricRow label="Proposed CPU" value={detail.proposed.cpu ?? "—"} />
+              <MetricRow label="Proposed memory" value={detail.proposed.memory ?? "—"} />
+            </dl>
           </div>
 
           <div className="panel">
             <div className="panel-header">
               <div>
-                <div className="eyebrow">Predicted confidence</div>
-                <div className="panel-title">Engine signals</div>
+                <div className="eyebrow">Expected impact</div>
+                <div className="panel-title mt-1">Cost and carbon delta.</div>
               </div>
             </div>
-            <div className="px-6 py-5 space-y-5 text-sm">
-              <SignalRow
-                label="Forecast confidence"
-                value={p.predictedImpact.forecastConfidence}
-                goodHigher
+            <dl className="divide-y divide-white/[0.055]">
+              <MetricRow label="Monthly savings" value={savings ? formatCurrency(Number(savings)) : "—"} />
+              <MetricRow
+                label="Carbon saved"
+                value={summary.carbonSavedHuman ?? (carbon !== undefined ? formatCarbonGrams(carbon) : "—")}
               />
-              <SignalRow
-                label="Anomaly severity (low is better)"
-                value={1 - p.predictedImpact.anomalySeverity}
-                goodHigher
-              />
-              <SignalRow
-                label="RL weighted reward (0–1)"
-                value={p.predictedImpact.rlReward}
-                goodHigher
-              />
-            </div>
+              {Object.entries(resourceDelta).map(([key, value]) => (
+                <MetricRow key={key} label={`Δ ${key}`} value={value} />
+              ))}
+              <MetricRow label="GitOps PR" value={detail.raw.status?.externalPRID ?? "None"} />
+            </dl>
           </div>
+
+          <div className="panel">
+            <div className="panel-header">
+              <div>
+                <div className="eyebrow">Execution record</div>
+                <div className="panel-title mt-1">Actuation evidence.</div>
+              </div>
+            </div>
+            <dl className="divide-y divide-white/[0.055]">
+              <MetricRow label="Execution state" value={detail.raw.status?.executionState || "not reported"} />
+              <MetricRow label="Policy" value={detail.raw.status?.policyApplied ?? "not recorded"} />
+              <MetricRow label="Field manager" value={detail.raw.status?.executionMetadata?.fieldManager ?? "not recorded"} />
+              <MetricRow label="Execution ID" value={detail.raw.status?.executionMetadata?.executionID ?? "not recorded"} />
+              <MetricRow
+                label="Snapshot"
+                value={hasSnapshot ? "captured before actuation" : "not recorded"}
+              />
+              <MetricRow label="Yield count" value={String(detail.raw.status?.yieldCount ?? 0)} />
+              <MetricRow
+                label="Expires"
+                value={
+                  detail.raw.status?.expirationTime
+                    ? new Date(detail.raw.status.expirationTime).toLocaleString()
+                    : "no expiry reported"
+                }
+              />
+            </dl>
+          </div>
+
+          {conditions.length > 0 ? (
+            <div className="panel">
+              <div className="panel-header">
+                <div>
+                  <div className="eyebrow">Conditions</div>
+                  <div className="panel-title mt-1">Controller reports.</div>
+                </div>
+              </div>
+              <ul className="divide-y divide-white/[0.055]">
+                {conditions.map((condition) => (
+                  <li key={condition.type} className="px-5 py-3.5">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-[12px] text-ink-200">{condition.type}</span>
+                      <span
+                        className={clsx(
+                          "font-mono text-[9px] uppercase tracking-[0.12em]",
+                          condition.status === "True" ? "text-mint-500" : "text-ink-500",
+                        )}
+                      >
+                        {condition.status}
+                      </span>
+                    </div>
+                    {condition.message ? (
+                      <p className="mt-1 text-[11px] leading-relaxed text-ink-500">{condition.message}</p>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          {detail.migrationPlan ? (
+            <div className="panel">
+              <div className="panel-header">
+                <div>
+                  <div className="eyebrow">Migration plan</div>
+                  <div className="panel-title mt-1">Cross-cloud target.</div>
+                </div>
+              </div>
+              <dl className="divide-y divide-white/[0.055]">
+                <MetricRow label="Source cluster" value={detail.migrationPlan.sourceCluster ?? "—"} />
+                <MetricRow label="Target" value={`${detail.migrationPlan.targetCloud} / ${detail.migrationPlan.targetRegion}`} />
+                <MetricRow label="Instance" value={detail.migrationPlan.targetInstance} />
+                <MetricRow label="Cost delta" value={formatCurrency(detail.migrationPlan.costDeltaUSD)} />
+                <MetricRow
+                  label="Carbon delta"
+                  value={formatCarbonGrams(detail.migrationPlan.carbonSavedGrams)}
+                />
+              </dl>
+              {detail.migrationPlan.migrationScript ? (
+                <pre className="mx-5 mb-5 mt-1 max-h-52 overflow-auto rounded-lg border border-white/[0.08] bg-black/30 p-3 font-mono text-[10px] leading-relaxed text-ink-300">
+                  {detail.migrationPlan.migrationScript}
+                </pre>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       </section>
     </div>
   );
 }
 
-function SignalRow({
-  label,
-  value,
-  goodHigher,
-}: {
-  label: string;
-  value: number;
-  goodHigher: boolean;
-}) {
-  const pct = Math.min(100, Math.max(0, Math.round(value * 100)));
-  const color =
-    pct >= 75 ? "bg-mint-400" : pct >= 45 ? "bg-amber-400" : "bg-ember-400";
-  void goodHigher;
+function MetricRow({ label, value }: { label: string; value: string }) {
   return (
-    <div>
-      <div className="flex items-center justify-between text-xs text-ink-500">
-        <span>{label}</span>
-        <span>{pct} %</span>
-      </div>
-      <div className="mt-2 h-1.5 w-full rounded-full bg-white/5 overflow-hidden">
-        <div className={`h-full ${color}`} style={{ width: `${pct}%` }} />
-      </div>
+    <div className="flex items-start justify-between gap-4 px-5 py-3">
+      <dt className="text-[11px] text-ink-500">{label}</dt>
+      <dd className="max-w-[60%] break-all text-right font-mono text-[11px] text-ink-200">{value}</dd>
     </div>
   );
 }

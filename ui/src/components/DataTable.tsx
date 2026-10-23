@@ -41,7 +41,7 @@ export default function DataTable<T>({
         <tbody>
           {rows.length === 0 ? (
             <tr>
-              <td colSpan={columns.length} className="text-center py-10 text-ink-500">
+              <td colSpan={columns.length} className="!py-14 text-center text-[13px] text-ink-400">
                 {empty ?? "No records."}
               </td>
             </tr>
@@ -53,7 +53,8 @@ export default function DataTable<T>({
                 className={clsx(onRowClick && "cursor-pointer")}
               >
                 {columns.map((c) => {
-                  const val = typeof c.key === "string" ? (r as Record<string, unknown>)[c.key] : undefined;
+                  const val =
+                    typeof c.key === "string" ? (r as Record<string, unknown>)[c.key] : undefined;
                   return (
                     <td key={String(c.key)} className={c.className}>
                       {c.render ? c.render(r) : (val as ReactNode)}
