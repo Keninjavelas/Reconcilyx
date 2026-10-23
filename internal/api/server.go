@@ -77,13 +77,9 @@ func NewServer(addr, apiKey string, deps ServerDeps) *Server {
 		s.registerSnapshot(snap)
 	}
 	s.routes()
-	cors := strings.Split(os.Getenv("RECONCILYX_CORS_ORIGINS"), ",")
-	if len(cors) == 1 && cors[0] == "" {
-		cors = []string{"http://localhost:5173", "http://localhost:8082"}
-	}
 	s.handler = RecoverMiddleware(
 		LoggingMiddleware(logger,
-			CORSMiddleware(cors,
+			CORSMiddleware(parseCORSOrigins(os.Getenv("RECONCILYX_CORS_ORIGINS")),
 				RequestIDMiddleware(
 					APIKeyAuthMiddleware(apiKey, publicRoutes(), s.mux),
 				),
@@ -91,6 +87,22 @@ func NewServer(addr, apiKey string, deps ServerDeps) *Server {
 		),
 	)
 	return s
+}
+
+// parseCORSOrigins splits the comma-separated environment value, trims spaces
+// and trailing slashes, and falls back to the local development origins.
+func parseCORSOrigins(raw string) []string {
+	origins := make([]string, 0, 4)
+	for _, part := range strings.Split(raw, ",") {
+		origin := strings.TrimRight(strings.TrimSpace(part), "/")
+		if origin != "" {
+			origins = append(origins, origin)
+		}
+	}
+	if len(origins) == 0 {
+		return []string{"http://localhost:5173", "http://localhost:8082"}
+	}
+	return origins
 }
 
 func publicRoutes() map[string]struct{} {
