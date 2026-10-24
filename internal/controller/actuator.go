@@ -3,11 +3,13 @@ package controller
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/reconcilyx/operator/api/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -142,7 +144,40 @@ func (a *defaultActuator) CaptureSnapshot(ctx context.Context, proposal *v1alpha
 		snapshot.Annotations[k] = v
 	}
 
-	for _, c := range dep.Spec.Template.Spec.Containers {
+	selector, err := metav1.LabelSelectorAsSelector(dep.Spec.Selector)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse deployment selector: %w", err)
+	}
+
+	podList := &corev1.PodList{}
+	if err := a.reader.List(ctx, podList, client.InNamespace(dep.Namespace), client.MatchingLabelsSelector{Selector: selector}); err != nil {
+		return nil, fmt.Errorf("failed to list pods for snapshot: %w", err)
+	}
+
+	activePods := make([]corev1.Pod, 0, len(podList.Items))
+	for _, pod := range podList.Items {
+		if pod.DeletionTimestamp != nil {
+			continue
+		}
+		if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+			continue
+		}
+		activePods = append(activePods, pod)
+	}
+	if len(activePods) == 0 {
+		return nil, fmt.Errorf("no active pods matched deployment %s/%s", dep.Namespace, dep.Name)
+	}
+	sort.Slice(activePods, func(i, j int) bool { return activePods[i].Name < activePods[j].Name })
+
+	reference := activePods[0]
+	for _, pod := range activePods[1:] {
+		if !sameContainerResources(reference, pod) {
+			return nil, fmt.Errorf("pods %s and %s have divergent container resources; refusing to capture an ambiguous rollback snapshot", reference.Name, pod.Name)
+		}
+	}
+
+	for i := range reference.Spec.Containers {
+		c := &reference.Spec.Containers[i]
 		snapshot.ContainerResources[c.Name] = v1alpha1.ContainerResourceState{
 			Resources: *c.Resources.DeepCopy(),
 		}
@@ -151,8 +186,26 @@ func (a *defaultActuator) CaptureSnapshot(ctx context.Context, proposal *v1alpha
 	return snapshot, nil
 }
 
-// resizeContainers lists only the containers being resized, in the pod's
-// existing order. The pods/resize subresource rejects patches that rename or
+// sameContainerResources reports whether two pods carry an identical container
+// layout and resource configuration. A snapshot is a single rollback target, so
+// pods with divergent resources cannot be captured safely.
+func sameContainerResources(a, b corev1.Pod) bool {
+	if len(a.Spec.Containers) != len(b.Spec.Containers) {
+		return false
+	}
+	for i := range a.Spec.Containers {
+		if a.Spec.Containers[i].Name != b.Spec.Containers[i].Name {
+			return false
+		}
+		if !equality.Semantic.DeepEqual(a.Spec.Containers[i].Resources, b.Spec.Containers[i].Resources) {
+			return false
+		}
+	}
+	return true
+}
+
+// resizeContainers projects desiredByContainer onto the pod's existing
+// container order. The pods/resize subresource rejects patches that rename or
 // reorder containers, so iterating a map here would randomly fail.
 func resizeContainers(pod *corev1.Pod, desiredByContainer map[string]corev1.ResourceRequirements) []corev1.Container {
 	containers := make([]corev1.Container, 0, len(desiredByContainer))
@@ -171,10 +224,11 @@ func resizeContainers(pod *corev1.Pod, desiredByContainer map[string]corev1.Reso
 }
 
 // applyPodResizeSSA builds and applies a Server-Side Apply patch against the
-// pods/resize subresource. The patch object carries only the containers
-// explicitly listed in desiredByContainer, preserving field ownership for
-// every other field on the Pod. This helper is shared by the actuation and
-// rollback paths.
+// pods/resize subresource. The patch object lists every container in the pod
+// so an apply does not delete fields this manager owns from earlier resizes;
+// desiredByContainer supplies the resources to assert, with unchanged
+// containers kept at their live values. This helper is shared by the actuation
+// and rollback paths.
 func applyPodResizeSSA(
 	ctx context.Context,
 	c client.Client,
@@ -265,51 +319,7 @@ func (a *defaultActuator) ApplyMutation(ctx context.Context, proposal *v1alpha1.
 	resizedPods := 0
 	for _, p := range podList.Items {
 		pod := p
-		desired := make(map[string]corev1.ResourceRequirements)
-
-		for i := range pod.Spec.Containers {
-			c := &pod.Spec.Containers[i]
-			snapState, tracked := snapshot.ContainerResources[c.Name]
-			if !tracked {
-				continue
-			}
-			proposed, selected := proposedResourcesForContainer(proposal, c.Name)
-			if !selected {
-				continue
-			}
-			requests := corev1.ResourceList{}
-			for k, v := range snapState.Resources.Requests {
-				requests[k] = v.DeepCopy()
-			}
-			limits := corev1.ResourceList{}
-			for k, v := range snapState.Resources.Limits {
-				limits[k] = v.DeepCopy()
-			}
-
-			switch proposal.Spec.Recommendation {
-			case v1alpha1.RecommendationRightSize:
-				if cpu, ok := proposed.Requests[corev1.ResourceCPU]; ok {
-					requests[corev1.ResourceCPU] = cpu
-				}
-				if mem, ok := proposed.Requests[corev1.ResourceMemory]; ok {
-					requests[corev1.ResourceMemory] = mem
-				}
-			case v1alpha1.RecommendationReduceCPURequest:
-				if cpu, ok := proposed.Requests[corev1.ResourceCPU]; ok {
-					requests[corev1.ResourceCPU] = cpu
-				}
-			case v1alpha1.RecommendationReduceMemoryRequest:
-				if mem, ok := proposed.Requests[corev1.ResourceMemory]; ok {
-					requests[corev1.ResourceMemory] = mem
-				}
-			}
-
-			desired[c.Name] = corev1.ResourceRequirements{
-				Requests: requests,
-				Limits:   limits,
-			}
-		}
-
+		desired := desiredResizeResources(&pod, proposal, snapshot)
 		if len(desired) == 0 {
 			continue
 		}
@@ -351,4 +361,48 @@ func proposedResourcesForContainer(proposal *v1alpha1.OptimizationProposal, cont
 		return resources, ok
 	}
 	return proposal.Spec.ProposedResources, true
+}
+
+// desiredResizeResources returns the resources to assert for every container
+// in the pod. Containers outside the proposal keep their live values so the
+// server-side apply remains a complete description of the container list.
+func desiredResizeResources(
+	pod *corev1.Pod,
+	proposal *v1alpha1.OptimizationProposal,
+	snapshot *v1alpha1.ExecutionSnapshot,
+) map[string]corev1.ResourceRequirements {
+	desired := make(map[string]corev1.ResourceRequirements, len(pod.Spec.Containers))
+	for i := range pod.Spec.Containers {
+		c := &pod.Spec.Containers[i]
+		resources := *c.Resources.DeepCopy()
+
+		proposed, selected := proposedResourcesForContainer(proposal, c.Name)
+		if _, tracked := snapshot.ContainerResources[c.Name]; !selected || !tracked {
+			desired[c.Name] = resources
+			continue
+		}
+
+		if resources.Requests == nil {
+			resources.Requests = corev1.ResourceList{}
+		}
+		switch proposal.Spec.Recommendation {
+		case v1alpha1.RecommendationRightSize:
+			if cpu, ok := proposed.Requests[corev1.ResourceCPU]; ok {
+				resources.Requests[corev1.ResourceCPU] = cpu
+			}
+			if mem, ok := proposed.Requests[corev1.ResourceMemory]; ok {
+				resources.Requests[corev1.ResourceMemory] = mem
+			}
+		case v1alpha1.RecommendationReduceCPURequest:
+			if cpu, ok := proposed.Requests[corev1.ResourceCPU]; ok {
+				resources.Requests[corev1.ResourceCPU] = cpu
+			}
+		case v1alpha1.RecommendationReduceMemoryRequest:
+			if mem, ok := proposed.Requests[corev1.ResourceMemory]; ok {
+				resources.Requests[corev1.ResourceMemory] = mem
+			}
+		}
+		desired[c.Name] = resources
+	}
+	return desired
 }
