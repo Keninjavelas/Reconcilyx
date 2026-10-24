@@ -65,7 +65,10 @@ release:
   replica caps, canary scoping, and DaemonSet fail-closed behavior.
 - `internal/controller/audit_test.go` covers audit append, JSON shape, and the
   500-entry cap.
-- Full controller envtest suite passed 11 of 11 specs on 2026-10-24.
+- `internal/controller/actuator_test.go` covers live-pod snapshots, missing and
+  divergent pod refusal, per-container selection, and complete resize patches.
+- Full controller envtest suite passed 11 of 11 specs on 2026-10-24; the full
+  non-e2e suite exited 0 after the snapshot and SSA fixes the same day.
 
 ## Live Validation (2026-10-24)
 
@@ -75,5 +78,7 @@ The policy and gate paths were exercised against a Kind cluster (`reconcilyx-liv
 - `CooldownConstraint` rejected `storefront-cooldown` with `[CooldownEnforcement]: Cooldown active: Only 18s elapsed since last optimization, requires 30m0s`. A later approved proposal was independently rejected by the JIT gate with `cooldown active: 20s since the last change to live-demo/storefront, requires 30m0s`, confirming the execution-time recheck.
 - The `reconcilyx-audit` ConfigMap in the proposal namespace contained newline-delimited `policy-evaluation` and `execution-attempt` records for allowed and applied decisions.
 - A multi-container proposal without `proposedResourcesByContainer` failed with the fail-closed reason and left both pods unchanged; a per-container proposal resized only `app` and preserved `istio-proxy` at its original requests.
+- `kube-prometheus-stack` `69.4.1` was installed in `monitoring`; kubelet and kube-state-metrics reported `up=1`, and `live-demo` exposed 24 CPU-usage series and 8 limit series.
+- `checkout-learning-1` passed the full five-minute stabilization window and completed at 13:39:00Z with a finalized receipt. Its template-based snapshot revealed the savings defect (`23269m` reported versus `4106m` for the live delta); after `CaptureSnapshot` was corrected, `storefront-learning-2` completed at 14:23:31Z with a live `250m/192Mi` snapshot, `app` resized to `200m/160Mi`, the operator-owned `istio-proxy` preserved at `250m/192Mi`, `costSavedUSD=4106m`, and `learning.finalized=true`.
 
-Not exercised on the live cluster: Prometheus-backed stabilization completion and the learning receipt (no Prometheus installed), a real GitHub/GitLab PR/MR (no provider token), and TLS termination. These remain tracked in [GITHUB_ISSUES.md](../GITHUB_ISSUES.md).
+Not exercised on the live cluster: a production-like multi-node cluster, a real GitHub/GitLab PR/MR (no provider token), and TLS termination. These remain tracked in [GITHUB_ISSUES.md](../GITHUB_ISSUES.md).
