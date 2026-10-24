@@ -796,7 +796,8 @@ func (s *Server) handleWhatIf(w http.ResponseWriter, r *http.Request) {
 
 	risk := int32(15)
 	confidence := int32(78)
-	rationale := "Proposal within default safety constraints. What-If recommends approve for cost."
+	rationale := "Proposal within default safety constraints."
+	aggressive := false
 
 	// If CPU was cut by more than 60% or memory more than 50%, bump risk and flag
 	cpuCutPct := 0.0
@@ -810,6 +811,7 @@ func (s *Server) handleWhatIf(w http.ResponseWriter, r *http.Request) {
 	if cpuCutPct > 60 || memCutPct > 50 {
 		risk = 70
 		confidence = 52
+		aggressive = true
 		rationale = fmt.Sprintf("Aggressive cut (CPU %.1f%% / Mem %.1f%%). Risk elevated — consider phasing this change.", cpuCutPct, memCutPct)
 	}
 
@@ -821,6 +823,8 @@ func (s *Server) handleWhatIf(w http.ResponseWriter, r *http.Request) {
 	if reportedSavings < 0 {
 		reportedSavings = 0
 		rationale += " Note: proposed configuration increases spend."
+	} else if !aggressive {
+		rationale += " What-If recommends approval: the change reduces monthly spend."
 	}
 
 	writeJSON(w, http.StatusOK, whatIfResponse{

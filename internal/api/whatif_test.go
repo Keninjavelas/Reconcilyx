@@ -39,6 +39,7 @@ func TestWhatIfSignedCostDelta(t *testing.T) {
 		assert.Equal(t, "25.75", out.SavingsUSDPerMonth)
 		assert.InDelta(t, -25.75, out.CostDeltaUSDPerMonth, 0.001)
 		assert.NotContains(t, out.Rationale, "increases spend")
+		assert.Contains(t, out.Rationale, "recommends approval")
 	})
 
 	t.Run("increase reports positive cost delta and zero savings", func(t *testing.T) {
@@ -55,6 +56,7 @@ func TestWhatIfSignedCostDelta(t *testing.T) {
 		assert.Equal(t, "0.00", out.SavingsUSDPerMonth)
 		assert.InDelta(t, 51.5, out.CostDeltaUSDPerMonth, 0.001)
 		assert.Contains(t, out.Rationale, "increases spend")
+		assert.NotContains(t, out.Rationale, "recommends approval")
 	})
 
 	t.Run("invalid quantity is rejected", func(t *testing.T) {
