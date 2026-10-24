@@ -27,6 +27,61 @@ func workloadNamespace(proposal *optimizationv1alpha1.OptimizationProposal) stri
 	return proposal.Namespace
 }
 
+// workloadMatchLabels resolves the labels that OptimizationPolicy target
+// selectors evaluate. A missing namespace or workload yields empty labels
+// rather than an error so the proposal is rejected by matching instead of
+// blocking reconciliation on a deleted target.
+func workloadMatchLabels(ctx context.Context, c client.Client, proposal *optimizationv1alpha1.OptimizationProposal) (map[string]string, map[string]string, error) {
+	if c == nil || proposal == nil {
+		return map[string]string{}, map[string]string{}, nil
+	}
+
+	namespace := &corev1.Namespace{}
+	if err := c.Get(ctx, types.NamespacedName{Name: workloadNamespace(proposal)}, namespace); err != nil {
+		if apierrors.IsNotFound(err) {
+			return map[string]string{}, map[string]string{}, nil
+		}
+		return nil, nil, fmt.Errorf("get Namespace for policy selectors: %w", err)
+	}
+
+	workloadLabels := map[string]string{}
+	key := types.NamespacedName{
+		Namespace: workloadNamespace(proposal),
+		Name:      proposal.Spec.TargetWorkload.Name,
+	}
+	switch proposal.Spec.TargetWorkload.Kind {
+	case "Deployment":
+		workload := &appsv1.Deployment{}
+		if err := c.Get(ctx, key, workload); err != nil {
+			if apierrors.IsNotFound(err) {
+				return namespace.Labels, workloadLabels, nil
+			}
+			return nil, nil, fmt.Errorf("get Deployment for policy selectors: %w", err)
+		}
+		workloadLabels = workload.Labels
+	case "StatefulSet":
+		workload := &appsv1.StatefulSet{}
+		if err := c.Get(ctx, key, workload); err != nil {
+			if apierrors.IsNotFound(err) {
+				return namespace.Labels, workloadLabels, nil
+			}
+			return nil, nil, fmt.Errorf("get StatefulSet for policy selectors: %w", err)
+		}
+		workloadLabels = workload.Labels
+	case "DaemonSet":
+		workload := &appsv1.DaemonSet{}
+		if err := c.Get(ctx, key, workload); err != nil {
+			if apierrors.IsNotFound(err) {
+				return namespace.Labels, workloadLabels, nil
+			}
+			return nil, nil, fmt.Errorf("get DaemonSet for policy selectors: %w", err)
+		}
+		workloadLabels = workload.Labels
+	}
+
+	return namespace.Labels, workloadLabels, nil
+}
+
 func sameWorkloadTarget(a, b *optimizationv1alpha1.OptimizationProposal) bool {
 	return a.Spec.TargetWorkload.Kind == b.Spec.TargetWorkload.Kind &&
 		a.Spec.TargetWorkload.Name == b.Spec.TargetWorkload.Name &&

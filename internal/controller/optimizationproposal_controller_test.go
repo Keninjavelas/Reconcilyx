@@ -6,6 +6,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -316,6 +317,96 @@ var _ = Describe("OptimizationProposal Controller", func() {
 			// Should remain unmodified
 			Expect(updated.Status.Phase).To(Equal(optimizationv1alpha1.PhaseRejected))
 			Expect(updated.Status.PolicyApplied).To(BeEmpty()) // it didn't run eval
+		})
+
+		It("should match a selector-scoped policy using live namespace and workload labels", func() {
+			const (
+				selectorNamespace = "selector-scoped-target"
+				selectorWorkload  = "selector-scoped-workload"
+			)
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   selectorNamespace,
+					Labels: map[string]string{"reconcilyx.io/selector-test": "true"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+
+			deployment := &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      selectorWorkload,
+					Namespace: selectorNamespace,
+					Labels:    map[string]string{"app": selectorWorkload},
+				},
+				Spec: appsv1.DeploymentSpec{
+					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": selectorWorkload}},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": selectorWorkload}},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{{Name: "app", Image: "registry.k8s.io/pause:3.10"}},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, deployment)).To(Succeed())
+
+			selectorPolicy := &optimizationv1alpha1.OptimizationPolicy{
+				ObjectMeta: metav1.ObjectMeta{Name: "selector-scoped-policy", Namespace: resourceNamespace},
+				Spec: optimizationv1alpha1.OptimizationPolicySpec{
+					Objective: optimizationv1alpha1.ObjectiveEfficiency,
+					Mode:      optimizationv1alpha1.ModePropose,
+					TargetSelectors: optimizationv1alpha1.TargetSelectors{
+						NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"reconcilyx.io/selector-test": "true"}},
+						WorkloadSelector:  &metav1.LabelSelector{MatchLabels: map[string]string{"app": selectorWorkload}},
+					},
+					RecommendationGovernance: optimizationv1alpha1.RecommendationGovernance{
+						AllowedRecommendations: []optimizationv1alpha1.RecommendationType{
+							optimizationv1alpha1.RecommendationRightSize,
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, selectorPolicy)).To(Succeed())
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(ctx, selectorPolicy)
+				_ = k8sClient.Delete(ctx, deployment)
+			})
+
+			proposal := &optimizationv1alpha1.OptimizationProposal{
+				ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: selectorNamespace},
+				Spec: optimizationv1alpha1.OptimizationProposalSpec{
+					TargetWorkload: corev1.ObjectReference{
+						Kind:       "Deployment",
+						Name:       selectorWorkload,
+						APIVersion: "apps/v1",
+					},
+					Recommendation: optimizationv1alpha1.RecommendationRightSize,
+					DecisionMetadata: optimizationv1alpha1.DecisionMetadata{
+						RiskScore:       10,
+						ConfidenceScore: 90,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, proposal)).To(Succeed())
+
+			reconciler := &OptimizationProposalReconciler{
+				Client:    k8sClient,
+				Scheme:    k8sClient.Scheme(),
+				Recorder:  record.NewFakeRecorder(100),
+				Matcher:   policy.NewMatcher(),
+				Evaluator: policy.NewEvaluator(),
+			}
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: resourceName, Namespace: selectorNamespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var updated optimizationv1alpha1.OptimizationProposal
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: resourceName, Namespace: selectorNamespace}, &updated)).To(Succeed())
+			Expect(updated.Status.PolicyApplied).To(Equal("selector-scoped-policy"))
+			Expect(updated.Status.Phase).To(Equal(optimizationv1alpha1.PhaseEvaluating))
+			Expect(updated.Status.ApprovalState).To(Equal(optimizationv1alpha1.ApprovalPending))
 		})
 	})
 })

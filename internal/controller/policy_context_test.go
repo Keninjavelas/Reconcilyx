@@ -148,6 +148,47 @@ func TestWorkloadContainerNames(t *testing.T) {
 	})
 }
 
+func TestWorkloadMatchLabels(t *testing.T) {
+	proposal := &optimizationv1alpha1.OptimizationProposal{
+		ObjectMeta: metav1.ObjectMeta{Name: "current", Namespace: "default"},
+		Spec: optimizationv1alpha1.OptimizationProposalSpec{
+			TargetWorkload: corev1.ObjectReference{Kind: "Deployment", Namespace: "team-a", Name: "demo"},
+		},
+	}
+
+	t.Run("namespace and deployment labels", func(t *testing.T) {
+		namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+			Name:   "team-a",
+			Labels: map[string]string{"env": "prod"},
+		}}
+		dep := deploymentWithContainers("demo", "team-a", "app")
+		dep.Labels = map[string]string{"app": "web"}
+		c := fake.NewClientBuilder().WithScheme(policyGuardScheme(t)).WithObjects(namespace, dep).Build()
+
+		nsLabels, workloadLabels, err := workloadMatchLabels(context.Background(), c, proposal)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if nsLabels["env"] != "prod" {
+			t.Fatalf("expected namespace label env=prod, got %v", nsLabels)
+		}
+		if workloadLabels["app"] != "web" {
+			t.Fatalf("expected workload label app=web, got %v", workloadLabels)
+		}
+	})
+
+	t.Run("missing target yields empty labels", func(t *testing.T) {
+		c := fake.NewClientBuilder().WithScheme(policyGuardScheme(t)).Build()
+		nsLabels, workloadLabels, err := workloadMatchLabels(context.Background(), c, proposal)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(nsLabels) != 0 || len(workloadLabels) != 0 {
+			t.Fatalf("expected empty labels, got namespace=%v workload=%v", nsLabels, workloadLabels)
+		}
+	})
+}
+
 func evaluationProposal() *optimizationv1alpha1.OptimizationProposal {
 	return &optimizationv1alpha1.OptimizationProposal{
 		ObjectMeta: metav1.ObjectMeta{Name: "current", Namespace: "default"},

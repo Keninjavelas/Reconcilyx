@@ -59,6 +59,7 @@ type OptimizationProposalReconciler struct {
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods/resize,verbs=update;patch
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch
 // +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch
 
@@ -129,7 +130,11 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 			return ctrl.Result{}, err
 		}
 
-		matchedPolicy, err := r.Matcher.Match(ctx, proposal.Spec.TargetWorkload, map[string]string{}, map[string]string{}, policyList.Items)
+		namespaceLabels, workloadLabels, err := workloadMatchLabels(ctx, r.Client, proposal)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		matchedPolicy, err := r.Matcher.Match(ctx, proposal.Spec.TargetWorkload, namespaceLabels, workloadLabels, policyList.Items)
 		if err != nil {
 			return ctrl.Result{}, err
 		}

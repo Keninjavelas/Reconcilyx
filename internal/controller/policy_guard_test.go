@@ -21,6 +21,9 @@ func policyGuardScheme(t *testing.T) *runtime.Scheme {
 	if err := appsv1.AddToScheme(scheme); err != nil {
 		t.Fatalf("add apps scheme: %v", err)
 	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add core scheme: %v", err)
+	}
 	if err := optimizationv1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatalf("add optimization scheme: %v", err)
 	}
