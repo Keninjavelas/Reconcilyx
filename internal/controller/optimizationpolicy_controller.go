@@ -36,7 +36,7 @@ type OptimizationPolicyReconciler struct {
 // +kubebuilder:rbac:groups=optimization.reconcilyx.io,resources=optimizationpolicies/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=optimization.reconcilyx.io,resources=optimizationpolicies/finalizers,verbs=update
 // +kubebuilder:rbac:groups=optimization.reconcilyx.io,resources=optimizationproposals,verbs=get;list;watch;create
-// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch;get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch
 
 func (r *OptimizationPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

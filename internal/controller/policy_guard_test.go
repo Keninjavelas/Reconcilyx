@@ -119,6 +119,54 @@ func TestPolicyGuardChangeBudget(t *testing.T) {
 	})
 }
 
+func TestPolicyGuardCooldown(t *testing.T) {
+	proposal := snapshotProposal("current", 0)
+	proposal.Status.ExecutionSnapshot = nil
+
+	t.Run("recent change blocks execution", func(t *testing.T) {
+		policy := guardPolicy()
+		policy.Spec.SafetyConstraints.CooldownPeriod = &metav1.Duration{Duration: 30 * time.Minute}
+		c := fake.NewClientBuilder().WithScheme(policyGuardScheme(t)).WithObjects(
+			proposal, snapshotProposal("recent", 5*time.Minute),
+		).Build()
+		err := NewPolicyGuard(c).Check(context.Background(), proposal, policy)
+		if err == nil || !strings.Contains(err.Error(), "cooldown active") {
+			t.Fatalf("expected cooldown rejection, got %v", err)
+		}
+	})
+
+	t.Run("change outside the cooldown passes", func(t *testing.T) {
+		policy := guardPolicy()
+		policy.Spec.SafetyConstraints.CooldownPeriod = &metav1.Duration{Duration: 30 * time.Minute}
+		c := fake.NewClientBuilder().WithScheme(policyGuardScheme(t)).WithObjects(
+			proposal, snapshotProposal("old", 2*time.Hour),
+		).Build()
+		if err := NewPolicyGuard(c).Check(context.Background(), proposal, policy); err != nil {
+			t.Fatalf("expected stale change to pass, got %v", err)
+		}
+	})
+
+	t.Run("absent cooldown is disabled", func(t *testing.T) {
+		policy := guardPolicy()
+		c := fake.NewClientBuilder().WithScheme(policyGuardScheme(t)).WithObjects(
+			proposal, snapshotProposal("recent", time.Minute),
+		).Build()
+		if err := NewPolicyGuard(c).Check(context.Background(), proposal, policy); err != nil {
+			t.Fatalf("expected absent cooldown to pass, got %v", err)
+		}
+	})
+
+	t.Run("current proposal does not block itself", func(t *testing.T) {
+		policy := guardPolicy()
+		policy.Spec.SafetyConstraints.CooldownPeriod = &metav1.Duration{Duration: 30 * time.Minute}
+		retrying := snapshotProposal("current", time.Minute)
+		c := fake.NewClientBuilder().WithScheme(policyGuardScheme(t)).WithObjects(retrying).Build()
+		if err := NewPolicyGuard(c).Check(context.Background(), retrying, policy); err != nil {
+			t.Fatalf("expected the current proposal to be excluded, got %v", err)
+		}
+	})
+}
+
 func TestPolicyGuardBlastRadius(t *testing.T) {
 	proposal := snapshotProposal("current", 0)
 	proposal.Status.ExecutionSnapshot = nil

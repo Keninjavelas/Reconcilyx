@@ -32,7 +32,7 @@ rules:
     verbs: ["get", "list", "watch", "create", "update", "patch"]
   - apiGroups: [""]
     resources: ["events"]
-    verbs: ["create", "patch"]
+    verbs: ["create", "patch", "get", "list", "watch"]
   - apiGroups: ["autoscaling"]
     resources: ["horizontalpodautoscalers"]
     verbs: ["get", "list", "watch"]

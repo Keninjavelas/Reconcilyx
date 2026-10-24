@@ -38,6 +38,9 @@ func (g *defaultPolicyGuard) Check(ctx context.Context, proposal *optimizationv1
 		}
 		return nil
 	}
+	if err := g.checkCooldown(ctx, proposal, policy); err != nil {
+		return err
+	}
 	if err := g.checkChangeBudget(ctx, proposal, policy); err != nil {
 		return err
 	}
@@ -45,9 +48,30 @@ func (g *defaultPolicyGuard) Check(ctx context.Context, proposal *optimizationv1
 }
 
 func policyHasGuardrails(policy *optimizationv1alpha1.OptimizationPolicy) bool {
-	return policy.Spec.ChangeBudget.MaxChangesPerWindow > 0 ||
+	return policy.Spec.SafetyConstraints.CooldownPeriod != nil ||
+		policy.Spec.ChangeBudget.MaxChangesPerWindow > 0 ||
 		policy.Spec.BlastRadius.MaxReplicasPerChange > 0 ||
 		policy.Spec.BlastRadius.RequireCanaryLabel
+}
+
+func (g *defaultPolicyGuard) checkCooldown(ctx context.Context, proposal *optimizationv1alpha1.OptimizationProposal, policy *optimizationv1alpha1.OptimizationPolicy) error {
+	cooldown := policy.Spec.SafetyConstraints.CooldownPeriod
+	if cooldown == nil || cooldown.Duration <= 0 {
+		return nil
+	}
+	last, err := lastExecutionForWorkload(ctx, g.client, proposal)
+	if err != nil {
+		return fmt.Errorf("cooldown: %w", err)
+	}
+	if last == nil {
+		return nil
+	}
+	elapsed := time.Since(last.Time)
+	if elapsed < cooldown.Duration {
+		return fmt.Errorf("cooldown active: %s since the last change to %s, requires %s",
+			elapsed.Round(time.Second), probeWorkloadName(proposal), cooldown.Duration)
+	}
+	return nil
 }
 
 func (g *defaultPolicyGuard) checkChangeBudget(ctx context.Context, proposal *optimizationv1alpha1.OptimizationProposal, policy *optimizationv1alpha1.OptimizationPolicy) error {
@@ -74,9 +98,7 @@ func (g *defaultPolicyGuard) checkChangeBudget(ctx context.Context, proposal *op
 		if other.Name == proposal.Name && other.Namespace == proposal.Namespace {
 			continue
 		}
-		if other.Spec.TargetWorkload.Kind != proposal.Spec.TargetWorkload.Kind ||
-			other.Spec.TargetWorkload.Namespace != proposal.Spec.TargetWorkload.Namespace ||
-			other.Spec.TargetWorkload.Name != proposal.Spec.TargetWorkload.Name {
+		if !sameWorkloadTarget(other, proposal) {
 			continue
 		}
 		if other.Status.ExecutionSnapshot == nil {
@@ -96,8 +118,8 @@ func (g *defaultPolicyGuard) checkChangeBudget(ctx context.Context, proposal *op
 }
 
 func probeWorkloadName(proposal *optimizationv1alpha1.OptimizationProposal) string {
-	if proposal.Spec.TargetWorkload.Namespace != "" {
-		return proposal.Spec.TargetWorkload.Namespace + "/" + proposal.Spec.TargetWorkload.Name
+	if ns := workloadNamespace(proposal); ns != "" {
+		return ns + "/" + proposal.Spec.TargetWorkload.Name
 	}
 	return proposal.Spec.TargetWorkload.Name
 }
