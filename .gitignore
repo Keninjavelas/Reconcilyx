@@ -28,3 +28,6 @@ go.work
 
 # Kubeconfig might contain secrets
 *.kubeconfig
+
+# End-to-end validation artifacts (run-specific evidence)
+artifacts/

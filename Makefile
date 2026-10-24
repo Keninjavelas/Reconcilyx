@@ -95,6 +95,10 @@ test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expect
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 	@$(KIND) delete cluster --name $(KIND_CLUSTER)
 
+.PHONY: validate-e2e
+validate-e2e: ## Run the scripted end-to-end validation harness against a deployed operator and Prometheus
+	bash scripts/validation/e2e.sh
+
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
 	"$(GOLANGCI_LINT)" run
