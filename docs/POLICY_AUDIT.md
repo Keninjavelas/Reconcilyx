@@ -1,122 +1,79 @@
-# Policy Engine Audit & Readiness Review
+# Policy Engine Audit — Current Status
+
+Last reviewed: 2026-10-24. Scope: `internal/policy` plus the controller and JIT
+gate paths that consume its decisions.
 
 ## Executive Summary
-This document serves as an adversarial, independent platform engineering review of the `internal/policy` package (Task #5). The objective is to verify that the Policy Engine can mathematically and operationally prevent unsafe workload mutations. 
 
-**Recommendation: GO WITH CONDITIONS**
+The original audit (2026-07) blocked controller actuation on seven missing
+policy controls. All seven are now implemented and covered by tests. The
+remaining findings are structural improvements rather than safety blockers, so
+the policy engine is suitable for beta use; production readiness still depends
+on the end-to-end validations tracked in [STATUS.md](../STATUS.md) and
+[FEATURE_MATRIX.md](../FEATURE_MATRIX.md).
 
-The core structural abstractions are sound, but the MVP implementation is dangerously incomplete. It relies on hard-coded safety thresholds, completely ignores critical operational constraints (cooldowns), and has non-deterministic policy matching tie-breakers. The system cannot be trusted to mutate cluster state until the blocking remediation conditions are met.
+## Resolved Findings
 
----
+| Original finding | Current implementation |
+|---|---|
+| Hard-coded risk/confidence thresholds | `SafetyConstraint` reads `spec.safetyConstraints.riskTolerance` and `confidenceRequirement`; defaults remain 50/80 when unset (`internal/policy/constraints.go`). |
+| `AllowedRecommendations` missing | `RecommendationConstraint` rejects any recommendation not in the list, and an empty list rejects everything (fail closed). |
+| `ExcludedContainers` missing | `WorkloadProtectionConstraint` rejects a workload when a protected container is present. `workloadContainerNames` now supplies the live container list from Deployment, StatefulSet, or DaemonSet pod templates. |
+| `CooldownPeriod` ignored | `CooldownConstraint` receives the newest execution timestamp for the same workload (`lastExecutionForWorkload`), and the JIT gate repeats the check in `checkCooldown` so a stale evaluation cannot bypass a cooldown. The CRD defaults the field to 15m. |
+| Non-deterministic policy matching | `Matcher` sorts by specificity, then conservative mode precedence (Observe > Propose > AutoApply), then policy name. |
+| No allowed-action governance | Covered by `RecommendationConstraint`; `ScaleToZero` must be explicitly whitelisted. |
+| Cooldown cannot see cluster history | The controller now lists executed proposals and passes the latest `status.executionSnapshot.timestamp` into the evaluator. |
 
-## Architecture Assessment
-**Grade: B**
+Additional guardrails added after the original audit:
 
-**Strengths:**
-- The Strategy Pattern (`Matcher`, `Constraint`, `Evaluator`) is well-defined and decoupling is strictly enforced.
-- Dependency injection allows for clean, offline testing.
-- The pipeline correctly prevents the Policy Engine from performing K8s API mutation operations.
+- `spec.changeBudget` enforces a rolling per-workload change limit in the JIT gate (`maxChangesPerWindow`, default 24h window).
+- `spec.blastRadius` enforces a replica cap and optional canary-label requirement before actuation; replica caps fail closed for DaemonSets.
+- `spec.proposedResourcesByContainer` scopes actuation and GitOps manifest patching to the named containers; a multi-container proposal without it fails closed before any pod is resized.
+- A scheduled proposal with no recorded policy, or whose policy no longer exists, fails instead of executing unguarded.
+- Policy evaluations and execution decisions are appended to the `reconcilyx-audit` ConfigMap in the proposal namespace (newline-delimited JSON, capped at the 500 newest entries).
 
-**Weaknesses:**
-- **Evidence Formatting:** The evidence is returned as a concatenated string (`strings.Join(rejections, " | ")`). This is human-readable but not machine-parseable, breaking the API standard for structured K8s status fields.
-- **Missing Telemetry Context:** The `Evaluator` only takes the `OptimizationProposal` and `OptimizationPolicy`. It lacks access to cluster state (e.g., historical deployment events) necessary to enforce cooldowns or stabilization periods.
+## Remaining Gaps
 
----
+These do not block beta actuation but should be addressed before a stable
+release:
 
-## Matching Assessment
-**Grade: C-**
+1. **Unstructured evidence.** Rejections are persisted as a joined string in
+   `status.reason`. A `[]DecisionEvidence` field would make gate decisions
+   machine-readable instead of relying on substring matching.
+2. **No dry-run.** Evaluation always lands on `Approved`, `Rejected`, or
+   `Pending`; there is no mode that records what would have happened without
+   transitioning the proposal.
+3. **Brute-force matching.** Every evaluation lists and scores all policies.
+   An informer-backed index would matter at large policy counts, not at beta
+   scale.
+4. **Requests only.** `ResourceConstraint` evaluates requests; it does not
+   apply min/max bounds to limits.
+5. **Namespace inheritance.** Policies do not natively inherit or override
+   per namespace; specificity plus name ordering is the only precedence.
+6. **Name collisions.** Two policies with the same name in different
+   namespaces and equal specificity still tie on name, leaving slice order as
+   the final discriminator.
 
-**Strengths:**
-- Correctly parses `metav1.LabelSelector` via standard `k8s.io/apimachinery` utilities.
-- Specificity scoring (Workload > Namespace > Global) is a robust heuristic.
+## Verification
 
-**Weaknesses (Critical):**
-- **Non-Determinism:** If two policies match a workload with identical specificity scores *and* identical `PolicyMode` (e.g., both are `ModeObserve`), the tie-breaker is purely based on the arbitrary order of the `policies` slice. 
-- **Missing Exclusion Selectors:** There is no way to explicitly exclude a specific workload or namespace using standard `MatchExpressions` (e.g., `NotIn`).
+- `go test ./internal/policy` covers thresholds, recommendation governance,
+  cooldown, exclusions, and matching.
+- `internal/controller/policy_context_test.go` covers execution lookup,
+  namespace fallback, container discovery, and end-to-end evaluator wiring for
+  cooldown and excluded containers.
+- `internal/controller/policy_guard_test.go` covers cooldown, change budget,
+  replica caps, canary scoping, and DaemonSet fail-closed behavior.
+- `internal/controller/audit_test.go` covers audit append, JSON shape, and the
+  500-entry cap.
+- Full controller envtest suite passed 11 of 11 specs on 2026-10-24.
 
----
+## Live Validation (2026-10-24)
 
-## Constraint Assessment
-**Grade: D**
+The policy and gate paths were exercised against a Kind cluster (`reconcilyx-live`, node `v1.36.1`) with the manager installed from the Helm chart:
 
-**Strengths:**
-- `ResourceConstraint` correctly handles K8s resource quantities (`MinCPU`, `MaxCPU`).
+- `WorkloadProtectionConstraint` rejected `storefront-exclusion` with `[WorkloadProtection]: Workload contains protected sidecar/container: 'istio-proxy'`.
+- `CooldownConstraint` rejected `storefront-cooldown` with `[CooldownEnforcement]: Cooldown active: Only 18s elapsed since last optimization, requires 30m0s`. A later approved proposal was independently rejected by the JIT gate with `cooldown active: 20s since the last change to live-demo/storefront, requires 30m0s`, confirming the execution-time recheck.
+- The `reconcilyx-audit` ConfigMap in the proposal namespace contained newline-delimited `policy-evaluation` and `execution-attempt` records for allowed and applied decisions.
+- A multi-container proposal without `proposedResourcesByContainer` failed with the fail-closed reason and left both pods unchanged; a per-container proposal resized only `app` and preserved `istio-proxy` at its original requests.
 
-**Weaknesses (Critical):**
-- **Hardcoded Safety Bounds:** The `SafetyConstraint` rejects proposals based on hard-coded thresholds (`RiskScore > 50`, `ConfidenceScore < 80`). These must be configurable via the `OptimizationPolicy` CRD. What if a user wants to accept high-risk scaling in a dev environment?
-- **Ignored CRD Fields:** The engine completely ignores the `CooldownPeriod`, `MinReplicas`, `OOMKilledWindow`, and `ErrorRateThresholdPercent` fields defined in `OptimizationPolicySpec`.
-- **Allowed Actions Missing:** The constraint framework assumes all recommendation types (RightSize, ScaleToZero) are allowed if limits are met. ScaleToZero is inherently destructive and must be explicitly toggled per policy.
-
----
-
-## Governance Assessment
-**Grade: C**
-
-**Strengths:**
-- Effectively catches and forces human review for `Observe` and `Propose` modes.
-- Rejection is absolute.
-
-**Weaknesses (Critical):**
-- **Unsafe Recommendations CAN slip through:** If a deployment has just been restarted due to a previous optimization, the engine will still propose an `AutoApply` change because the `CooldownPeriod` constraint is not implemented. This risks an infinite restart loop.
-- **No Dry-Run Mode:** There is no mechanism to record what *would* have happened without updating the `OptimizationProposal` to `Approved`.
-
----
-
-## API Assessment
-**Grade: C+**
-
-**Strengths:**
-- Clean separation between `ResourceConstraints` and `SafetyConstraints`.
-
-**Weaknesses (Critical):**
-- **Missing Allowed Recommendations Field:** Policies need an `AllowedRecommendations []RecommendationType` field.
-- **Missing Container Exclusions:** Policies need to exclude sidecars (`istio-proxy`, `linkerd-proxy`).
-- **Missing Risk/Confidence Thresholds:** Policies must explicitly define their own Risk and Confidence tolerances, replacing the hard-coded values in `constraints.go`.
-- **Proposal Status Schema:** `OptimizationProposalStatus` needs a structured `[]DecisionEvidence` field, not just a string block.
-
----
-
-## Risk Register
-1. **[HIGH] Restart Loops:** Ignored `CooldownPeriod` allows continuous optimizations on oscillating workloads.
-2. **[HIGH] Accidental ScaleToZero:** Lack of `AllowedRecommendations` governance could cause the engine to turn off critical but dormant pods.
-3. **[MED] Non-Deterministic Policy Evaluation:** Tie-breaker failure causes unpredictable policy application in overlapping namespaces.
-4. **[MED] Sidecar Starvation:** Without container exclusions, service-mesh proxies could be improperly downscaled, severing network traffic.
-
----
-
-## Technical Debt Register
-1. `constraints.go` uses hardcoded magic numbers for Risk and Confidence.
-2. `metav1.LabelSelectorAsSelector` is used correctly, but sorting is unstable due to slice-order dependency.
-3. `evaluator.go` generates unparseable string evidence.
-
----
-
-## Top 10 Improvements (To Elevate to Exceptional)
-1. Implement historical event tracking to enforce `CooldownPeriod`.
-2. Add `AllowedRecommendations` to the Policy CRD.
-3. Add `ExcludedContainers` to the Policy CRD.
-4. Move Risk/Confidence bounds into the Policy CRD.
-5. Create a deterministic string-comparison tie-breaker (e.g., alphabetical by Policy Name) for identical precedence.
-6. Refactor the `Evaluator` API to return a structured `[]DecisionEvidence` object.
-7. Integrate a `DryRun` boolean into the policy API.
-8. Support namespace inheritance/overrides natively in the registry.
-9. Support evaluating `Limits` constraints, not just `Requests`.
-10. Wire the `Matcher` to use an informer-backed cache instead of a brute-force loop over all policies.
-
----
-
-## Readiness Recommendation: GO WITH CONDITIONS
-
-We cannot proceed to Controller actuation (Task #6) until the following blocking conditions are met within the Policy Engine.
-
-### Required Remediation (Blockers for Task #6)
-
-1. **API Update:** Add `RiskTolerance` and `ConfidenceRequirement` to `SafetyConstraints` in `OptimizationPolicy`.
-2. **API Update:** Add `AllowedRecommendations []RecommendationType` to `OptimizationPolicy`.
-3. **API Update:** Add `ExcludedContainers []string` to `OptimizationPolicy`.
-4. **Logic Update:** Refactor `SafetyConstraint.Evaluate` to use the new CRD fields instead of hard-coded values.
-5. **Logic Update:** Implement a `RecommendationConstraint` to enforce `AllowedRecommendations` (blocking `ScaleToZero` if not explicitly allowed).
-6. **Logic Update:** Refactor `matcher.go` to use an alphabetical tie-breaker (e.g., `matched[i].Name < matched[j].Name`) when specificity and mode tie.
-7. **Logic Update:** Enforce `CooldownPeriod` constraint (even if using a stubbed historical clock for the MVP).
-
-Once these 7 conditions are implemented and tested, Task #6 may begin.
+Not exercised on the live cluster: Prometheus-backed stabilization completion and the learning receipt (no Prometheus installed), a real GitHub/GitLab PR/MR (no provider token), and TLS termination. These remain tracked in [GITHUB_ISSUES.md](../GITHUB_ISSUES.md).

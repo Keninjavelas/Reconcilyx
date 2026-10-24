@@ -136,6 +136,25 @@ Evidence is recorded per item in [STATUS.md](STATUS.md).
 
 Evidence: `scan` now calls `GET /api/proposals` and has no synthetic fallback; it exits non-zero on unreachable/error/malformed responses, and an empty response prints an empty state. `explain` joins the proposal detail with `status.learning` per-container receipts and computes variance. `what-if` returns `costDeltaUSDPerMonth` (signed) alongside the legacy clamped savings field. `diff` compares the working tree with a git base ref with `git show`, prices workloads with the engine cost/carbon helpers, and flags guardrails; the base file listing was fixed to run from the repository root with `--full-tree`. `OptimizationPolicy` gained `spec.changeBudget` and `spec.blastRadius`; the controller resolves the applied policy before execution, fails closed when it is missing, and rejects proposals that exceed the rolling change budget, replica cap, or canary-label requirement. Command tests use `httptest` and temporary git repositories; the full controller envtest suite passed 9/9 on 2026-10-23. Live Hub and live GitHub/GitLab validation remain open.
 
+## Phase 13 — Live Policy Context and Controller Audit (2026-10-24)
+
+- `[x]` `P1 Safety` Feed the newest execution timestamp and live container list into policy evaluation
+- `[x]` `P1 Safety` Re-check `cooldownPeriod` in the JIT gate before change budget and blast radius
+- `[x]` `P1 Observability` Replace the no-op controller auditor with a persistent ConfigMap audit trail
+- `[x]` `P1 Docs` Rewrite the stale policy audit and replace the empty proposal sample
+
+Evidence: `lastExecutionForWorkload` and `workloadContainerNames` supply `cooldownPeriod` and `workloadProtection.excludedContainers` with real state, with a proposal-namespace fallback when the workload reference omits it. `checkCooldown` runs in the policy guard. `reconcilyx-audit` stores newline-delimited JSON (500-entry cap, conflict retry) and the controller records evaluation, gate allow/reject, resize outcome, rollback, and completion. Focused unit tests and the full controller envtest suite (11/11) passed on 2026-10-24. Live Kind validation later the same day rejected `storefront-exclusion` with `[WorkloadProtection]: Workload contains protected sidecar/container: 'istio-proxy'`, rejected `storefront-cooldown` with `Cooldown active: Only 18s elapsed since last optimization, requires 30m0s`, and wrote both `policy-evaluation` and `execution-attempt` JSON lines to `live-demo/reconcilyx-audit` (`audit.jsonl`).
+
+## Phase 14 — Live Per-Container Actuation and Config Safety (2026-10-24)
+
+- `[x]` `P0 Safety` Add `spec.proposedResourcesByContainer` and fail closed when a multi-container proposal lacks it
+- `[x]` `P0 Safety` Apply only the listed containers in the actuator, GitOps manifest patcher, and RL learning receipt
+- `[x]` `P0 Build` Accept `ReduceCPURequest`, `ReduceMemoryRequest`, and `MigrateCloud` in the CRD recommendation enum
+- `[x]` `P1 Config` Honor the chart's `RECONCILYX_PROMETHEUS_URL` in the flag default and the reconciler
+- `[x]` `P1 CLI` Live-validate `scan`, `explain`, and `what-if` against the Kind Hub, including quoted `--fail-on` thresholds
+
+Evidence: the first live approval (`storefront-approve-4`) applied the app's aggregate request to the `istio-proxy` sidecar. After the fix, `checkout-approve-1` resized both pods' `app` to `250m/192Mi` while `istio-proxy` stayed at `100m/64Mi`; `legacy-approve-1` (two containers, no map) failed with `proposal has no proposedResourcesByContainer and the workload has 2 containers; refusing to apply one request set to every container`, and its pods stayed at their original requests. `kubectl-reconcilyx what-if` exited 2 for `cost-increase` (+$51.50/mo) and for `risk>=70` at risk 70, and exited 0 for a $25.75/mo reduction and for `risk>=80` at risk 70. The live manager logged `"prometheus": "http://prometheus-k8s.monitoring.svc:9090"`, proving the chart environment value is now used. Remaining live gaps: Prometheus-backed stabilization completion and a real provider PR.
+
 ## Cross-Cutting Remediation (2026-10-23)
 
 - `[x]` `P0 Safety` Detect HPA/VPA conflicts before in-place execution
@@ -146,6 +165,8 @@ Evidence: `scan` now calls `GET /api/proposals` and has no synthetic fallback; i
 - `[ ]` `P0 Validation` Exercise the GitOps PR flow against a real GitHub or GitLab repository
 
 Live evidence (2026-10-23, Kind v1.36.1, manager container with `ENABLE_WEBHOOKS=false`): with an HPA targeting `demo/web`, an AutoApply `RightSize` proposal reached `PhaseFailed` with `JIT Validation Rejected: autoscaler conflict: HorizontalPodAutoscaler demo/web targets Deployment/web`. After deleting the HPA, a second proposal passed the gate (the VPA CRD is absent, confirming missing-CRD tolerance), resized both pods in place to `250m/128Mi` requests through the `resize` subresource, and reached `Stabilizing`. The Deployment template still showed `500m/256Mi`, confirming the resize is ephemeral. Terminal `Completed` was not reached because the rollback check needs Prometheus, which was not installed; the proposal was left in `Stabilizing` by design.
+
+Live evidence (2026-10-24): a Propose-mode proposal was approved through the API and progressed `Pending → Approved → Scheduled → Executing → Stabilizing`; the audit ConfigMap captured the allow/apply lines, and a manual rollback restored the captured snapshot (event `Manual rollback restored the captured snapshot`). A two-container proposal with `spec.proposedResourcesByContainer` resized only `app` and left `istio-proxy` at `100m/64Mi`; the equivalent proposal without the map failed closed with `refusing to apply one request set to every container` and left both pods unchanged. Stabilization completion still requires Prometheus.
 
 Webhook checks on `:8090`: unsigned and wrong `X-Hub-Signature-256` GitHub events returned 403; a valid HMAC returned 200. GitLab events without `X-Gitlab-Token` returned 403; the correct token returned 200. The GitOps PR flow itself remains unexercised because no repository or provider token was available.
 

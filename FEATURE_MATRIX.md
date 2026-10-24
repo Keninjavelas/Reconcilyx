@@ -18,7 +18,7 @@ No public demo instance is operated. The React console is embedded in the Hub an
 
 | Section | Verified | Partial | Missing/Stubbed | Current Reality |
 |---|---:|---:|---:|---|
-| Core Engine | 0 | 9 | 1 | Strong prototype; `/resize` + SSA actuation path is wired in controller |
+| Core Engine | 0 | 9 | 1 | Strong prototype; `/resize` + SSA actuation resizes only the containers named in `spec.proposedResourcesByContainer` and fails closed for multi-container proposals without it; live cooldown/exclusion evaluation and change-budget/blast-radius guards re-check at execution |
 | Federated Intelligence | 0 | 7 | 0 | Delta emitter, FedAvg aggregator, ConfigMap snapshot, spoke bootstrap, and stable/canary channel selection all implemented; cold-start reduction validated in e2e test |
 | Multi-Cloud Arbitrage | 0 | 5 | 0 | AWS/GCP/Azure live list-price clients with TTL cache, retries, and bundled fallbacks; spot prices are on-demand estimates; no live-account validation yet |
 | Application Intelligence | 0 | 2 | 3 | JVM JMX heap and DCGM GPU metrics are queried from Prometheus and feed RL state buckets; live exporter validation still pending |
@@ -31,7 +31,7 @@ No public demo instance is operated. The React console is embedded in the Hub an
 | Observability & Monitoring | 0 | 5 | 0 | Good instrumentation foundation, but not fully validated end-to-end |
 | User Experience | 0 | 4 | 2 | Embedded console covers proposals, savings, forecast, policies, and settings; responsive proposal queue, assistant drawer, and confirmation prompts. Overview, Proposals, and Policies rendered live Kind-backed data on 2026-10-23 with zero console errors; Savings/Forecast/Settings were last exercised against a mock control plane. |
 | Deployment & Packaging | 0 | 5 | 1 | Helm/CLI, embedded UI, and a Kind + ngrok evaluation guide exist; the release manager was exercised in a container against Kind, but a VPS/TLS-proxy deployment remains unverified and no public hosted instance is operated |
-| Security | 0 | 6 | 1 | API-key auth and CORS were exercised against a running manager (401/200, allowed/denied origins, preflight); auto-merge webhook rejects unsigned/wrong-token events with 403 and requires a Reconcilyx marker plus a `reconcilyx/` head branch; federated endpoints reuse the same X-API-Key header |
+| Security | 0 | 6 | 1 | API-key auth and CORS were exercised against a running manager (401/200, allowed/denied origins, preflight); auto-merge webhook rejects unsigned/wrong-token events with 403 and requires a Reconcilyx marker plus a `reconcilyx/` head branch; federated endpoints reuse the same X-API-Key header; policy evaluations and execution outcomes persist to the `reconcilyx-audit` ConfigMap |
 | Integrations | 0 | 4 | 1 | Prometheus + GitOps (manifest patching, external approval, auto-merge webhook) + live cloud pricing + live carbon; Karpenter + eBPF moved to v5.0 |
 | Documentation | 0 | 4 | 2 | README now lists real features + v5.0 planned section; FEATURE_MATRIX reflects reality |
 | Roadmap | 0 | 0 | 8 | Planned items only (now includes eBPF + node consolidation deferred to v5.0) |
@@ -47,9 +47,9 @@ No public demo instance is operated. The React console is embedded in the Hub an
 3. API/UI contracts are validated against a running backend
    Status: partial on 2026-10-23 — the embedded console rendered live Kind-backed data on Overview (3 proposals, 1 policy, fleet `hub` READY), Proposals (3 rows with phases), and Policies (`demo/autoscaler-test`, AutoApply) with zero console messages; Savings, Forecast, and Settings were not re-exercised against the live backend
 4. CLI actions report and propagate real API failures
-   Status: complete on 2026-10-23 — `scan` no longer fabricates fallback workloads and fails on transport, non-2xx, and parse errors; `explain` and `what-if` propagate Hub errors; `diff` returns exit 1 for unreachable refs/malformed manifests and exit 2 for triggered `--fail-on` conditions. Command tests use `httptest` Hub responses and temporary git repositories; a live-Hub run of the new commands was not repeated.
+   Status: complete on 2026-10-24 — `scan`, `proposals`, `explain`, and `what-if` ran against the live Kind Hub over its ClusterIP. `what-if` exited 2 for `cost-increase` (+$51.50/mo) and `risk>=70`, and 0 for a $25.75/mo reduction and `risk>=80`; `explain` listed proposal events after the events list/watch RBAC fix. `diff` remains covered by temporary git repositories, not a release branch.
 5. Live actuation uses the intended Kubernetes mutation strategy in a production-like cluster
-   Status: partial on 2026-10-23 — the manager resized both `demo/web` pods in place through the Pod `resize` subresource on Kind v1.36.1 and reached `Stabilizing`; a production-like cluster and Prometheus-backed stabilization completion remain unverified
+   Status: partial on 2026-10-24 — the manager resized pods in place through the Pod `resize` subresource on Kind v1.36.1 and reached `Stabilizing`. A two-container proposal with `proposedResourcesByContainer` changed only `app` and preserved `istio-proxy` at `100m/64Mi`; the same proposal without the map failed closed and left both pods unchanged. A production-like cluster, Prometheus-backed stabilization completion, and a live provider PR remain unverified.
 6. The embedded console is served by the Hub, and its CORS/API-key guidance is validated against a running control plane
    Status: complete on 2026-10-23 — the Hub served the embedded console, API-key auth returned 401/200 as configured, and CORS allowed the configured origin (trailing slash normalized) while omitting the header for a disallowed origin; exercised over plain HTTP, not a TLS reverse proxy
 

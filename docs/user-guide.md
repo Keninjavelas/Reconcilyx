@@ -32,7 +32,7 @@ On Windows the binary is `bin/kubectl-reconcilyx.exe`. The plugin talks to the H
 --namespace  Limit or scope a command to one namespace
 ```
 
-Commands: `proposals`, `approve`, `reject`, `rollback`, and `chat`.
+Commands: `scan`, `proposals`, `explain`, `what-if`, `diff`, `approve`, `reject`, `rollback`, and `chat`.
 
 ---
 
@@ -44,7 +44,9 @@ Commands: `proposals`, `approve`, `reject`, `rollback`, and `chat`.
 4. Approved proposals pass through the execution gate, capture an execution snapshot, and are applied with in-place pod resizing.
 5. The controller verifies and stabilizes the workload. Rollback uses the captured snapshot.
 
-The v4 beta actuator executes `RightSize`, `ReduceCPURequest`, and `ReduceMemoryRequest` by Server-Side Apply against the Pod `resize` subresource with the `reconcilyx-operator` field manager. `ScaleToZero` and `MigrateCloud` can be evaluated and proposed, but the in-place resize actuator rejects them at execution time.
+The proposal CRD accepts `RightSize`, `ScaleToZero`, `ReduceCPURequest`, `ReduceMemoryRequest`, and `MigrateCloud`. The v4 beta actuator executes the three resize types by Server-Side Apply against the Pod `resize` subresource with the `reconcilyx-operator` field manager; `ScaleToZero` and `MigrateCloud` can be evaluated and proposed, but the in-place actuator rejects them at execution time.
+
+Each proposal carries `spec.proposedResourcesByContainer`, a map of proposed requests keyed by container name. The actuator and the GitOps manifest patcher change only the containers listed there, so sidecars such as `istio-proxy` keep their existing requests. When the map is absent, a proposal is actuated only if the execution snapshot has a single container; a multi-container workload fails closed with a `Failed` execution state rather than applying one request set to every container. `spec.proposedResources` is the aggregate summary used for display and single-container compatibility.
 
 ### Modes
 
@@ -54,12 +56,17 @@ The v4 beta actuator executes `RightSize`, `ReduceCPURequest`, and `ReduceMemory
 | `Propose` | Queue proposals for human review. |
 | `AutoApply` | Approve proposals that satisfy the policy's safety constraints. |
 
-Guardrails in the policy cover minimum replicas, risk and confidence thresholds, carbon weight, cooldown, and rollback error rate. Workload protection can exclude sidecar containers. Two execution-time guards apply only to scheduled proposals:
+Guardrails in the policy cover minimum replicas, risk and confidence thresholds, carbon weight, cooldown, and rollback error rate. Workload protection can exclude sidecar containers. Evaluation uses live context: `cooldownPeriod` is measured from the newest executed change to the same workload, and protected-container checks read the target Deployment, StatefulSet, or DaemonSet pod template.
 
+Three execution-time guards re-check state when a scheduled proposal is about to run:
+
+- `safetyConstraints.cooldownPeriod` rejects a change that lands inside the cooldown window, even if the proposal was approved earlier. The policy CRD defaults it to `15m`.
 - `changeBudget.maxChangesPerWindow` counts executed changes to the same workload inside a rolling `window` (default `24h`). A budget of `0` disables the check; a proposal is rejected when the count has already reached the budget.
 - `blastRadius.maxReplicasPerChange` rejects changes to Deployments or StatefulSets above the replica cap. DaemonSets are rejected when the cap is enabled because their node count is unknown. `blastRadius.requireCanaryLabel` additionally requires `reconcilyx.io/canary=true` on the workload or its pod template.
 
 The JIT gate fails closed: if an applied policy disappeared or the Hub cannot read the target workload, the proposal is marked `Failed` with the gate reason instead of executing.
+
+Policy evaluations and execution outcomes are appended as newline-delimited JSON to the `reconcilyx-audit` ConfigMap in the proposal namespace, keeping the 500 newest entries. This is separate from the chat audit tail served at `GET /api/audit`.
 
 ### CLI examples
 
