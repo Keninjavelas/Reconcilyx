@@ -92,7 +92,7 @@ func (r *defaultRollbackManager) ExecuteRollback(ctx context.Context, proposal *
 			desired[c.Name] = *snapState.Resources.DeepCopy()
 		}
 
-		if err := applyPodResizeSSA(ctx, r.client, pod.Name, pod.Namespace, desired); err != nil {
+		if err := applyPodResizeSSA(ctx, r.client, &pod, desired); err != nil {
 			return fmt.Errorf("rollback failed: %w", err)
 		}
 	}

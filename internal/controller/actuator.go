@@ -50,10 +50,14 @@ type Actuator interface {
 
 type defaultActuator struct {
 	client client.Client
+	reader client.Reader
 }
 
-func NewActuator(client client.Client) Actuator {
-	return &defaultActuator{client: client}
+func NewActuator(c client.Client, reader client.Reader) Actuator {
+	if reader == nil {
+		reader = c
+	}
+	return &defaultActuator{client: c, reader: reader}
 }
 
 func (a *defaultActuator) AcquireLock(ctx context.Context, proposal *v1alpha1.OptimizationProposal) (bool, error) {
@@ -117,7 +121,10 @@ func (a *defaultActuator) CaptureSnapshot(ctx context.Context, proposal *v1alpha
 	}
 
 	dep := &appsv1.Deployment{}
-	err := a.client.Get(ctx, types.NamespacedName{Name: proposal.Spec.TargetWorkload.Name, Namespace: proposal.Spec.TargetWorkload.Namespace}, dep)
+	// Read through the uncached reader: AcquireLock writes the lock annotation
+	// just before this call, and a cache-backed read can return the pre-lock
+	// generation, which the Verifying phase would misread as external drift.
+	err := a.reader.Get(ctx, types.NamespacedName{Name: proposal.Spec.TargetWorkload.Name, Namespace: proposal.Spec.TargetWorkload.Namespace}, dep)
 	if err != nil {
 		return nil, err
 	}
@@ -144,6 +151,25 @@ func (a *defaultActuator) CaptureSnapshot(ctx context.Context, proposal *v1alpha
 	return snapshot, nil
 }
 
+// resizeContainers lists only the containers being resized, in the pod's
+// existing order. The pods/resize subresource rejects patches that rename or
+// reorder containers, so iterating a map here would randomly fail.
+func resizeContainers(pod *corev1.Pod, desiredByContainer map[string]corev1.ResourceRequirements) []corev1.Container {
+	containers := make([]corev1.Container, 0, len(desiredByContainer))
+	for i := range pod.Spec.Containers {
+		c := pod.Spec.Containers[i]
+		resources, ok := desiredByContainer[c.Name]
+		if !ok {
+			continue
+		}
+		containers = append(containers, corev1.Container{
+			Name:      c.Name,
+			Resources: resources,
+		})
+	}
+	return containers
+}
+
 // applyPodResizeSSA builds and applies a Server-Side Apply patch against the
 // pods/resize subresource. The patch object carries only the containers
 // explicitly listed in desiredByContainer, preserving field ownership for
@@ -152,19 +178,11 @@ func (a *defaultActuator) CaptureSnapshot(ctx context.Context, proposal *v1alpha
 func applyPodResizeSSA(
 	ctx context.Context,
 	c client.Client,
-	podName, namespace string,
+	pod *corev1.Pod,
 	desiredByContainer map[string]corev1.ResourceRequirements,
 ) error {
 	if len(desiredByContainer) == 0 {
 		return nil
-	}
-
-	containers := make([]corev1.Container, 0, len(desiredByContainer))
-	for name, resources := range desiredByContainer {
-		containers = append(containers, corev1.Container{
-			Name:      name,
-			Resources: resources,
-		})
 	}
 
 	patch := &corev1.Pod{
@@ -173,11 +191,11 @@ func applyPodResizeSSA(
 			Kind:       "Pod",
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      podName,
-			Namespace: namespace,
+			Name:      pod.Name,
+			Namespace: pod.Namespace,
 		},
 		Spec: corev1.PodSpec{
-			Containers: containers,
+			Containers: resizeContainers(pod, desiredByContainer),
 		},
 	}
 
@@ -186,7 +204,7 @@ func applyPodResizeSSA(
 		client.ForceOwnership,
 		client.FieldOwner(ResizeFieldOwner),
 	); err != nil {
-		return wrapResizeError(err, podName, namespace)
+		return wrapResizeError(err, pod.Name, pod.Namespace)
 	}
 	return nil
 }
@@ -234,19 +252,29 @@ func (a *defaultActuator) ApplyMutation(ctx context.Context, proposal *v1alpha1.
 		return fmt.Errorf("failed to parse deployment selector: %w", err)
 	}
 
+	snapshot := proposal.Status.ExecutionSnapshot
+	if err := validateProposedContainers(proposal, snapshot); err != nil {
+		return err
+	}
+
 	podList := &corev1.PodList{}
 	if err := a.client.List(ctx, podList, client.InNamespace(dep.Namespace), client.MatchingLabelsSelector{Selector: selector}); err != nil {
 		return fmt.Errorf("failed to list pods: %w", err)
 	}
 
+	resizedPods := 0
 	for _, p := range podList.Items {
 		pod := p
 		desired := make(map[string]corev1.ResourceRequirements)
 
 		for i := range pod.Spec.Containers {
 			c := &pod.Spec.Containers[i]
-			snapState, tracked := proposal.Status.ExecutionSnapshot.ContainerResources[c.Name]
+			snapState, tracked := snapshot.ContainerResources[c.Name]
 			if !tracked {
+				continue
+			}
+			proposed, selected := proposedResourcesForContainer(proposal, c.Name)
+			if !selected {
 				continue
 			}
 			requests := corev1.ResourceList{}
@@ -260,18 +288,18 @@ func (a *defaultActuator) ApplyMutation(ctx context.Context, proposal *v1alpha1.
 
 			switch proposal.Spec.Recommendation {
 			case v1alpha1.RecommendationRightSize:
-				if cpu, ok := proposal.Spec.ProposedResources.Requests[corev1.ResourceCPU]; ok {
+				if cpu, ok := proposed.Requests[corev1.ResourceCPU]; ok {
 					requests[corev1.ResourceCPU] = cpu
 				}
-				if mem, ok := proposal.Spec.ProposedResources.Requests[corev1.ResourceMemory]; ok {
+				if mem, ok := proposed.Requests[corev1.ResourceMemory]; ok {
 					requests[corev1.ResourceMemory] = mem
 				}
 			case v1alpha1.RecommendationReduceCPURequest:
-				if cpu, ok := proposal.Spec.ProposedResources.Requests[corev1.ResourceCPU]; ok {
+				if cpu, ok := proposed.Requests[corev1.ResourceCPU]; ok {
 					requests[corev1.ResourceCPU] = cpu
 				}
 			case v1alpha1.RecommendationReduceMemoryRequest:
-				if mem, ok := proposal.Spec.ProposedResources.Requests[corev1.ResourceMemory]; ok {
+				if mem, ok := proposed.Requests[corev1.ResourceMemory]; ok {
 					requests[corev1.ResourceMemory] = mem
 				}
 			}
@@ -282,10 +310,45 @@ func (a *defaultActuator) ApplyMutation(ctx context.Context, proposal *v1alpha1.
 			}
 		}
 
-		if err := applyPodResizeSSA(ctx, a.client, pod.Name, pod.Namespace, desired); err != nil {
+		if len(desired) == 0 {
+			continue
+		}
+		if err := applyPodResizeSSA(ctx, a.client, &pod, desired); err != nil {
 			return err
 		}
+		resizedPods++
 	}
 
+	if resizedPods == 0 {
+		return fmt.Errorf("no running pods matched the proposal's target containers")
+	}
 	return nil
+}
+
+// validateProposedContainers fails closed when a proposal cannot be mapped to
+// the workload's containers without guessing.
+func validateProposedContainers(proposal *v1alpha1.OptimizationProposal, snapshot *v1alpha1.ExecutionSnapshot) error {
+	if len(proposal.Spec.ProposedResourcesByContainer) > 0 {
+		for name := range proposal.Spec.ProposedResourcesByContainer {
+			if _, ok := snapshot.ContainerResources[name]; !ok {
+				return fmt.Errorf("proposedResourcesByContainer references container %q, which is not in the execution snapshot", name)
+			}
+		}
+		return nil
+	}
+	if len(snapshot.ContainerResources) > 1 {
+		return fmt.Errorf("proposal has no proposedResourcesByContainer and the workload has %d containers; refusing to apply one request set to every container", len(snapshot.ContainerResources))
+	}
+	return nil
+}
+
+// proposedResourcesForContainer returns the resources proposed for a specific
+// container. A per-container map wins; otherwise the legacy single resource
+// set applies only to single-container workloads.
+func proposedResourcesForContainer(proposal *v1alpha1.OptimizationProposal, container string) (corev1.ResourceRequirements, bool) {
+	if len(proposal.Spec.ProposedResourcesByContainer) > 0 {
+		resources, ok := proposal.Spec.ProposedResourcesByContainer[container]
+		return resources, ok
+	}
+	return proposal.Spec.ProposedResources, true
 }

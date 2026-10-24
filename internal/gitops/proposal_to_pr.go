@@ -65,6 +65,7 @@ func (m *PRManager) CreateProposalPR(
 		m.provider,
 		proposal.Spec.TargetWorkload,
 		proposal.Spec.ProposedResources,
+		proposal.Spec.ProposedResourcesByContainer,
 		currentResources,
 		opts.ManifestsPath,
 		baseBranch,

@@ -18,14 +18,14 @@ import (
 )
 
 const (
-	kWhPerMilliCPUMonth  = 0.288
-	kWhPerGBMemMonth     = 0.36
-	bytesPerGB           = 1024 * 1024 * 1024
-	gramsCO2PerKGFactor  = 1.0
-	defaultRegion        = ""
-	defaultCarbonWeight  = 0.0
-	usdPerMilliCPUMonth  = 0.0365
-	usdPerGBMemMonth     = 7.30
+	kWhPerMilliCPUMonth = 0.288
+	kWhPerGBMemMonth    = 0.36
+	bytesPerGB          = 1024 * 1024 * 1024
+	gramsCO2PerKGFactor = 1.0
+	defaultRegion       = ""
+	defaultCarbonWeight = 0.0
+	usdPerMilliCPUMonth = 0.0365
+	usdPerGBMemMonth    = 7.30
 )
 
 func ComputeCostSavedUSDPerMonth(cpuDeltaMilli, memDeltaBytes int64, replicas int32) float64 {
@@ -334,7 +334,8 @@ func (a *defaultAnalyzer) Analyze(ctx context.Context, ref corev1.ObjectReferenc
 	savingsQuantity := resource.MustParse(fmt.Sprintf("%d", int(monthlySavingsUSD)))
 
 	totalProposedReqs := make(corev1.ResourceList)
-	for _, reqs := range proposedReqs {
+	proposedByContainer := make(map[string]corev1.ResourceRequirements, len(proposedReqs))
+	for name, reqs := range proposedReqs {
 		for k, v := range reqs {
 			if existing, ok := totalProposedReqs[k]; ok {
 				existing.Add(v)
@@ -343,6 +344,7 @@ func (a *defaultAnalyzer) Analyze(ctx context.Context, ref corev1.ObjectReferenc
 				totalProposedReqs[k] = v.DeepCopy()
 			}
 		}
+		proposedByContainer[name] = corev1.ResourceRequirements{Requests: reqs.DeepCopy()}
 	}
 
 	resourceDelta := make(corev1.ResourceList)
@@ -372,7 +374,8 @@ func (a *defaultAnalyzer) Analyze(ctx context.Context, ref corev1.ObjectReferenc
 			ProposedResources: corev1.ResourceRequirements{
 				Requests: totalProposedReqs,
 			},
-			ExpectedImpact: expectedImpact,
+			ProposedResourcesByContainer: proposedByContainer,
+			ExpectedImpact:               expectedImpact,
 			DecisionMetadata: v1alpha1.DecisionMetadata{
 				ConfidenceScore: confidence,
 				RiskScore:       risk,

@@ -3,6 +3,8 @@ package controller
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -14,7 +16,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	optimizationv1alpha1 "github.com/reconcilyx/operator/api/v1alpha1"
 	"github.com/reconcilyx/operator/internal/carbon"
@@ -32,6 +33,7 @@ type OptimizationProposalReconciler struct {
 	client.Client
 	Scheme          *runtime.Scheme
 	Recorder        record.EventRecorder
+	Auditor         Auditor
 	Matcher         policy.Matcher
 	Evaluator       policy.Evaluator
 	ExecutionGate   ExecutionGate
@@ -50,7 +52,7 @@ type OptimizationProposalReconciler struct {
 // +kubebuilder:rbac:groups=optimization.reconcilyx.io,resources=optimizationproposals/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=optimization.reconcilyx.io,resources=optimizationproposals/finalizers,verbs=update
 // +kubebuilder:rbac:groups=optimization.reconcilyx.io,resources=optimizationpolicies,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch;get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get;list;watch
@@ -117,6 +119,10 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 		return r.reconcileExternalApproval(ctx, proposal)
 	}
 
+	if proposal.Status.Phase == optimizationv1alpha1.PhaseRollingBack {
+		return r.reconcileManualRollback(ctx, proposal)
+	}
+
 	if proposal.Status.Phase == optimizationv1alpha1.PhaseDetected || proposal.Status.Phase == "" {
 		var policyList optimizationv1alpha1.OptimizationPolicyList
 		if err := r.List(ctx, &policyList); err != nil {
@@ -139,12 +145,21 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 		}
 
 		proposal.Status.Phase = optimizationv1alpha1.PhaseEvaluating
-		decision, reason := r.Evaluator.Evaluate(ctx, proposal, matchedPolicy, []string{}, nil)
+		decision, reason, err := r.evaluatePolicy(ctx, proposal, matchedPolicy)
+		if err != nil {
+			logger.Error(err, "Could not evaluate policy")
+			return ctrl.Result{}, err
+		}
 
 		proposal.Status.ApprovalState = decision
 		proposal.Status.Reason = reason
 		proposal.Status.PolicyApplied = matchedPolicy.Name
 		proposal.Status.LastEvaluationTime = &metav1.Time{Time: time.Now()}
+		if r.Auditor != nil {
+			if auditErr := r.Auditor.RecordEvaluation(ctx, proposal, matchedPolicy, fmt.Sprintf("%s: %s", decision, reason)); auditErr != nil {
+				logger.Error(auditErr, "Could not record policy evaluation audit", "proposal", proposal.Name)
+			}
+		}
 
 		if decision == optimizationv1alpha1.ApprovalApproved {
 			proposal.Status.Phase = optimizationv1alpha1.PhaseApproved
@@ -167,13 +182,21 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 					return ctrl.Result{RequeueAfter: time.Minute}, nil
 				}
 			}
-		} else {
+		} else if decision == optimizationv1alpha1.ApprovalRejected {
 			proposal.Status.Phase = optimizationv1alpha1.PhaseRejected
 			r.Recorder.Event(proposal, "Warning", "ProposalRejected", reason)
+		} else {
+			// A Pending decision awaits human review. Keep the phase non-terminal
+			// so the approval API can promote Evaluating to Approved.
+			proposal.Status.Phase = optimizationv1alpha1.PhaseEvaluating
+			r.Recorder.Event(proposal, "Normal", "ProposalPendingReview", reason)
 		}
 
 		if err := r.Status().Update(ctx, proposal); err != nil {
 			return ctrl.Result{}, err
+		}
+		if decision != optimizationv1alpha1.ApprovalApproved {
+			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{Requeue: true}, nil
 	}
@@ -214,6 +237,7 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 			if gateErr != nil {
 				reason += ": " + gateErr.Error()
 			}
+			r.recordExecutionAttempt(ctx, proposal, "rejected: "+reason)
 			return r.failScheduledProposal(ctx, proposal, reason), nil
 		case ExecutionExpire:
 			proposal.Status.Phase = optimizationv1alpha1.PhaseExpired
@@ -222,6 +246,7 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 		case ExecutionRetryLater:
 			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 		case ExecutionExecute:
+			r.recordExecutionAttempt(ctx, proposal, "allowed: JIT validation passed")
 			proposal.Status.Phase = optimizationv1alpha1.PhaseExecuting
 			proposal.Status.ExecutionState = optimizationv1alpha1.ExecutionApplying
 			if err := r.Status().Update(ctx, proposal); err != nil {
@@ -266,10 +291,12 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 			proposal.Status.Reason = "In-Place Pod Resize Failed: " + err.Error()
 			_ = r.Status().Update(ctx, proposal)
 			r.Recorder.Event(proposal, "Warning", "ExecutionFailed", proposal.Status.Reason)
+			r.recordExecutionAttempt(ctx, proposal, "failed: "+err.Error())
 			_ = r.Actuator.ReleaseLock(ctx, proposal)
 			return ctrl.Result{}, nil
 		}
 
+		r.recordExecutionAttempt(ctx, proposal, "applied: in-place pod resize")
 		r.Recorder.Event(proposal, "Normal", "PodResize", "In-Place Pod Resize patch applied successfully")
 
 		proposal.Status.Phase = optimizationv1alpha1.PhaseVerifying
@@ -345,6 +372,7 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 			if err := r.Status().Update(ctx, proposal); err != nil {
 				return ctrl.Result{}, err
 			}
+			r.recordExecutionAttempt(ctx, proposal, "rolled-back: workload stress exceeded rollback threshold")
 			r.Recorder.Event(proposal, "Warning", "ExecutionReverted", "3-Strike Rollback Triggered due to workload stress")
 			_ = r.Actuator.ReleaseLock(ctx, proposal)
 			if learningErr != nil {
@@ -361,6 +389,7 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 			return ctrl.Result{}, err
 		}
 
+		r.recordExecutionAttempt(ctx, proposal, "completed: workload stabilized")
 		r.Recorder.Event(proposal, "Normal", "ExecutionCompleted", "Workload stabilized")
 		_ = r.Actuator.ReleaseLock(ctx, proposal)
 
@@ -372,6 +401,30 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// evaluatePolicy supplies the policy engine with the live context its
+// cooldown and workload-protection constraints depend on.
+func (r *OptimizationProposalReconciler) evaluatePolicy(ctx context.Context, proposal *optimizationv1alpha1.OptimizationProposal, matchedPolicy *optimizationv1alpha1.OptimizationPolicy) (optimizationv1alpha1.ApprovalState, string, error) {
+	lastOptimization, err := lastExecutionForWorkload(ctx, r.Client, proposal)
+	if err != nil {
+		return "", "", err
+	}
+	containers, err := workloadContainerNames(ctx, r.Client, proposal)
+	if err != nil {
+		return "", "", err
+	}
+	decision, reason := r.Evaluator.Evaluate(ctx, proposal, matchedPolicy, containers, lastOptimization)
+	return decision, reason, nil
+}
+
+func (r *OptimizationProposalReconciler) recordExecutionAttempt(ctx context.Context, proposal *optimizationv1alpha1.OptimizationProposal, decision string) {
+	if r.Auditor == nil {
+		return
+	}
+	if err := r.Auditor.RecordExecutionAttempt(ctx, proposal, decision); err != nil {
+		log.FromContext(ctx).Error(err, "Could not record execution audit", "proposal", proposal.Name)
+	}
 }
 
 func (r *OptimizationProposalReconciler) createGitOpsPR(ctx context.Context, proposal *optimizationv1alpha1.OptimizationProposal, policy *optimizationv1alpha1.OptimizationPolicy) (string, error) {
@@ -501,6 +554,42 @@ func (r *OptimizationProposalReconciler) lookupAppliedPolicy(ctx context.Context
 	return nil, err
 }
 
+// reconcileManualRollback restores the captured snapshot when a reviewer
+// requests a rollback through the API or CLI.
+func (r *OptimizationProposalReconciler) reconcileManualRollback(ctx context.Context, proposal *optimizationv1alpha1.OptimizationProposal) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+
+	if r.RollbackManager == nil {
+		return r.failScheduledProposal(ctx, proposal, "Manual rollback failed: rollback manager is not configured"), nil
+	}
+	if err := r.RollbackManager.ExecuteRollback(ctx, proposal); err != nil {
+		logger.Error(err, "Manual rollback failed")
+		r.recordExecutionAttempt(ctx, proposal, "rollback-failed: "+err.Error())
+		return r.failScheduledProposal(ctx, proposal, "Manual rollback failed: "+err.Error()), nil
+	}
+
+	proposal.Status.Phase = optimizationv1alpha1.PhaseRolledBack
+	proposal.Status.ExecutionState = optimizationv1alpha1.ExecutionReverted
+	learningErr := r.applyRLLearning(ctx, proposal)
+	if err := r.Status().Update(ctx, proposal); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	r.recordExecutionAttempt(ctx, proposal, "rolled-back: manual rollback restored the captured snapshot")
+	if r.Recorder != nil {
+		r.Recorder.Event(proposal, "Warning", "ExecutionReverted", "Manual rollback restored the captured snapshot")
+	}
+	if r.Actuator != nil {
+		_ = r.Actuator.ReleaseLock(ctx, proposal)
+	}
+
+	if learningErr != nil {
+		logger.Error(learningErr, "RL reward pending after rollback, will retry")
+		return ctrl.Result{RequeueAfter: time.Minute}, nil
+	}
+	return ctrl.Result{}, nil
+}
+
 func (r *OptimizationProposalReconciler) failScheduledProposal(ctx context.Context, proposal *optimizationv1alpha1.OptimizationProposal, reason string) ctrl.Result {
 	proposal.Status.Phase = optimizationv1alpha1.PhaseFailed
 	proposal.Status.ExecutionState = optimizationv1alpha1.ExecutionFailed
@@ -512,8 +601,20 @@ func (r *OptimizationProposalReconciler) failScheduledProposal(ctx context.Conte
 	return ctrl.Result{}
 }
 
+// DefaultPrometheusURL resolves the telemetry endpoint from the environment,
+// preferring the chart-provided RECONCILYX_PROMETHEUS_URL.
+func DefaultPrometheusURL() string {
+	for _, key := range []string{"RECONCILYX_PROMETHEUS_URL", "PROMETHEUS_URL"} {
+		if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+			return v
+		}
+	}
+	return "http://prometheus-operated.monitoring.svc.cluster.local:9090"
+}
+
 func (r *OptimizationProposalReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.Recorder = mgr.GetEventRecorderFor("optimizationproposal-controller")
+	r.Auditor = NewAuditor(mgr.GetClient())
 	r.Matcher = policy.NewMatcher()
 	r.Evaluator = policy.NewEvaluator()
 	r.ExecutionGate = NewExecutionGate(
@@ -522,19 +623,21 @@ func (r *OptimizationProposalReconciler) SetupWithManager(mgr ctrl.Manager) erro
 		NewAutoscalerConflictGate(mgr.GetClient()),
 		NewPolicyGuard(mgr.GetClient()),
 	)
-	r.Actuator = NewActuator(mgr.GetClient())
+	r.Actuator = NewActuator(mgr.GetClient(), mgr.GetAPIReader())
 	r.GitFactory = gitops.NewProviderFactory()
 
-	promClient, err := telemetry.NewPrometheusClient("http://prometheus-operated.monitoring.svc.cluster.local:9090")
-	if err != nil {
-		return err
+	telemetryProvider := r.TelemetryProvider
+	if telemetryProvider == nil {
+		promClient, err := telemetry.NewPrometheusClient(DefaultPrometheusURL())
+		if err != nil {
+			return err
+		}
+		telemetryProvider = telemetry.NewTelemetryProvider(telemetry.NewRetriableMetricsClient(promClient))
 	}
-	telemetryProvider := telemetry.NewTelemetryProvider(promClient)
 	r.RollbackManager = NewRollbackManager(mgr.GetClient(), telemetryProvider)
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&optimizationv1alpha1.OptimizationProposal{}).
-		WithEventFilter(predicate.GenerationChangedPredicate{}).
 		Named("optimizationproposal").
 		Complete(r)
 }

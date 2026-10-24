@@ -33,6 +33,7 @@ func ResolveManifest(
 	provider GitProvider,
 	workload corev1.ObjectReference,
 	proposed corev1.ResourceRequirements,
+	proposedByContainer map[string]corev1.ResourceRequirements,
 	current map[string]corev1.ResourceRequirements,
 	manifestsPath, baseBranch, proposalName string,
 ) (*ManifestPatch, error) {
@@ -54,7 +55,7 @@ func ResolveManifest(
 			return nil, fmt.Errorf("read manifest %s: %w", candidate, err)
 		}
 
-		patched, found, err := patchDeploymentManifest(data, workload, proposed, current, proposalName)
+		patched, found, err := patchDeploymentManifest(data, workload, proposed, proposedByContainer, current, proposalName)
 		if err != nil {
 			return nil, fmt.Errorf("patch manifest %s: %w", candidate, err)
 		}
@@ -109,6 +110,7 @@ func patchDeploymentManifest(
 	data []byte,
 	workload corev1.ObjectReference,
 	proposed corev1.ResourceRequirements,
+	proposedByContainer map[string]corev1.ResourceRequirements,
 	current map[string]corev1.ResourceRequirements,
 	proposalName string,
 ) ([]byte, bool, error) {
@@ -129,7 +131,7 @@ func patchDeploymentManifest(
 			continue
 		}
 		if isTargetDeployment(doc, workload) {
-			if err := applyProposedResources(doc, proposed, current); err != nil {
+			if err := applyProposedResources(doc, proposed, proposedByContainer, current); err != nil {
 				return nil, false, err
 			}
 			annotateDeployment(doc, proposalName)
@@ -192,7 +194,7 @@ func annotateDeployment(doc map[string]interface{}, proposalName string) {
 	annotations[proposalAnnotation] = proposalName
 }
 
-func applyProposedResources(doc map[string]interface{}, proposed corev1.ResourceRequirements, current map[string]corev1.ResourceRequirements) error {
+func applyProposedResources(doc map[string]interface{}, proposed corev1.ResourceRequirements, proposedByContainer map[string]corev1.ResourceRequirements, current map[string]corev1.ResourceRequirements) error {
 	spec, ok := doc["spec"].(map[string]interface{})
 	if !ok {
 		return errors.New("Deployment has no spec")
@@ -220,26 +222,38 @@ func applyProposedResources(doc map[string]interface{}, proposed corev1.Resource
 		if _, tracked := current[name]; !tracked {
 			continue
 		}
+		desired, selected := selectProposedResources(proposed, proposedByContainer, name)
+		if !selected {
+			continue
+		}
 		resources, ok := container["resources"].(map[string]interface{})
 		if !ok {
 			resources = map[string]interface{}{}
 			container["resources"] = resources
 		}
-		if err := mergeResourceList(resources, "requests", proposed.Requests); err != nil {
+		if err := mergeResourceList(resources, "requests", desired.Requests); err != nil {
 			return fmt.Errorf("container %s requests: %w", name, err)
 		}
 		// A request above its limit is rejected by the API server. Raise the
 		// limit only when the new request would otherwise be invalid.
-		if err := raiseLimitsForRequests(resources, proposed.Requests); err != nil {
+		if err := raiseLimitsForRequests(resources, desired.Requests); err != nil {
 			return fmt.Errorf("container %s limits: %w", name, err)
 		}
 		patched++
 	}
 
 	if patched == 0 {
-		return fmt.Errorf("none of the tracked containers %s are present in the Deployment manifest", trackedContainerNames(current))
+		return fmt.Errorf("none of the proposed containers %s are present in the Deployment manifest", trackedContainerNames(current))
 	}
 	return nil
+}
+
+func selectProposedResources(proposed corev1.ResourceRequirements, proposedByContainer map[string]corev1.ResourceRequirements, container string) (corev1.ResourceRequirements, bool) {
+	if len(proposedByContainer) > 0 {
+		resources, ok := proposedByContainer[container]
+		return resources, ok
+	}
+	return proposed, true
 }
 
 func mergeResourceList(resources map[string]interface{}, field string, quantities corev1.ResourceList) error {

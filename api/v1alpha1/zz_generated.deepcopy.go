@@ -537,6 +537,13 @@ func (in *OptimizationProposalSpec) DeepCopyInto(out *OptimizationProposalSpec) 
 	out.TargetWorkload = in.TargetWorkload
 	in.ObservedResources.DeepCopyInto(&out.ObservedResources)
 	in.ProposedResources.DeepCopyInto(&out.ProposedResources)
+	if in.ProposedResourcesByContainer != nil {
+		in, out := &in.ProposedResourcesByContainer, &out.ProposedResourcesByContainer
+		*out = make(map[string]corev1.ResourceRequirements, len(*in))
+		for key, val := range *in {
+			(*out)[key] = *val.DeepCopy()
+		}
+	}
 	in.ExpectedImpact.DeepCopyInto(&out.ExpectedImpact)
 	out.DecisionMetadata = in.DecisionMetadata
 	if in.MigrationPlan != nil {

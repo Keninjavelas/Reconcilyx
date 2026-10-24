@@ -99,12 +99,8 @@ func main() {
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	flag.IntVar(&concurrency, "concurrency", parseIntEnv("RECONCILYX_CONCURRENCY", 4),
 		"Maximum number of concurrent reconciliations per controller.")
-	flag.StringVar(&prometheusURL, "prometheus-url", func() string {
-		if v := os.Getenv("PROMETHEUS_URL"); v != "" {
-			return v
-		}
-		return "http://prometheus-operated.monitoring.svc.cluster.local:9090"
-	}(), "URL of the Prometheus server used for workload telemetry.")
+	flag.StringVar(&prometheusURL, "prometheus-url", controller.DefaultPrometheusURL(),
+		"URL of the Prometheus server used for workload telemetry.")
 	flag.IntVar(&batchSize, "batch-size", parseIntEnv("RECONCILYX_BATCH_SIZE", 10),
 		"Maximum number of workloads analyzed per policy reconciliation pass.")
 	flag.StringVar(&pprofAddr, "pprof-bind-address", func() string {

@@ -164,7 +164,7 @@ func (r *OptimizationProposalReconciler) applyRLLearning(ctx context.Context, pr
 		}
 		prevCPUReq := snapState.Resources.Requests.Cpu().DeepCopy()
 		prevMemReq := snapState.Resources.Requests.Memory().DeepCopy()
-		attemptedCPUReq, attemptedMemReq := proposedRequestsFor(proposal, prevCPUReq, prevMemReq)
+		attemptedCPUReq, attemptedMemReq := proposedRequestsFor(proposal, containerName, prevCPUReq, prevMemReq)
 
 		post := optimizationv1alpha1.LearningContainerState{}
 		postCM := (*telemetry.ContainerMetrics)(nil)
@@ -266,10 +266,17 @@ func (r *OptimizationProposalReconciler) applyRLLearning(ctx context.Context, pr
 // proposedRequestsFor returns the requests the actuator actually attempts for
 // the recommendation type, falling back to the pre-actuation values when a
 // resource is not part of the proposal.
-func proposedRequestsFor(proposal *optimizationv1alpha1.OptimizationProposal, prevCPU, prevMem resource.Quantity) (resource.Quantity, resource.Quantity) {
+func proposedRequestsFor(proposal *optimizationv1alpha1.OptimizationProposal, containerName string, prevCPU, prevMem resource.Quantity) (resource.Quantity, resource.Quantity) {
 	cpu := prevCPU.DeepCopy()
 	mem := prevMem.DeepCopy()
 	proposed := proposal.Spec.ProposedResources.Requests
+	if len(proposal.Spec.ProposedResourcesByContainer) > 0 {
+		resources, ok := proposal.Spec.ProposedResourcesByContainer[containerName]
+		if !ok {
+			return cpu, mem
+		}
+		proposed = resources.Requests
+	}
 	switch proposal.Spec.Recommendation {
 	case optimizationv1alpha1.RecommendationRightSize:
 		if q, ok := proposed[corev1.ResourceCPU]; ok {

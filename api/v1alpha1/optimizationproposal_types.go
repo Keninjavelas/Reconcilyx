@@ -118,16 +118,24 @@ type OptimizationProposalSpec struct {
 	TargetWorkload corev1.ObjectReference `json:"targetWorkload"`
 
 	// Recommendation defines the optimization strategy
-	// +kubebuilder:validation:Enum=RightSize;ScaleToZero
+	// +kubebuilder:validation:Enum=RightSize;ScaleToZero;ReduceCPURequest;ReduceMemoryRequest;MigrateCloud
 	Recommendation RecommendationType `json:"recommendation"`
 
 	// ObservedResources contains the baseline usage and current limits
 	// +optional
 	ObservedResources ResourceObservation `json:"observedResources,omitempty"`
 
-	// ProposedResources defines the new desired limits and requests
+	// ProposedResources defines the new desired limits and requests. For a
+	// multi-container workload this is the aggregate view; actuation requires
+	// ProposedResourcesByContainer.
 	// +optional
 	ProposedResources corev1.ResourceRequirements `json:"proposedResources,omitempty"`
+
+	// ProposedResourcesByContainer defines the desired requests per container.
+	// When set, actuation and manifest patching touch only the listed
+	// containers; sidecars and other containers are preserved.
+	// +optional
+	ProposedResourcesByContainer map[string]corev1.ResourceRequirements `json:"proposedResourcesByContainer,omitempty"`
 
 	// ExpectedImpact tracks estimated savings and deltas
 	// +optional

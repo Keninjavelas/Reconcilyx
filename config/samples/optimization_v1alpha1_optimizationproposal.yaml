@@ -6,4 +6,39 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: optimizationproposal-sample
 spec:
-  # TODO(user): Add fields here
+  targetWorkload:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: storefront
+    namespace: default
+  recommendation: RightSize
+  observedResources:
+    currentResources:
+      requests:
+        cpu: 500m
+        memory: 256Mi
+      limits:
+        cpu: "1"
+        memory: 512Mi
+    p95Usage:
+      cpu: 120m
+      memory: 180Mi
+  proposedResources:
+    requests:
+      cpu: 250m
+      memory: 192Mi
+    limits:
+      cpu: 500m
+      memory: 384Mi
+  proposedResourcesByContainer:
+    app:
+      requests:
+        cpu: 250m
+        memory: 192Mi
+  expectedImpact:
+    estimatedSavingsUSD: "18.25"
+    carbonSavedGramsCO2: "4200"
+  decisionMetadata:
+    confidenceScore: 86
+    riskScore: 18
+    rationale: P95 usage stayed below 30% of requests for 14 days.

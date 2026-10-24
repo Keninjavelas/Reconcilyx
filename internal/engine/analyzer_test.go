@@ -57,7 +57,7 @@ func (m *mockRLAgent) Update(ctx context.Context, reward float64, action *rl.Act
 }
 
 func (m *mockRLAgent) LoadGlobal(_ context.Context, _ *federated.GlobalQTable) {}
-func (m *mockRLAgent) SetFederatedEmitter(_ *federated.Emitter)          {}
+func (m *mockRLAgent) SetFederatedEmitter(_ *federated.Emitter)                {}
 
 func TestAnalyzer_Analyze(t *testing.T) {
 	registry := engine.NewRuleRegistry()
@@ -99,17 +99,21 @@ func TestAnalyzer_Analyze(t *testing.T) {
 		}
 
 		proposal, err := analyzer.Analyze(context.Background(), corev1.ObjectReference{Name: "test-deploy"}, currentResources)
-		
+
 		assert.NoError(t, err)
 		assert.NotNil(t, proposal)
-		
+
 		assert.Equal(t, v1alpha1.RecommendationRightSize, proposal.Spec.Recommendation)
-		
+
 		// CPU target is 0.5 * 1.2 = 0.6 cores (600m)
 		assert.Equal(t, int64(600), proposal.Spec.ProposedResources.Requests.Cpu().MilliValue())
-		
+
 		// Memory target is 512 * 1.2 = 614.4 MB (approx 614Mi)
-		assert.Equal(t, int64(614), proposal.Spec.ProposedResources.Requests.Memory().Value() / (1024*1024))
+		assert.Equal(t, int64(614), proposal.Spec.ProposedResources.Requests.Memory().Value()/(1024*1024))
+
+		byContainer, ok := proposal.Spec.ProposedResourcesByContainer["app"]
+		assert.True(t, ok)
+		assert.Equal(t, int64(600), byContainer.Requests.Cpu().MilliValue())
 
 		// Check positive savings
 		assert.True(t, proposal.Spec.ExpectedImpact.EstimatedSavingsUSD.Value() > 0)
@@ -124,7 +128,7 @@ func TestAnalyzer_Analyze(t *testing.T) {
 				Containers: map[string]*telemetry.ContainerMetrics{
 					"app": {
 						Name: "app",
-						CPU: telemetry.CPUMetrics{UsageCores: 1.8}, // closely matches 2000m
+						CPU:  telemetry.CPUMetrics{UsageCores: 1.8}, // closely matches 2000m
 					},
 				},
 			},
