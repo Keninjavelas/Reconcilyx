@@ -4,6 +4,9 @@ set -e
 echo "Uninstalling kube-prometheus-stack..."
 helm uninstall prometheus --namespace monitoring || true
 
+echo "Removing the prometheus-k8s service alias..."
+kubectl delete service prometheus-k8s --namespace monitoring --ignore-not-found
+
 echo "Removing leftover CRDs (Prometheus Operator)..."
 kubectl delete crd \
   alertmanagerconfigs.monitoring.coreos.com \

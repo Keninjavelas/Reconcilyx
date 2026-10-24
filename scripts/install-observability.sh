@@ -20,4 +20,27 @@ helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
   --set nodeExporter.enabled=true \
   --wait
 
+# The operator defaults to http://prometheus-k8s.monitoring.svc:9090, but the
+# Helm chart names the Prometheus service prometheus-kube-prometheus-prometheus.
+# Keep a stable alias so installing the stack is sufficient for telemetry.
+echo "Creating the prometheus-k8s service alias..."
+kubectl apply -f - <<'EOF'
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus-k8s
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: reconcilyx-observability
+spec:
+  type: ClusterIP
+  ports:
+    - name: http-web
+      port: 9090
+      targetPort: 9090
+  selector:
+    operator.prometheus.io/name: prometheus-kube-prometheus-prometheus
+EOF
+
 echo "Observability stack installed successfully."
