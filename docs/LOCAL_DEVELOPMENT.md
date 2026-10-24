@@ -85,6 +85,54 @@ kubectl port-forward svc/prometheus-kube-prometheus-prometheus -n monitoring 909
 ```
 - Access at `http://localhost:9090`
 
+## Scripted End-to-End Validation
+
+`scripts/validation/e2e.sh` (also `make validate-e2e`) exercises the full
+in-place resize lifecycle against a deployed operator. It is intentionally
+self-contained: it creates a uniquely named namespace and fixture, and removes
+them on exit unless `E2E_KEEP=1`.
+
+Prerequisites:
+- A manager Deployment running in `reconcilyx-system` with the resize
+  subresource enabled.
+- Prometheus reachable through the manager's `RECONCILYX_PROMETHEUS_URL`
+  (`make install-observability` installs the required `prometheus-k8s` alias).
+- Hub API reachable. The harness port-forwards `svc/reconcilyx` on port
+  `18082` by default, or uses `E2E_API_URL`.
+- An API key. The harness reads `E2E_API_KEY`, then the manager's
+  `RECONCILYX_API_KEY` environment variable or mounted secret.
+
+Run it with:
+```bash
+make validate-e2e
+# or, when the Hub API is already reachable:
+E2E_API_URL=http://127.0.0.1:8082 E2E_API_KEY=... scripts/validation/e2e.sh
+```
+
+The harness pre-seeds live pod requests (`250m/192Mi`) that differ from the
+Deployment template (`500m/256Mi` and the `100m/64Mi` sidecar), submits a
+`RightSize` proposal through the Hub API, approves it, and waits for
+`Completed`. It fails unless all of the following hold:
+
+- the execution snapshot came from live pods, not the Deployment template;
+- only `app` was resized to `200m/160Mi`, while `istio-proxy` kept its live
+  requests and every limit stayed unchanged;
+- pod UIDs are unchanged and no container restarted;
+- the learning receipt is finalized with `costSavedUSD=4106m` and a positive
+  carbon saving;
+- the policy evaluation, JIT allow decision, resize, and completion are in the
+  JSONL audit log, with the expected Kubernetes events.
+
+Each run writes `assertions.tsv`, `summary.txt`, the proposal, execution
+snapshot, receipt, pod and Deployment dumps, events, audit extracts, the Hub
+API response, manager logs, and the resolved configuration under
+`artifacts/e2e/<run-id>/` (gitignored). The script exits non-zero if any check
+fails.
+
+Configuration is available through `E2E_*` variables documented in the script
+header. `E2E_TIMEOUT` (default 600 seconds) bounds the post-approval wait;
+`E2E_POLL_INTERVAL` defaults to 10 seconds.
+
 ## Teardown Flow
 
 To safely tear down the environment and clean up all resources:

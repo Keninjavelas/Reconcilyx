@@ -166,6 +166,18 @@ Evidence: the first live approval (`storefront-approve-4`) applied the app's agg
 
 Evidence: `kube-prometheus-stack` `69.4.1` ran in `monitoring` with kubelet and kube-state-metrics `up=1`; `live-demo` exposed 24 CPU-usage series and 8 limit series. Because the chart names the Prometheus Service `prometheus-kube-prometheus-prometheus` while the operator expects `prometheus-k8s`, `scripts/install-observability.sh` now creates a selecting alias and `scripts/uninstall-observability.sh` removes it. `checkout-learning-1` completed stabilization at 13:39:00Z with a finalized receipt, but its snapshot used the Deployment template (`500m/256Mi` + `100m/64Mi`) instead of the live pods (`250m/192Mi`), overstating savings (`23269m` versus `4106m` for the actual change). `CaptureSnapshot` now reads active pods and refuses ambiguous snapshots. A second defect surfaced when `storefront-learning-1` failed with `resource requests cannot be removed`: the app-only SSA patch omitted the operator-owned sidecar. `desiredResizeResources` now patches every pod container. After the 30-minute cooldown, `storefront-learning-2` captured the live `250m/192Mi` values for both containers, resized `app` to `200m/160Mi`, preserved `istio-proxy` at `250m/192Mi`, kept all containers at 0 restarts, and completed at 14:23:31Z with `learning.finalized=true`, `costSavedUSD=4106m`, `carbonSavedGramsCO2=11097`, and total `reward=1.0205197183327863`. Unit tests and the full non-e2e suite passed.
 
+## Phase 16 — Executable End-to-End Harness (2026-10-24)
+
+- `[x]` `P0 Validation` Add `scripts/validation/e2e.sh` and `make validate-e2e` with isolated, self-cleaning fixtures
+- `[x]` `P0 Validation` Assert live-pod snapshot, sidecar and limit preservation, unchanged pod UIDs, and zero restarts
+- `[x]` `P0 Validation` Assert the finalized `4106m` learning receipt, audit chain, and Kubernetes events after `Completed`
+- `[x]` `P0 Wiring` Resolve namespace and workload labels before policy matching
+- `[x]` `P0 RBAC` Grant the manager `namespaces` get/list/watch
+- `[x]` `P1 CI` Run the harness from CI against a disposable Kind cluster (runs locally today; no CI job yet)
+- `[ ]` `P0 Validation` Run the harness on a production-like multi-node cluster with TLS
+
+Evidence: run `20261024155951` passed 66 checks with 0 failures from 15:59:51Z to 16:05:10Z. Its snapshot recorded live `250m/192Mi` for both containers against a `500m/256Mi` + `100m/64Mi` template; the resize touched only `app` (`200m/160Mi`); sidecar requests, all limits, pod UIDs, readiness, and 0 restart counts were preserved; the proposal reached `Completed` with a finalized receipt (`costSavedUSD=4106m`, `carbonSavedGramsCO2=11097`, total `reward=1.0205197183327863`); and the audit JSONL plus events recorded evaluation, JIT allow, resize, and completion. Building the harness exposed two product defects: the controller passed empty label maps to `Matcher.Match` (selector-scoped policies could never match), and the manager lacked `namespaces` RBAC (`namespaces is forbidden`). Both are fixed, with an envtest covering selector matching; the controller suite reported `Ran 12 of 12 Specs`, all passing.
+
 ## Cross-Cutting Remediation (2026-10-23)
 
 - `[x]` `P0 Safety` Detect HPA/VPA conflicts before in-place execution

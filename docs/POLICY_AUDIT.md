@@ -30,6 +30,7 @@ Additional guardrails added after the original audit:
 - `spec.blastRadius` enforces a replica cap and optional canary-label requirement before actuation; replica caps fail closed for DaemonSets.
 - `spec.proposedResourcesByContainer` scopes actuation and GitOps manifest patching to the named containers; a multi-container proposal without it fails closed before any pod is resized.
 - A scheduled proposal with no recorded policy, or whose policy no longer exists, fails instead of executing unguarded.
+- Policy matching now receives live labels. `workloadMatchLabels` resolves the target `Namespace` and the Deployment, StatefulSet, or DaemonSet labels before `Matcher.Match` runs; previously the controller passed empty maps, so any policy with a namespace or workload selector could never match. Missing targets yield empty labels and are rejected by matching rather than blocking reconciliation. The manager also has `namespaces` get/list/watch RBAC, without which reconciliation logged `namespaces is forbidden`.
 - Policy evaluations and execution decisions are appended to the `reconcilyx-audit` ConfigMap in the proposal namespace (newline-delimited JSON, capped at the 500 newest entries).
 
 ## Remaining Gaps
@@ -59,16 +60,17 @@ release:
 - `go test ./internal/policy` covers thresholds, recommendation governance,
   cooldown, exclusions, and matching.
 - `internal/controller/policy_context_test.go` covers execution lookup,
-  namespace fallback, container discovery, and end-to-end evaluator wiring for
-  cooldown and excluded containers.
+  namespace fallback, container discovery, selector label resolution, and
+  end-to-end evaluator wiring for cooldown and excluded containers.
 - `internal/controller/policy_guard_test.go` covers cooldown, change budget,
   replica caps, canary scoping, and DaemonSet fail-closed behavior.
 - `internal/controller/audit_test.go` covers audit append, JSON shape, and the
   500-entry cap.
 - `internal/controller/actuator_test.go` covers live-pod snapshots, missing and
   divergent pod refusal, per-container selection, and complete resize patches.
-- Full controller envtest suite passed 11 of 11 specs on 2026-10-24; the full
-  non-e2e suite exited 0 after the snapshot and SSA fixes the same day.
+- The controller envtest suite reported `Ran 12 of 12 Specs` and all passing on
+  2026-10-24, including the selector-scoped policy match; the full non-e2e
+  suite exited 0 after the snapshot and SSA fixes the same day.
 
 ## Live Validation (2026-10-24)
 
@@ -80,5 +82,6 @@ The policy and gate paths were exercised against a Kind cluster (`reconcilyx-liv
 - A multi-container proposal without `proposedResourcesByContainer` failed with the fail-closed reason and left both pods unchanged; a per-container proposal resized only `app` and preserved `istio-proxy` at its original requests.
 - `kube-prometheus-stack` `69.4.1` was installed in `monitoring`; kubelet and kube-state-metrics reported `up=1`, and `live-demo` exposed 24 CPU-usage series and 8 limit series.
 - `checkout-learning-1` passed the full five-minute stabilization window and completed at 13:39:00Z with a finalized receipt. Its template-based snapshot revealed the savings defect (`23269m` reported versus `4106m` for the live delta); after `CaptureSnapshot` was corrected, `storefront-learning-2` completed at 14:23:31Z with a live `250m/192Mi` snapshot, `app` resized to `200m/160Mi`, the operator-owned `istio-proxy` preserved at `250m/192Mi`, `costSavedUSD=4106m`, and `learning.finalized=true`.
+- The scripted harness (`make validate-e2e`) reproduced the full lifecycle in an isolated namespace: a selector-scoped policy matched using the live namespace and workload labels, the audit log recorded `policy-evaluation`, `allowed: JIT validation passed`, `applied: in-place pod resize`, and `completed: workload stabilized`, and 66 checks passed with 0 failures on run `20261024155951`.
 
 Not exercised on the live cluster: a production-like multi-node cluster, a real GitHub/GitLab PR/MR (no provider token), and TLS termination. These remain tracked in [GITHUB_ISSUES.md](../GITHUB_ISSUES.md).
