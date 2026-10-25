@@ -173,10 +173,21 @@ Evidence: `kube-prometheus-stack` `69.4.1` ran in `monitoring` with kubelet and 
 - `[x]` `P0 Validation` Assert the finalized `4106m` learning receipt, audit chain, and Kubernetes events after `Completed`
 - `[x]` `P0 Wiring` Resolve namespace and workload labels before policy matching
 - `[x]` `P0 RBAC` Grant the manager `namespaces` get/list/watch
-- `[ ]` `P1 CI` Wire the harness into CI against a disposable Kind cluster with Prometheus and a deployed manager (it runs locally today)
+- `[x]` `P1 CI` Wire the harness into CI against a disposable Kind cluster with Prometheus and a deployed manager
 - `[ ]` `P0 Validation` Run the harness on a production-like multi-node cluster with TLS
 
-Evidence: run `20261024155951` passed 66 checks with 0 failures from 15:59:51Z to 16:05:10Z. Its snapshot recorded live `250m/192Mi` for both containers against a `500m/256Mi` + `100m/64Mi` template; the resize touched only `app` (`200m/160Mi`); sidecar requests, all limits, pod UIDs, readiness, and 0 restart counts were preserved; the proposal reached `Completed` with a finalized receipt (`costSavedUSD=4106m`, `carbonSavedGramsCO2=11097`, total `reward=1.0205197183327863`); and the audit JSONL plus events recorded evaluation, JIT allow, resize, and completion. Building the harness exposed two product defects: the controller passed empty label maps to `Matcher.Match` (selector-scoped policies could never match), and the manager lacked `namespaces` RBAC (`namespaces is forbidden`). Both are fixed, with an envtest covering selector matching; the controller suite reported `Ran 12 of 12 Specs`, all passing.
+Evidence: run `20261024155951` passed 66 checks with 0 failures from 15:59:51Z to 16:05:10Z. Its snapshot recorded live `250m/192Mi` for both containers against a `500m/256Mi` + `100m/64Mi` template; the resize touched only `app` (`200m/160Mi`); sidecar requests, all limits, pod UIDs, readiness, and 0 restart counts were preserved; the proposal reached `Completed` with a finalized receipt (`costSavedUSD=4106m`, `carbonSavedGramsCO2=11097`, total `reward=1.0205197183327863`); and the audit JSONL plus events recorded evaluation, JIT allow, resize, and completion. Building the harness exposed two product defects: the controller passed empty label maps to `Matcher.Match` (selector-scoped policies could never match), and the manager lacked `namespaces` RBAC (`namespaces is forbidden`). Both are fixed, with an envtest covering selector matching; the controller suite reported `Ran 12 of 12 Specs`, all passing. CI wiring was added on 2026-10-25 in `.github/workflows/validate-e2e.yml`; the first GitHub-hosted run has not been observed yet, so it is not cited as evidence.
+
+## Phase 17 — Live Console Validation (2026-10-25)
+
+- `[x]` `P0 Validation` Exercise Savings, Forecast, and Settings against the live Hub (Kind + Prometheus), plus an Overview regression pass
+- `[x]` `P0 Fix` Exclude failed and rolled-back proposals from the savings ledger and its UI line items
+- `[x]` `P0 Fix` Fall back to the execution snapshot instead of serializing `0` when a proposal has no observed request
+- `[x]` `P0 Fix` Require positive observed baselines in the Forecast simulator and confirm it issues `POST /api/what-if`
+- `[x]` `P1 Fix` Serve SPA deep links publicly while keeping `/api/*` gated
+- `[ ]` `P0 Validation` Exercise the console through a TLS reverse proxy on a production-like cluster
+
+Evidence: image `reconcilyx/operator:live-validation-11` served all six console views from Kind v1.36.1 over a loopback port-forward with zero console messages on Savings, Forecast, Settings, and Overview. Savings rendered `$18.25` / `4.2 kg CO₂` / `230 g per $` with one Completed/Approved row; the API series had four points with a single `18.25` value. Forecast read `live-demo/storefront` at `250m/192Mi`, proposed `180m/160Mi`, issued `GET /api/forecast/storefront?namespace=live-demo` (200) and `POST /api/what-if` (200), and rendered risk 15, confidence 78, `$1.76/mo`. Settings showed the control plane REACHABLE/ONLINE, health `ok`, a masked key, and UI build `2.0.0`. Overview showed 141 proposals, `$18`, `4.2 kg CO₂`, 99% mean confidence, and fleet `hub` READY. Document routes returned 200 without a key while `/api/proposals`, `/api/metrics/savings`, `/api/policies`, and `/api/clusters` returned 401. This pass fixed a failed-proposal savings overcount, a fabricated `0` proposal baseline, an inert what-if simulation, and 401s on SPA deep links; focused `internal/api` tests and the UI build passed. Scope limits: plain HTTP on Kind, no TLS reverse proxy, and no GitHub-hosted `validate-e2e.yml` run yet.
 
 ## Cross-Cutting Remediation (2026-10-23)
 
