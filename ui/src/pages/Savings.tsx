@@ -26,6 +26,24 @@ const EMPTY_SAVINGS: SavingsResponse = {
 
 const SAVED_PHASES = new Set(["Stabilizing", "Completed"]);
 
+// Mirrors countsTowardSavings in internal/api/handlers.go: a failed or rolled-back
+// proposal keeps its approval state, but its resize is not live and must not be
+// presented as a saving.
+const EXCLUDED_FROM_LEDGER = new Set([
+  "Rejected",
+  "Expired",
+  "Failed",
+  "RollbackRequired",
+  "RollingBack",
+  "RollbackVerification",
+  "RolledBack",
+]);
+
+function countsTowardLedger(p: ProposalListItem): boolean {
+  if (EXCLUDED_FROM_LEDGER.has(p.phase)) return false;
+  return SAVED_PHASES.has(p.phase) || p.approvalState === "Approved";
+}
+
 function aggregateDaily(series: SavingsResponse["series"]) {
   const byDate = new Map<string, { date: string; usd: number; gramsCO2: number }>();
   for (const point of series) {
@@ -68,6 +86,7 @@ export default function Savings() {
   const completed = proposals.filter((p) => p.phase === "Completed").length;
   const stabilizing = proposals.filter((p) => p.phase === "Stabilizing").length;
   const approved = proposals.filter((p) => p.approvalState === "Approved").length;
+  const ledgerCount = proposals.filter(countsTowardLedger).length;
 
   const dailySeries = useMemo(() => aggregateDaily(savings.series), [savings.series]);
   const clusterRows = useMemo(
@@ -82,11 +101,7 @@ export default function Savings() {
   const topProposals = useMemo(
     () =>
       proposals
-        .filter(
-          (p) =>
-            Number(p.estimatedSavings) > 0 &&
-            (SAVED_PHASES.has(p.phase) || p.approvalState === "Approved"),
-        )
+        .filter((p) => Number(p.estimatedSavings) > 0 && countsTowardLedger(p))
         .sort((a, b) => Number(b.estimatedSavings) - Number(a.estimatedSavings))
         .slice(0, 8),
     [proposals],
@@ -168,7 +183,7 @@ export default function Savings() {
           className="bg-ink-900"
           label="Completed proposals"
           value={String(completed).padStart(2, "0")}
-          detail={`${stabilizing} stabilizing · ${approved} approved and in the ledger.`}
+          detail={`${stabilizing} stabilizing · ${ledgerCount} counted in the ledger.`}
           loading={proposalsQuery.loading && !proposalsQuery.data}
         />
         <KpiCard

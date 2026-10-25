@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -84,6 +85,32 @@ func TestAPIKeyAuthOverHTTP(t *testing.T) {
 		resp := doRequest(t, ts, http.MethodGet, "/healthz", nil)
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 		assert.Contains(t, readResponseBody(t, resp), `"status":"ok"`)
+	})
+
+	t.Run("spa deep links serve the public shell", func(t *testing.T) {
+		scheme := runtime.NewScheme()
+		require.NoError(t, optimizationv1alpha1.AddToScheme(scheme))
+		srv := NewServer(":0", "s3cret", ServerDeps{
+			Client:    fake.NewClientBuilder().WithScheme(scheme).Build(),
+			UIEnabled: true,
+			UIDist: fstest.MapFS{
+				"index.html": &fstest.MapFile{Data: []byte(`<div id="root"></div>`)},
+			},
+		})
+		spa := httptest.NewServer(srv.Handler())
+		defer spa.Close()
+
+		resp := doRequest(t, spa, http.MethodGet, "/savings", nil)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Contains(t, readResponseBody(t, resp), `id="root"`)
+
+		resp = doRequest(t, spa, http.MethodPost, "/settings", nil)
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode, "only GET/HEAD shell routes are public")
+		_ = readResponseBody(t, resp)
+
+		resp = doRequest(t, spa, http.MethodGet, "/api/proposals", nil)
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode, "API data remains gated")
+		_ = readResponseBody(t, resp)
 	})
 }
 

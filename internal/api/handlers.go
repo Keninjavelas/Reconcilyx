@@ -162,13 +162,13 @@ func (s *Server) handleListProposals(w http.ResponseWriter, r *http.Request) {
 			CreatedAt:       p.CreationTimestamp.Time,
 			ExternalPRID:    p.Status.ExternalPRID,
 		}
-		if q := p.Spec.ObservedResources.CurrentResources.Requests.Cpu(); q != nil {
+		if q := proposalBaselineRequest(p, corev1.ResourceCPU); q != nil {
 			item.CPUBefore = q.String()
 		}
 		if q := p.Spec.ProposedResources.Requests.Cpu(); q != nil {
 			item.CPUAfter = q.String()
 		}
-		if q := p.Spec.ObservedResources.CurrentResources.Requests.Memory(); q != nil {
+		if q := proposalBaselineRequest(p, corev1.ResourceMemory); q != nil {
 			item.MemoryBefore = q.String()
 		}
 		if q := p.Spec.ProposedResources.Requests.Memory(); q != nil {
@@ -187,6 +187,41 @@ func (s *Server) handleListProposals(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].CreatedAt.After(items[j].CreatedAt) })
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": len(items)})
+}
+
+// proposalBaselineRequest prefers the observed request recorded on the
+// proposal spec, then the live pod snapshot captured just before actuation.
+// Proposals created without either must not report a fabricated "0".
+func proposalBaselineRequest(p optimizationv1alpha1.OptimizationProposal, name corev1.ResourceName) *resource.Quantity {
+	if q, ok := p.Spec.ObservedResources.CurrentResources.Requests[name]; ok {
+		return &q
+	}
+	snap := p.Status.ExecutionSnapshot
+	if snap == nil || len(snap.ContainerResources) == 0 {
+		return nil
+	}
+	var candidates []string
+	if len(p.Spec.ProposedResourcesByContainer) == 1 {
+		for container := range p.Spec.ProposedResourcesByContainer {
+			candidates = append(candidates, container)
+		}
+	}
+	if _, ok := snap.ContainerResources["app"]; ok {
+		candidates = append(candidates, "app")
+	}
+	if len(snap.ContainerResources) == 1 {
+		for container := range snap.ContainerResources {
+			candidates = append(candidates, container)
+		}
+	}
+	for _, container := range candidates {
+		if state, ok := snap.ContainerResources[container]; ok {
+			if q, ok := state.Resources.Requests[name]; ok {
+				return &q
+			}
+		}
+	}
+	return nil
 }
 
 func (s *Server) handleGetProposal(w http.ResponseWriter, r *http.Request) {
@@ -260,6 +295,10 @@ func (s *Server) handleApproveProposal(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, actionResponse{Status: "no-op", ApprovalState: string(p.Status.ApprovalState), Message: "Proposal already approved"})
 		return
 	}
+	if p.Status.ApprovalState == optimizationv1alpha1.ApprovalDryRun || p.Status.Phase == optimizationv1alpha1.PhaseDryRun {
+		writeError(w, http.StatusConflict, "Proposal was evaluated in dry-run mode and cannot be approved; create the proposal under a non-dry-run policy to act on it")
+		return
+	}
 	if slices.Contains([]optimizationv1alpha1.OptimizationProposalPhase{
 		optimizationv1alpha1.PhaseExecuting,
 		optimizationv1alpha1.PhaseCompleted,
@@ -321,6 +360,10 @@ func (s *Server) handleRejectProposal(w http.ResponseWriter, r *http.Request) {
 	key := types.NamespacedName{Namespace: ns, Name: r.PathValue("name")}
 	if err := s.deps.Client.Get(r.Context(), key, &p); err != nil {
 		writeError(w, http.StatusNotFound, "Proposal not found", err.Error())
+		return
+	}
+	if p.Status.ApprovalState == optimizationv1alpha1.ApprovalDryRun || p.Status.Phase == optimizationv1alpha1.PhaseDryRun {
+		writeError(w, http.StatusConflict, "Proposal was evaluated in dry-run mode; its lifecycle is observational and immutable")
 		return
 	}
 	if slices.Contains([]optimizationv1alpha1.OptimizationProposalPhase{
@@ -562,9 +605,7 @@ func (s *Server) handleSavingsMetrics(w http.ResponseWriter, r *http.Request) {
 	byNsGrams := map[string]int64{}
 	series := []savingsPoint{}
 	for _, p := range list.Items {
-		if !(p.Status.Phase == optimizationv1alpha1.PhaseCompleted ||
-			p.Status.Phase == optimizationv1alpha1.PhaseStabilizing ||
-			p.Status.ApprovalState == optimizationv1alpha1.ApprovalApproved) {
+		if !countsTowardSavings(p) {
 			continue
 		}
 		pt := savingsPoint{
@@ -599,6 +640,24 @@ func (s *Server) handleSavingsMetrics(w http.ResponseWriter, r *http.Request) {
 		"series":            series,
 		"refreshed":         time.Now().UTC(),
 	})
+}
+
+// countsTowardSavings excludes terminal failure and rollback phases: their
+// expected impact was recorded but the resize is not (or is no longer) live.
+func countsTowardSavings(p optimizationv1alpha1.OptimizationProposal) bool {
+	switch p.Status.Phase {
+	case optimizationv1alpha1.PhaseRejected,
+		optimizationv1alpha1.PhaseExpired,
+		optimizationv1alpha1.PhaseFailed,
+		optimizationv1alpha1.PhaseRollbackRequired,
+		optimizationv1alpha1.PhaseRollingBack,
+		optimizationv1alpha1.PhaseRollbackVerification,
+		optimizationv1alpha1.PhaseRolledBack:
+		return false
+	}
+	return p.Status.Phase == optimizationv1alpha1.PhaseCompleted ||
+		p.Status.Phase == optimizationv1alpha1.PhaseStabilizing ||
+		p.Status.ApprovalState == optimizationv1alpha1.ApprovalApproved
 }
 
 func (s *Server) handleForecast(w http.ResponseWriter, r *http.Request) {

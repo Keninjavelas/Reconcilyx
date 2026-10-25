@@ -21,8 +21,10 @@ func init() {
 	}
 }
 
-func EmitFederatedDeltaSent(cluster string)            { telemetryDeltasSentOne(cluster) }
-func EmitFederatedBatchOutcome(cluster, outcome string) { telemetryDeltasBatchSentOne(cluster, outcome) }
+func EmitFederatedDeltaSent(cluster string) { telemetryDeltasSentOne(cluster) }
+func EmitFederatedBatchOutcome(cluster, outcome string) {
+	telemetryDeltasBatchSentOne(cluster, outcome)
+}
 func EmitFederatedBootstrapOutcome(cluster, outcome string) {
 	telemetryBootstrapOutcomeOne(cluster, outcome)
 }

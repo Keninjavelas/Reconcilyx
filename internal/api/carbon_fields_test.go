@@ -32,11 +32,11 @@ func TestFormatCarbonGramsHuman(t *testing.T) {
 }
 
 type savingsResp struct {
-	TotalUSD          *float64           `json:"totalUSD"`
-	TotalGramsCO2     *int64             `json:"totalGramsCO2"`
-	TotalCarbonHuman  *string            `json:"totalCarbonHuman"`
-	ByClusterGramsCO2 map[string]int64   `json:"byClusterGramsCO2"`
-	ByNsGramsCO2      map[string]int64   `json:"byNsGramsCO2"`
+	TotalUSD          *float64         `json:"totalUSD"`
+	TotalGramsCO2     *int64           `json:"totalGramsCO2"`
+	TotalCarbonHuman  *string          `json:"totalCarbonHuman"`
+	ByClusterGramsCO2 map[string]int64 `json:"byClusterGramsCO2"`
+	ByNsGramsCO2      map[string]int64 `json:"byNsGramsCO2"`
 	Series            []struct {
 		Date     string  `json:"date"`
 		Cluster  string  `json:"cluster,omitempty"`

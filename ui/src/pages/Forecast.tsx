@@ -79,7 +79,9 @@ export default function Forecast() {
   const options = useMemo<WorkloadOption[]>(() => {
     const seen = new Map<string, WorkloadOption>();
     for (const proposal of proposalsQuery.data ?? []) {
-      if (!proposal.cpuBefore || !proposal.memoryBefore) continue;
+      const cpuBefore = proposal.cpuBefore ?? "";
+      const memoryBefore = proposal.memoryBefore ?? "";
+      if ((parseCpu(cpuBefore) ?? 0) <= 0 || (parseMemoryMi(memoryBefore) ?? 0) <= 0) continue;
       const key = `${proposal.namespace}/${proposal.workloadName}`;
       if (seen.has(key)) continue;
       seen.set(key, {
@@ -87,8 +89,8 @@ export default function Forecast() {
         name: proposal.workloadName,
         namespace: proposal.namespace,
         kind: proposal.workloadKind,
-        cpuBefore: proposal.cpuBefore,
-        memoryBefore: proposal.memoryBefore,
+        cpuBefore,
+        memoryBefore,
         cpuAfter: proposal.cpuAfter,
         memoryAfter: proposal.memoryAfter,
       });

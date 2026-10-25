@@ -126,6 +126,11 @@ func APIKeyAuthMiddleware(apiKey string, publicRoutes map[string]struct{}, next 
 			next.ServeHTTP(w, r)
 			return
 		}
+		// Client-side routes serve the public SPA shell; API data routes stay gated.
+		if (r.Method == http.MethodGet || r.Method == http.MethodHead) && isSPARoute(path) {
+			next.ServeHTTP(w, r)
+			return
+		}
 		if apiKey == "" {
 			// dev mode: unauthenticated, inject default actor and proceed
 			ctx := context.WithValue(r.Context(), actorContextKey, "dev-mode-unauthenticated")
@@ -147,6 +152,15 @@ func APIKeyAuthMiddleware(apiKey string, publicRoutes map[string]struct{}, next 
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func isSPARoute(path string) bool {
+	for _, prefix := range []string{"/proposals", "/forecast", "/savings", "/policies", "/settings"} {
+		if path == prefix || strings.HasPrefix(path, prefix+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func constantTimeEqual(a, b string) bool {
