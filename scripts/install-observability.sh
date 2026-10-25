@@ -1,24 +1,27 @@
 #!/bin/bash
 set -e
 
+GRAFANA_ENABLED="${OBSERVABILITY_GRAFANA_ENABLED:-true}"
+WAIT_TIMEOUT="${OBSERVABILITY_WAIT_TIMEOUT:-10m}"
+
 echo "Adding Prometheus community Helm repository..."
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
 helm repo update
 
 echo "Installing kube-prometheus-stack..."
 # Pinning version for repeatable setup
-# Disabling alertmanager, grafana default dashboards, etc., to keep local footprint small
+# Disabling alertmanager, and optionally Grafana, to keep the footprint small
 helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
   --namespace monitoring \
   --create-namespace \
   --version 69.4.1 \
   --set alertmanager.enabled=false \
-  --set grafana.enabled=true \
+  --set grafana.enabled="${GRAFANA_ENABLED}" \
   --set prometheus.prometheusSpec.scrapeInterval="15s" \
   --set prometheus.prometheusSpec.evaluationInterval="15s" \
   --set kubeStateMetrics.enabled=true \
   --set nodeExporter.enabled=true \
-  --wait
+  --wait --timeout "${WAIT_TIMEOUT}"
 
 # The operator defaults to http://prometheus-k8s.monitoring.svc:9090, but the
 # Helm chart names the Prometheus service prometheus-kube-prometheus-prometheus.

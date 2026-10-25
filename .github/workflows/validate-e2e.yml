@@ -1,0 +1,108 @@
+name: Validate E2E Harness
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: validate-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  KIND_CLUSTER: reconcilyx-e2e
+  IMG: reconcilyx:e2e
+  MANAGER_NAMESPACE: reconcilyx-system
+  API_KEY: ci-e2e-key
+
+jobs:
+  validate-e2e:
+    name: Kind + Prometheus lifecycle harness
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: go.mod
+
+      - name: Install kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/latest/kind-linux-$(go env GOARCH)
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+          kind version
+
+      - name: Create the Kind cluster
+        run: |
+          kind create cluster --name "${KIND_CLUSTER}" --wait 180s
+          kubectl cluster-info
+          kubectl get nodes -o wide
+
+      - name: Build and load the manager image
+        run: |
+          make docker-build
+          kind load docker-image "${IMG}" --name "${KIND_CLUSTER}"
+
+      - name: Install Prometheus
+        env:
+          OBSERVABILITY_GRAFANA_ENABLED: "false"
+          OBSERVABILITY_WAIT_TIMEOUT: 10m
+        run: bash scripts/install-observability.sh
+
+      - name: Deploy the manager and CRDs
+        run: |
+          helm upgrade --install reconcilyx charts/reconcilyx \
+            --namespace "${MANAGER_NAMESPACE}" \
+            --create-namespace \
+            --set image.repository=reconcilyx \
+            --set image.tag=e2e \
+            --set image.pullPolicy=Never \
+            --set api.key="${API_KEY}" \
+            --wait --timeout 5m
+          kubectl -n "${MANAGER_NAMESPACE}" rollout status deployment/reconcilyx-controller-manager --timeout=180s
+          kubectl get crd optimizationproposals.optimization.reconcilyx.io optimizationpolicies.optimization.reconcilyx.io
+
+      - name: Run the scripted lifecycle harness
+        env:
+          E2E_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+          E2E_MANAGER_NAMESPACE: reconcilyx-system
+          E2E_API_KEY: ci-e2e-key
+          E2E_TIMEOUT: "900"
+        run: bash scripts/validation/e2e.sh
+
+      - name: Collect failure diagnostics
+        if: failure()
+        continue-on-error: true
+        run: |
+          mkdir -p artifacts/e2e/diagnostics
+          kubectl get nodes -o wide >artifacts/e2e/diagnostics/nodes.txt 2>&1 || true
+          kubectl get all -A >artifacts/e2e/diagnostics/all-resources.txt 2>&1 || true
+          kubectl -n "${MANAGER_NAMESPACE}" logs deployment/reconcilyx-controller-manager --tail=2000 >artifacts/e2e/diagnostics/manager.log 2>&1 || true
+          kubectl -n monitoring get pods -o wide >artifacts/e2e/diagnostics/monitoring-pods.txt 2>&1 || true
+          kubectl -n monitoring logs -l app.kubernetes.io/name=prometheus --tail=300 >artifacts/e2e/diagnostics/prometheus.log 2>&1 || true
+          kubectl get events -A --sort-by=.lastTimestamp | tail -300 >artifacts/e2e/diagnostics/events.txt 2>&1 || true
+
+      - name: Upload harness artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validate-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/e2e
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Delete the Kind cluster
+        if: always()
+        run: kind delete cluster --name "${KIND_CLUSTER}" || true

@@ -133,6 +133,17 @@ Configuration is available through `E2E_*` variables documented in the script
 header. `E2E_TIMEOUT` (default 600 seconds) bounds the post-approval wait;
 `E2E_POLL_INTERVAL` defaults to 10 seconds.
 
+### CI execution
+
+`.github/workflows/validate-e2e.yml` runs the same harness on every push to
+`main` and every pull request. The job creates a disposable Kind cluster,
+builds and loads the manager image, installs `kube-prometheus-stack` through
+`scripts/install-observability.sh` (Grafana disabled), deploys the Helm chart
+with an API key, runs `scripts/validation/e2e.sh`, and uploads
+`artifacts/e2e/` regardless of outcome. Failure diagnostics (cluster
+resources, manager logs, Prometheus logs, recent events) are uploaded with the
+harness artifacts, and the Kind cluster is deleted in an `always()` step.
+
 ## Teardown Flow
 
 To safely tear down the environment and clean up all resources:
