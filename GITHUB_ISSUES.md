@@ -173,7 +173,7 @@ Evidence: `kube-prometheus-stack` `69.4.1` ran in `monitoring` with kubelet and 
 - `[x]` `P0 Validation` Assert the finalized `4106m` learning receipt, audit chain, and Kubernetes events after `Completed`
 - `[x]` `P0 Wiring` Resolve namespace and workload labels before policy matching
 - `[x]` `P0 RBAC` Grant the manager `namespaces` get/list/watch
-- `[x]` `P1 CI` Run the harness from CI against a disposable Kind cluster (runs locally today; no CI job yet)
+- `[ ]` `P1 CI` Wire the harness into CI against a disposable Kind cluster with Prometheus and a deployed manager (it runs locally today)
 - `[ ]` `P0 Validation` Run the harness on a production-like multi-node cluster with TLS
 
 Evidence: run `20261024155951` passed 66 checks with 0 failures from 15:59:51Z to 16:05:10Z. Its snapshot recorded live `250m/192Mi` for both containers against a `500m/256Mi` + `100m/64Mi` template; the resize touched only `app` (`200m/160Mi`); sidecar requests, all limits, pod UIDs, readiness, and 0 restart counts were preserved; the proposal reached `Completed` with a finalized receipt (`costSavedUSD=4106m`, `carbonSavedGramsCO2=11097`, total `reward=1.0205197183327863`); and the audit JSONL plus events recorded evaluation, JIT allow, resize, and completion. Building the harness exposed two product defects: the controller passed empty label maps to `Matcher.Match` (selector-scoped policies could never match), and the manager lacked `namespaces` RBAC (`namespaces is forbidden`). Both are fixed, with an envtest covering selector matching; the controller suite reported `Ran 12 of 12 Specs`, all passing.
