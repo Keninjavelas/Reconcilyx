@@ -9,7 +9,7 @@ import (
 type ClusterRegistrationSpec struct {
 	// ClusterName identifies the registered spoke cluster
 	ClusterName string `json:"clusterName"`
-	
+
 	// APIEndpoint is the URL of the Spoke API server (for informational purposes)
 	// +optional
 	APIEndpoint string `json:"apiEndpoint,omitempty"`

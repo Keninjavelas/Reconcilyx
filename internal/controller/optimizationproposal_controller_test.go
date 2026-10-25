@@ -319,6 +319,104 @@ var _ = Describe("OptimizationProposal Controller", func() {
 			Expect(updated.Status.PolicyApplied).To(BeEmpty()) // it didn't run eval
 		})
 
+		It("should evaluate a DryRun policy without advancing the proposal lifecycle", func() {
+			const (
+				dryRunNamespace = "dry-run-target"
+				dryRunWorkload  = "dry-run-workload"
+			)
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   dryRunNamespace,
+					Labels: map[string]string{"reconcilyx.io/dry-run-test": "true"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+
+			deployment := &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      dryRunWorkload,
+					Namespace: dryRunNamespace,
+					Labels:    map[string]string{"app": dryRunWorkload},
+				},
+				Spec: appsv1.DeploymentSpec{
+					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": dryRunWorkload}},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": dryRunWorkload}},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{{Name: "app", Image: "registry.k8s.io/pause:3.10"}},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, deployment)).To(Succeed())
+
+			dryRunPolicy := &optimizationv1alpha1.OptimizationPolicy{
+				ObjectMeta: metav1.ObjectMeta{Name: "dry-run-policy", Namespace: resourceNamespace},
+				Spec: optimizationv1alpha1.OptimizationPolicySpec{
+					Objective:  optimizationv1alpha1.ObjectiveEfficiency,
+					Mode:       optimizationv1alpha1.ModeDryRun,
+					DryRunMode: optimizationv1alpha1.ModeAutoApply,
+					TargetSelectors: optimizationv1alpha1.TargetSelectors{
+						NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"reconcilyx.io/dry-run-test": "true"}},
+					},
+					RecommendationGovernance: optimizationv1alpha1.RecommendationGovernance{
+						AllowedRecommendations: []optimizationv1alpha1.RecommendationType{
+							optimizationv1alpha1.RecommendationRightSize,
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, dryRunPolicy)).To(Succeed())
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(ctx, dryRunPolicy)
+				_ = k8sClient.Delete(ctx, deployment)
+				_ = k8sClient.Delete(ctx, ns)
+			})
+
+			proposal := &optimizationv1alpha1.OptimizationProposal{
+				ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: dryRunNamespace},
+				Spec: optimizationv1alpha1.OptimizationProposalSpec{
+					TargetWorkload: corev1.ObjectReference{
+						Kind:       "Deployment",
+						Name:       dryRunWorkload,
+						APIVersion: "apps/v1",
+					},
+					Recommendation:   optimizationv1alpha1.RecommendationRightSize,
+					DecisionMetadata: optimizationv1alpha1.DecisionMetadata{RiskScore: 10, ConfidenceScore: 90},
+				},
+			}
+			Expect(k8sClient.Create(ctx, proposal)).To(Succeed())
+
+			reconciler := &OptimizationProposalReconciler{
+				Client:      k8sClient,
+				Scheme:      k8sClient.Scheme(),
+				Recorder:    record.NewFakeRecorder(100),
+				Matcher:     policy.NewMatcher(),
+				PolicyIndex: policy.NewIndex(),
+				Evaluator:   policy.NewEvaluator(),
+			}
+			key := types.NamespacedName{Name: resourceName, Namespace: dryRunNamespace}
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			var updated optimizationv1alpha1.OptimizationProposal
+			Expect(k8sClient.Get(ctx, key, &updated)).To(Succeed())
+			Expect(updated.Status.Phase).To(Equal(optimizationv1alpha1.PhaseDryRun))
+			Expect(updated.Status.ApprovalState).To(Equal(optimizationv1alpha1.ApprovalDryRun))
+			Expect(updated.Status.PolicyApplied).To(Equal("dry-run-policy"))
+			Expect(updated.Status.DryRun).NotTo(BeNil())
+			Expect(updated.Status.DryRun.WouldBe).To(Equal(optimizationv1alpha1.ApprovalApproved))
+			Expect(updated.Status.DecisionEvidence).NotTo(BeEmpty())
+
+			// Dry-run is terminal; a subsequent reconcile must not execute or alter it.
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8sClient.Get(ctx, key, &updated)).To(Succeed())
+			Expect(updated.Status.Phase).To(Equal(optimizationv1alpha1.PhaseDryRun))
+			Expect(updated.Status.ExecutionSnapshot).To(BeNil())
+		})
+
 		It("should match a selector-scoped policy using live namespace and workload labels", func() {
 			const (
 				selectorNamespace = "selector-scoped-target"

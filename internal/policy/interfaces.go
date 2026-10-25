@@ -22,5 +22,5 @@ type Constraint interface {
 
 // Evaluator coordinates the policy evaluation pipeline.
 type Evaluator interface {
-	Evaluate(ctx context.Context, proposal *v1alpha1.OptimizationProposal, policy *v1alpha1.OptimizationPolicy, workloadContainers []string, lastOptimization *metav1.Time) (v1alpha1.ApprovalState, string)
+	Evaluate(ctx context.Context, proposal *v1alpha1.OptimizationProposal, policy *v1alpha1.OptimizationPolicy, workloadContainers []string, lastOptimization *metav1.Time) EvaluationResult
 }

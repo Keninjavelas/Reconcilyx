@@ -460,6 +460,48 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              decisionEvidence:
+                description: DecisionEvidence records each policy check from the most
+                  recent evaluation.
+                items:
+                  description: DecisionEvidence records a single policy check for
+                    machine-readable audits.
+                  properties:
+                    allowed:
+                      description: Allowed reports whether the check passed.
+                      type: boolean
+                    constraint:
+                      description: Constraint identifies the check, for example ResourceBoundaries
+                        or PolicyMode.
+                      type: string
+                    rationale:
+                      description: Rationale explains a failure or the mode decision.
+                        Empty for passing checks.
+                      type: string
+                  required:
+                  - allowed
+                  - constraint
+                  type: object
+                type: array
+              dryRun:
+                description: DryRun records the hypothetical outcome when the matched
+                  policy is in DryRun mode.
+                properties:
+                  evaluatedAt:
+                    description: EvaluatedAt is when the dry run was performed.
+                    format: date-time
+                    type: string
+                  reason:
+                    description: Reason is the rationale that would have been recorded.
+                    type: string
+                  wouldBe:
+                    description: WouldBe is the approval state the hypothetical DryRunMode
+                      would produce.
+                    type: string
+                required:
+                - evaluatedAt
+                - wouldBe
+                type: object
               executionMetadata:
                 description: ExecutionMetadata records the audit trail of the execution
                   context

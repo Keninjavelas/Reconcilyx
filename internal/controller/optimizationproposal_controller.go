@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -15,7 +17,9 @@ import (
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	optimizationv1alpha1 "github.com/reconcilyx/operator/api/v1alpha1"
 	"github.com/reconcilyx/operator/internal/carbon"
@@ -35,11 +39,16 @@ type OptimizationProposalReconciler struct {
 	Recorder        record.EventRecorder
 	Auditor         Auditor
 	Matcher         policy.Matcher
+	PolicyIndex     *policy.Index
 	Evaluator       policy.Evaluator
 	ExecutionGate   ExecutionGate
 	Actuator        Actuator
 	RollbackManager RollbackManager
 	GitFactory      GitProviderFactory
+
+	policyIndexMu    sync.Mutex
+	policyIndexReady bool
+	policyIndexErr   error
 	// RL Learning Loop dependencies
 	RLAgent           rl.Agent
 	TelemetryProvider telemetry.TelemetryProvider
@@ -82,7 +91,8 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 		proposal.Status.Phase == optimizationv1alpha1.PhaseExpired ||
 		proposal.Status.Phase == optimizationv1alpha1.PhaseCompleted ||
 		proposal.Status.Phase == optimizationv1alpha1.PhaseFailed ||
-		proposal.Status.Phase == optimizationv1alpha1.PhaseRolledBack {
+		proposal.Status.Phase == optimizationv1alpha1.PhaseRolledBack ||
+		proposal.Status.Phase == optimizationv1alpha1.PhaseDryRun {
 
 		if (proposal.Status.Phase == optimizationv1alpha1.PhaseCompleted ||
 			proposal.Status.Phase == optimizationv1alpha1.PhaseRolledBack) &&
@@ -125,16 +135,14 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 	}
 
 	if proposal.Status.Phase == optimizationv1alpha1.PhaseDetected || proposal.Status.Phase == "" {
-		var policyList optimizationv1alpha1.OptimizationPolicyList
-		if err := r.List(ctx, &policyList); err != nil {
-			return ctrl.Result{}, err
-		}
+		target := proposal.Spec.TargetWorkload
+		target.Namespace = workloadNamespace(proposal)
 
 		namespaceLabels, workloadLabels, err := workloadMatchLabels(ctx, r.Client, proposal)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
-		matchedPolicy, err := r.Matcher.Match(ctx, proposal.Spec.TargetWorkload, namespaceLabels, workloadLabels, policyList.Items)
+		matchedPolicy, err := r.matchPolicy(ctx, target, namespaceLabels, workloadLabels)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
@@ -143,6 +151,11 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 			proposal.Status.Phase = optimizationv1alpha1.PhaseRejected
 			proposal.Status.ApprovalState = optimizationv1alpha1.ApprovalRejected
 			proposal.Status.Reason = "No matching OptimizationPolicy found for workload"
+			proposal.Status.DecisionEvidence = []optimizationv1alpha1.DecisionEvidence{{
+				Constraint: "PolicyMatch",
+				Allowed:    false,
+				Rationale:  proposal.Status.Reason,
+			}}
 			if err := r.Status().Update(ctx, proposal); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -150,23 +163,39 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 		}
 
 		proposal.Status.Phase = optimizationv1alpha1.PhaseEvaluating
-		decision, reason, err := r.evaluatePolicy(ctx, proposal, matchedPolicy)
+		result, err := r.evaluatePolicy(ctx, proposal, matchedPolicy)
 		if err != nil {
 			logger.Error(err, "Could not evaluate policy")
 			return ctrl.Result{}, err
 		}
 
-		proposal.Status.ApprovalState = decision
-		proposal.Status.Reason = reason
+		proposal.Status.ApprovalState = result.Decision
+		proposal.Status.Reason = result.Reason
 		proposal.Status.PolicyApplied = matchedPolicy.Name
+		proposal.Status.DecisionEvidence = result.Evidence
 		proposal.Status.LastEvaluationTime = &metav1.Time{Time: time.Now()}
+		proposal.Status.DryRun = nil
 		if r.Auditor != nil {
-			if auditErr := r.Auditor.RecordEvaluation(ctx, proposal, matchedPolicy, fmt.Sprintf("%s: %s", decision, reason)); auditErr != nil {
+			if auditErr := r.Auditor.RecordEvaluation(ctx, proposal, matchedPolicy, fmt.Sprintf("%s: %s", result.Decision, result.Reason)); auditErr != nil {
 				logger.Error(auditErr, "Could not record policy evaluation audit", "proposal", proposal.Name)
 			}
 		}
 
-		if decision == optimizationv1alpha1.ApprovalApproved {
+		if result.Decision == optimizationv1alpha1.ApprovalDryRun {
+			proposal.Status.Phase = optimizationv1alpha1.PhaseDryRun
+			proposal.Status.DryRun = &optimizationv1alpha1.DryRunResult{
+				WouldBe:     result.WouldBe,
+				Reason:      result.Reason,
+				EvaluatedAt: *proposal.Status.LastEvaluationTime,
+			}
+			r.Recorder.Event(proposal, "Normal", "ProposalDryRun", result.Reason)
+			if err := r.Status().Update(ctx, proposal); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{}, nil
+		}
+
+		if result.Decision == optimizationv1alpha1.ApprovalApproved {
 			proposal.Status.Phase = optimizationv1alpha1.PhaseApproved
 			telemetry.ProposalApprovedTotal.WithLabelValues(ns, matchedPolicy.Name, workload).Inc()
 			r.Recorder.Event(proposal, "Normal", "ProposalApproved", "Policy Engine approved proposal")
@@ -187,20 +216,20 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 					return ctrl.Result{RequeueAfter: time.Minute}, nil
 				}
 			}
-		} else if decision == optimizationv1alpha1.ApprovalRejected {
+		} else if result.Decision == optimizationv1alpha1.ApprovalRejected {
 			proposal.Status.Phase = optimizationv1alpha1.PhaseRejected
-			r.Recorder.Event(proposal, "Warning", "ProposalRejected", reason)
+			r.Recorder.Event(proposal, "Warning", "ProposalRejected", result.Reason)
 		} else {
 			// A Pending decision awaits human review. Keep the phase non-terminal
 			// so the approval API can promote Evaluating to Approved.
 			proposal.Status.Phase = optimizationv1alpha1.PhaseEvaluating
-			r.Recorder.Event(proposal, "Normal", "ProposalPendingReview", reason)
+			r.Recorder.Event(proposal, "Normal", "ProposalPendingReview", result.Reason)
 		}
 
 		if err := r.Status().Update(ctx, proposal); err != nil {
 			return ctrl.Result{}, err
 		}
-		if decision != optimizationv1alpha1.ApprovalApproved {
+		if result.Decision != optimizationv1alpha1.ApprovalApproved {
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{Requeue: true}, nil
@@ -408,19 +437,109 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 	return ctrl.Result{}, nil
 }
 
+// matchPolicy narrows candidate policies through the informer-backed index,
+// falling back to a live list if the index cannot be refreshed.
+func (r *OptimizationProposalReconciler) matchPolicy(ctx context.Context, target corev1.ObjectReference, namespaceLabels, workloadLabels map[string]string) (*optimizationv1alpha1.OptimizationPolicy, error) {
+	if r.PolicyIndex != nil {
+		if err := r.ensurePolicyIndex(ctx); err == nil {
+			return r.PolicyIndex.Match(ctx, target, namespaceLabels, workloadLabels)
+		} else {
+			log.FromContext(ctx).Error(err, "Policy index unavailable, falling back to a live policy list", "workload", target.Name)
+		}
+	}
+
+	var policies optimizationv1alpha1.OptimizationPolicyList
+	if err := r.List(ctx, &policies); err != nil {
+		return nil, err
+	}
+	matcher := r.Matcher
+	if matcher == nil {
+		matcher = policy.NewMatcher()
+	}
+	return matcher.Match(ctx, target, namespaceLabels, workloadLabels, policies.Items)
+}
+
+func (r *OptimizationProposalReconciler) ensurePolicyIndex(ctx context.Context) error {
+	r.policyIndexMu.Lock()
+	ready := r.policyIndexReady
+	r.policyIndexMu.Unlock()
+	if ready {
+		return nil
+	}
+	return r.rebuildPolicyIndex(ctx)
+}
+
+// rebuildPolicyIndex replaces the index snapshot from the API reader's cache.
+// It is called for the initial lazy fill and after every policy event.
+func (r *OptimizationProposalReconciler) rebuildPolicyIndex(ctx context.Context) error {
+	var policies optimizationv1alpha1.OptimizationPolicyList
+	if err := r.List(ctx, &policies); err != nil {
+		r.policyIndexMu.Lock()
+		r.policyIndexErr = err
+		r.policyIndexMu.Unlock()
+		return err
+	}
+
+	index := r.PolicyIndex
+	if index == nil {
+		index = policy.NewIndex()
+		r.PolicyIndex = index
+	}
+	index.Replace(policies.Items)
+
+	r.policyIndexMu.Lock()
+	r.policyIndexReady = true
+	r.policyIndexErr = nil
+	r.policyIndexMu.Unlock()
+	return nil
+}
+
+// mapPolicyChangeToProposals refreshes the index and re-queues proposals that
+// have not been evaluated yet, so a newly created or updated policy is picked
+// up without waiting for the next periodic resync.
+func (r *OptimizationProposalReconciler) mapPolicyChangeToProposals(ctx context.Context, obj client.Object) []reconcile.Request {
+	policyObj, ok := obj.(*optimizationv1alpha1.OptimizationPolicy)
+	if !ok {
+		return nil
+	}
+
+	logger := log.FromContext(ctx).WithValues("policy", policyObj.Name, "namespace", policyObj.Namespace)
+	if err := r.rebuildPolicyIndex(ctx); err != nil {
+		logger.Error(err, "Could not refresh policy index")
+	}
+
+	var proposals optimizationv1alpha1.OptimizationProposalList
+	if err := r.List(ctx, &proposals); err != nil {
+		logger.Error(err, "Could not list proposals after policy change")
+		return nil
+	}
+
+	requests := make([]reconcile.Request, 0, len(proposals.Items))
+	for i := range proposals.Items {
+		proposal := &proposals.Items[i]
+		if proposal.Status.Phase != optimizationv1alpha1.PhaseDetected && proposal.Status.Phase != "" {
+			continue
+		}
+		requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{
+			Name:      proposal.Name,
+			Namespace: proposal.Namespace,
+		}})
+	}
+	return requests
+}
+
 // evaluatePolicy supplies the policy engine with the live context its
 // cooldown and workload-protection constraints depend on.
-func (r *OptimizationProposalReconciler) evaluatePolicy(ctx context.Context, proposal *optimizationv1alpha1.OptimizationProposal, matchedPolicy *optimizationv1alpha1.OptimizationPolicy) (optimizationv1alpha1.ApprovalState, string, error) {
+func (r *OptimizationProposalReconciler) evaluatePolicy(ctx context.Context, proposal *optimizationv1alpha1.OptimizationProposal, matchedPolicy *optimizationv1alpha1.OptimizationPolicy) (policy.EvaluationResult, error) {
 	lastOptimization, err := lastExecutionForWorkload(ctx, r.Client, proposal)
 	if err != nil {
-		return "", "", err
+		return policy.EvaluationResult{}, err
 	}
 	containers, err := workloadContainerNames(ctx, r.Client, proposal)
 	if err != nil {
-		return "", "", err
+		return policy.EvaluationResult{}, err
 	}
-	decision, reason := r.Evaluator.Evaluate(ctx, proposal, matchedPolicy, containers, lastOptimization)
-	return decision, reason, nil
+	return r.Evaluator.Evaluate(ctx, proposal, matchedPolicy, containers, lastOptimization), nil
 }
 
 func (r *OptimizationProposalReconciler) recordExecutionAttempt(ctx context.Context, proposal *optimizationv1alpha1.OptimizationProposal, decision string) {
@@ -621,6 +740,7 @@ func (r *OptimizationProposalReconciler) SetupWithManager(mgr ctrl.Manager) erro
 	r.Recorder = mgr.GetEventRecorderFor("optimizationproposal-controller")
 	r.Auditor = NewAuditor(mgr.GetClient())
 	r.Matcher = policy.NewMatcher()
+	r.PolicyIndex = policy.NewIndex()
 	r.Evaluator = policy.NewEvaluator()
 	r.ExecutionGate = NewExecutionGate(
 		NewActuationControl(mgr.GetClient(), "reconcilyx-system"),
@@ -643,6 +763,10 @@ func (r *OptimizationProposalReconciler) SetupWithManager(mgr ctrl.Manager) erro
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&optimizationv1alpha1.OptimizationProposal{}).
+		Watches(
+			&optimizationv1alpha1.OptimizationPolicy{},
+			handler.EnqueueRequestsFromMapFunc(r.mapPolicyChangeToProposals),
+		).
 		Named("optimizationproposal").
 		Complete(r)
 }

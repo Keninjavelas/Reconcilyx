@@ -13,6 +13,7 @@ import (
 
 	optimizationv1alpha1 "github.com/reconcilyx/operator/api/v1alpha1"
 	"github.com/reconcilyx/operator/internal/policy"
+	"github.com/stretchr/testify/require"
 )
 
 func deploymentWithContainers(name, namespace string, containers ...string) *appsv1.Deployment {
@@ -208,6 +209,70 @@ func evaluationPolicy() *optimizationv1alpha1.OptimizationPolicy {
 	return pol
 }
 
+func TestMatchPolicyUsesAndRefreshesIndex(t *testing.T) {
+	pol := &optimizationv1alpha1.OptimizationPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "indexed", Namespace: "platform"},
+		Spec: optimizationv1alpha1.OptimizationPolicySpec{
+			Mode: optimizationv1alpha1.ModePropose,
+			TargetSelectors: optimizationv1alpha1.TargetSelectors{
+				NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"env": "prod"}},
+			},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(policyGuardScheme(t)).WithObjects(pol).Build()
+	reconciler := &OptimizationProposalReconciler{
+		Client:      c,
+		Matcher:     policy.NewMatcher(),
+		PolicyIndex: policy.NewIndex(),
+	}
+
+	target := corev1.ObjectReference{Kind: "Deployment", Namespace: "team-a", Name: "demo"}
+	namespaceLabels := map[string]string{"env": "prod"}
+
+	matched, err := reconciler.matchPolicy(context.Background(), target, namespaceLabels, nil)
+	require.NoError(t, err)
+	require.NotNil(t, matched)
+	require.Equal(t, "indexed", matched.Name)
+
+	// Once populated, the index serves matches without relisting. Deleting the
+	// object directly must not affect the cached snapshot until a rebuild.
+	require.NoError(t, c.Delete(context.Background(), pol))
+	matched, err = reconciler.matchPolicy(context.Background(), target, namespaceLabels, nil)
+	require.NoError(t, err)
+	require.NotNil(t, matched)
+
+	require.NoError(t, reconciler.rebuildPolicyIndex(context.Background()))
+	matched, err = reconciler.matchPolicy(context.Background(), target, namespaceLabels, nil)
+	require.NoError(t, err)
+	require.Nil(t, matched)
+}
+
+func TestMapPolicyChangeQueuesUnevaluatedProposals(t *testing.T) {
+	pol := &optimizationv1alpha1.OptimizationPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "fresh", Namespace: "platform"},
+		Spec:       optimizationv1alpha1.OptimizationPolicySpec{Mode: optimizationv1alpha1.ModePropose},
+	}
+	detected := &optimizationv1alpha1.OptimizationProposal{
+		ObjectMeta: metav1.ObjectMeta{Name: "detected", Namespace: "team-a"},
+		Status:     optimizationv1alpha1.OptimizationProposalStatus{Phase: optimizationv1alpha1.PhaseDetected},
+	}
+	approved := &optimizationv1alpha1.OptimizationProposal{
+		ObjectMeta: metav1.ObjectMeta{Name: "approved", Namespace: "team-a"},
+		Status:     optimizationv1alpha1.OptimizationProposalStatus{Phase: optimizationv1alpha1.PhaseApproved},
+	}
+	c := fake.NewClientBuilder().WithScheme(policyGuardScheme(t)).WithObjects(pol, detected, approved).Build()
+	reconciler := &OptimizationProposalReconciler{Client: c, PolicyIndex: policy.NewIndex()}
+
+	requests := reconciler.mapPolicyChangeToProposals(context.Background(), pol)
+	require.Len(t, requests, 1)
+	require.Equal(t, "detected", requests[0].Name)
+
+	matched, err := reconciler.matchPolicy(context.Background(), corev1.ObjectReference{Namespace: "team-a"}, nil, nil)
+	require.NoError(t, err)
+	require.NotNil(t, matched)
+	require.Equal(t, "fresh", matched.Name)
+}
+
 func TestEvaluatePolicyUsesExcludedContainers(t *testing.T) {
 	proposal := evaluationProposal()
 	pol := evaluationPolicy()
@@ -217,12 +282,12 @@ func TestEvaluatePolicyUsesExcludedContainers(t *testing.T) {
 	).Build()
 	reconciler := &OptimizationProposalReconciler{Client: c, Evaluator: policy.NewEvaluator()}
 
-	decision, reason, err := reconciler.evaluatePolicy(context.Background(), proposal, pol)
+	result, err := reconciler.evaluatePolicy(context.Background(), proposal, pol)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if decision != optimizationv1alpha1.ApprovalRejected || !strings.Contains(reason, "protected sidecar") {
-		t.Fatalf("expected exclusion rejection, got %s: %s", decision, reason)
+	if result.Decision != optimizationv1alpha1.ApprovalRejected || !strings.Contains(result.Reason, "protected sidecar") {
+		t.Fatalf("expected exclusion rejection, got %s: %s", result.Decision, result.Reason)
 	}
 }
 
@@ -240,11 +305,11 @@ func TestEvaluatePolicyUsesCooldown(t *testing.T) {
 	).Build()
 	reconciler := &OptimizationProposalReconciler{Client: c, Evaluator: policy.NewEvaluator()}
 
-	decision, reason, err := reconciler.evaluatePolicy(context.Background(), proposal, pol)
+	result, err := reconciler.evaluatePolicy(context.Background(), proposal, pol)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if decision != optimizationv1alpha1.ApprovalRejected || !strings.Contains(reason, "Cooldown active") {
-		t.Fatalf("expected cooldown rejection, got %s: %s", decision, reason)
+	if result.Decision != optimizationv1alpha1.ApprovalRejected || !strings.Contains(result.Reason, "Cooldown active") {
+		t.Fatalf("expected cooldown rejection, got %s: %s", result.Decision, result.Reason)
 	}
 }

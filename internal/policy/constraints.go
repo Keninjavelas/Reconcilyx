@@ -3,6 +3,7 @@ package policy
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -11,36 +12,28 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// ResourceConstraint evaluates Min/Max bounds.
+// ResourceConstraint evaluates Min/Max bounds for aggregate and per-container
+// requests and limits.
 type ResourceConstraint struct{}
 
 func (c *ResourceConstraint) Name() string { return "ResourceBoundaries" }
 
 func (c *ResourceConstraint) Evaluate(ctx context.Context, proposal *v1alpha1.OptimizationProposal, policy *v1alpha1.OptimizationPolicy, workloadContainers []string, lastOptimization *metav1.Time) (bool, string) {
-	if proposal.Spec.ProposedResources.Requests == nil {
-		return true, "" // Nothing proposed
-	}
-
-	reqs := proposal.Spec.ProposedResources.Requests
 	bounds := policy.Spec.ResourceConstraints
 	var violations []string
 
-	if cpu, ok := reqs[corev1.ResourceCPU]; ok {
-		if bounds.MinCPU != nil && cpu.MilliValue() < bounds.MinCPU.MilliValue() {
-			violations = append(violations, fmt.Sprintf("CPU request (%s) < MinCPU (%s)", cpu.String(), bounds.MinCPU.String()))
-		}
-		if bounds.MaxCPU != nil && cpu.MilliValue() > bounds.MaxCPU.MilliValue() {
-			violations = append(violations, fmt.Sprintf("CPU request (%s) > MaxCPU (%s)", cpu.String(), bounds.MaxCPU.String()))
-		}
-	}
+	violations = append(violations, resourceViolations("", "request", proposal.Spec.ProposedResources.Requests, bounds)...)
+	violations = append(violations, resourceViolations("", "limit", proposal.Spec.ProposedResources.Limits, bounds)...)
 
-	if mem, ok := reqs[corev1.ResourceMemory]; ok {
-		if bounds.MinMemory != nil && mem.Value() < bounds.MinMemory.Value() {
-			violations = append(violations, fmt.Sprintf("Memory request (%s) < MinMemory (%s)", mem.String(), bounds.MinMemory.String()))
-		}
-		if bounds.MaxMemory != nil && mem.Value() > bounds.MaxMemory.Value() {
-			violations = append(violations, fmt.Sprintf("Memory request (%s) > MaxMemory (%s)", mem.String(), bounds.MaxMemory.String()))
-		}
+	containers := make([]string, 0, len(proposal.Spec.ProposedResourcesByContainer))
+	for name := range proposal.Spec.ProposedResourcesByContainer {
+		containers = append(containers, name)
+	}
+	sort.Strings(containers)
+	for _, name := range containers {
+		resources := proposal.Spec.ProposedResourcesByContainer[name]
+		violations = append(violations, resourceViolations(name, "request", resources.Requests, bounds)...)
+		violations = append(violations, resourceViolations(name, "limit", resources.Limits, bounds)...)
 	}
 
 	if len(violations) > 0 {
@@ -50,6 +43,38 @@ func (c *ResourceConstraint) Evaluate(ctx context.Context, proposal *v1alpha1.Op
 	return true, ""
 }
 
+func resourceViolations(container, field string, resources corev1.ResourceList, bounds v1alpha1.ResourceConstraints) []string {
+	if resources == nil {
+		return nil
+	}
+
+	var violations []string
+	scope := field
+	if container != "" {
+		scope = fmt.Sprintf("container %q %s", container, field)
+	}
+
+	if cpu, ok := resources[corev1.ResourceCPU]; ok {
+		if bounds.MinCPU != nil && cpu.MilliValue() < bounds.MinCPU.MilliValue() {
+			violations = append(violations, fmt.Sprintf("CPU %s (%s) < MinCPU (%s)", scope, cpu.String(), bounds.MinCPU.String()))
+		}
+		if bounds.MaxCPU != nil && cpu.MilliValue() > bounds.MaxCPU.MilliValue() {
+			violations = append(violations, fmt.Sprintf("CPU %s (%s) > MaxCPU (%s)", scope, cpu.String(), bounds.MaxCPU.String()))
+		}
+	}
+
+	if mem, ok := resources[corev1.ResourceMemory]; ok {
+		if bounds.MinMemory != nil && mem.Value() < bounds.MinMemory.Value() {
+			violations = append(violations, fmt.Sprintf("Memory %s (%s) < MinMemory (%s)", scope, mem.String(), bounds.MinMemory.String()))
+		}
+		if bounds.MaxMemory != nil && mem.Value() > bounds.MaxMemory.Value() {
+			violations = append(violations, fmt.Sprintf("Memory %s (%s) > MaxMemory (%s)", scope, mem.String(), bounds.MaxMemory.String()))
+		}
+	}
+
+	return violations
+}
+
 // SafetyConstraint evaluates engine confidence and risk.
 type SafetyConstraint struct{}
 
@@ -57,12 +82,12 @@ func (c *SafetyConstraint) Name() string { return "SafetyScores" }
 
 func (c *SafetyConstraint) Evaluate(ctx context.Context, proposal *v1alpha1.OptimizationProposal, policy *v1alpha1.OptimizationPolicy, workloadContainers []string, lastOptimization *metav1.Time) (bool, string) {
 	meta := proposal.Spec.DecisionMetadata
-	
+
 	maxRisk := int32(50)
 	if policy.Spec.SafetyConstraints.RiskTolerance != nil {
 		maxRisk = *policy.Spec.SafetyConstraints.RiskTolerance
 	}
-	
+
 	minConf := int32(80)
 	if policy.Spec.SafetyConstraints.ConfidenceRequirement != nil {
 		minConf = *policy.Spec.SafetyConstraints.ConfidenceRequirement
@@ -85,7 +110,7 @@ func (c *RecommendationConstraint) Name() string { return "RecommendationGoverna
 
 func (c *RecommendationConstraint) Evaluate(ctx context.Context, proposal *v1alpha1.OptimizationProposal, policy *v1alpha1.OptimizationPolicy, workloadContainers []string, lastOptimization *metav1.Time) (bool, string) {
 	allowed := policy.Spec.RecommendationGovernance.AllowedRecommendations
-	
+
 	if len(allowed) == 0 {
 		return false, "Policy does not whitelist any recommendations (AllowedRecommendations is empty)"
 	}
@@ -127,7 +152,7 @@ func (c *WorkloadProtectionConstraint) Name() string { return "WorkloadProtectio
 
 func (c *WorkloadProtectionConstraint) Evaluate(ctx context.Context, proposal *v1alpha1.OptimizationProposal, policy *v1alpha1.OptimizationPolicy, workloadContainers []string, lastOptimization *metav1.Time) (bool, string) {
 	excluded := policy.Spec.WorkloadProtection.ExcludedContainers
-	
+
 	if len(excluded) == 0 || len(workloadContainers) == 0 {
 		return true, ""
 	}

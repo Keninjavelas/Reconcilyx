@@ -55,6 +55,9 @@ const (
 	ApprovalPending  ApprovalState = "Pending"
 	ApprovalApproved ApprovalState = "Approved"
 	ApprovalRejected ApprovalState = "Rejected"
+	// ApprovalDryRun marks a proposal evaluated under a DryRun policy.
+	// The lifecycle does not advance and the proposal cannot be approved.
+	ApprovalDryRun ApprovalState = "DryRun"
 )
 
 // ExecutionState represents the operational state of the proposal.
@@ -170,6 +173,9 @@ const (
 	PhaseRollingBack              OptimizationProposalPhase = "RollingBack"
 	PhaseRollbackVerification     OptimizationProposalPhase = "RollbackVerification"
 	PhaseRolledBack               OptimizationProposalPhase = "RolledBack"
+	// PhaseDryRun is terminal for controller actuation: the proposal was
+	// evaluated for observation only.
+	PhaseDryRun OptimizationProposalPhase = "DryRun"
 )
 
 // ContainerResourceState holds the exact resource state for a single container.
@@ -240,6 +246,33 @@ type LearningRecord struct {
 	CompletedAt *metav1.Time                       `json:"completedAt,omitempty"`
 }
 
+// DecisionEvidence records a single policy check for machine-readable audits.
+type DecisionEvidence struct {
+	// Constraint identifies the check, for example ResourceBoundaries or PolicyMode.
+	Constraint string `json:"constraint"`
+
+	// Allowed reports whether the check passed.
+	Allowed bool `json:"allowed"`
+
+	// Rationale explains a failure or the mode decision. Empty for passing checks.
+	// +optional
+	Rationale string `json:"rationale,omitempty"`
+}
+
+// DryRunResult records what a dry-run policy would have decided without
+// advancing the proposal lifecycle.
+type DryRunResult struct {
+	// WouldBe is the approval state the hypothetical DryRunMode would produce.
+	WouldBe ApprovalState `json:"wouldBe"`
+
+	// Reason is the rationale that would have been recorded.
+	// +optional
+	Reason string `json:"reason,omitempty"`
+
+	// EvaluatedAt is when the dry run was performed.
+	EvaluatedAt metav1.Time `json:"evaluatedAt"`
+}
+
 // OptimizationProposalStatus defines the observed state of OptimizationProposal.
 type OptimizationProposalStatus struct {
 	// Phase represents the current stage of the proposal lifecycle
@@ -269,6 +302,14 @@ type OptimizationProposalStatus struct {
 	// Reason explains the rationale behind the approval or rejection
 	// +optional
 	Reason string `json:"reason,omitempty"`
+
+	// DecisionEvidence records each policy check from the most recent evaluation.
+	// +optional
+	DecisionEvidence []DecisionEvidence `json:"decisionEvidence,omitempty"`
+
+	// DryRun records the hypothetical outcome when the matched policy is in DryRun mode.
+	// +optional
+	DryRun *DryRunResult `json:"dryRun,omitempty"`
 
 	// ExecutionSnapshot captures the target state before mutation for guaranteed safe rollback
 	// +optional

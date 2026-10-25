@@ -41,6 +41,9 @@ const (
 	ModeObserve   PolicyMode = "Observe"
 	ModePropose   PolicyMode = "Propose"
 	ModeAutoApply PolicyMode = "AutoApply"
+	// ModeDryRun evaluates the proposal and records what the hypothetical
+	// DryRunMode would decide without changing the proposal's lifecycle.
+	ModeDryRun PolicyMode = "DryRun"
 )
 
 // TargetSelectors defines which workloads the policy applies to.
@@ -217,9 +220,17 @@ type OptimizationPolicySpec struct {
 	Objective OptimizationObjective `json:"objective"`
 
 	// Mode determines if proposals should be observed, proposed, or auto-applied
-	// +kubebuilder:validation:Enum=Observe;Propose;AutoApply
+	// +kubebuilder:validation:Enum=Observe;Propose;AutoApply;DryRun
 	// +kubebuilder:default=Propose
 	Mode PolicyMode `json:"mode"`
+
+	// DryRunMode is the hypothetical mode reported when Mode is DryRun.
+	// The proposal's lifecycle is not advanced; status.dryRun records what
+	// this mode would have decided. Defaults to Propose.
+	// +kubebuilder:validation:Enum=Observe;Propose;AutoApply
+	// +kubebuilder:default=Propose
+	// +optional
+	DryRunMode PolicyMode `json:"dryRunMode,omitempty"`
 
 	// TargetSelectors defines which workloads the policy applies to
 	// +optional

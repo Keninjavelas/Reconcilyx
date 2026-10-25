@@ -82,6 +82,17 @@ spec:
                       Defaults to 24h.
                     type: string
                 type: object
+              dryRunMode:
+                default: Propose
+                description: |-
+                  DryRunMode is the hypothetical mode reported when Mode is DryRun.
+                  The proposal's lifecycle is not advanced; status.dryRun records what
+                  this mode would have decided. Defaults to Propose.
+                enum:
+                - Observe
+                - Propose
+                - AutoApply
+                type: string
               gitOps:
                 description: GitOps configures Pull Request based actuation.
                 properties:
@@ -128,6 +139,7 @@ spec:
                 - Observe
                 - Propose
                 - AutoApply
+                - DryRun
                 type: string
               objective:
                 default: Efficiency
