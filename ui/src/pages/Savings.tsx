@@ -44,18 +44,6 @@ function countsTowardLedger(p: ProposalListItem): boolean {
   return SAVED_PHASES.has(p.phase) || p.approvalState === "Approved";
 }
 
-function aggregateDaily(series: SavingsResponse["series"]) {
-  const byDate = new Map<string, { date: string; usd: number; gramsCO2: number }>();
-  for (const point of series) {
-    const key = point.date.slice(0, 10);
-    const entry = byDate.get(key) ?? { date: key, usd: 0, gramsCO2: 0 };
-    entry.usd += Number(point.usd) || 0;
-    entry.gramsCO2 += Number(point.gramsCO2) || 0;
-    byDate.set(key, entry);
-  }
-  return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
-}
-
 function breakdownRows(
   usd: Record<string, number>,
   grams: Record<string, number> | undefined,
@@ -88,7 +76,6 @@ export default function Savings() {
   const approved = proposals.filter((p) => p.approvalState === "Approved").length;
   const ledgerCount = proposals.filter(countsTowardLedger).length;
 
-  const dailySeries = useMemo(() => aggregateDaily(savings.series), [savings.series]);
   const clusterRows = useMemo(
     () => breakdownRows(savings.byCluster, savings.byClusterGramsCO2),
     [savings.byCluster, savings.byClusterGramsCO2],
@@ -176,7 +163,7 @@ export default function Savings() {
           className="bg-ink-900"
           label="Carbon avoided"
           value={savings.totalCarbonHuman ?? formatCarbonGrams(totalGrams)}
-          detail="The same proposals, weighted by the grid carbon intensity the control plane recorded."
+          detail="Monthly reduction across the same proposals, weighted by the grid carbon intensity the control plane recorded."
           loading={savingsQuery.loading && !savingsQuery.data}
         />
         <KpiCard
@@ -207,7 +194,7 @@ export default function Savings() {
           </div>
           <div className="flex items-center gap-4 font-mono text-[9px] uppercase tracking-[0.14em] text-ink-500">
             <span className="flex items-center gap-2">
-              <span className="h-px w-4 bg-mint-500" aria-hidden />
+              <span className="h-2 w-2 rounded-[2px] bg-mint-500/70" aria-hidden />
               USD
             </span>
             <span className="flex items-center gap-2">
@@ -217,10 +204,12 @@ export default function Savings() {
           </div>
         </div>
         <div className="px-3 pb-4 pt-5 sm:px-5">
-          <SavingsChart data={dailySeries} height={320} />
+          <SavingsChart data={savings.series} height={320} />
         </div>
         <div className="border-t border-white/[0.08] px-5 py-3 font-mono text-[9px] uppercase leading-relaxed tracking-[0.12em] text-ink-600 sm:px-6">
-          Points are grouped by the creation date recorded on each proposal. The series is not a billing statement.
+          Daily buckets from the earliest to the latest recorded proposal date (UTC). Values are the
+          monthly impact recorded on each qualifying proposal&apos;s creation date; days without
+          records are zero. This series is not a billing statement.
         </div>
       </section>
 

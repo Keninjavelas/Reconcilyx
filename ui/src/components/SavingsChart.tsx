@@ -1,5 +1,5 @@
 import {
-  Area,
+  Bar,
   CartesianGrid,
   ComposedChart,
   Line,
@@ -9,26 +9,26 @@ import {
   YAxis,
 } from "recharts";
 import type { SavingsResponse } from "@/lib/types";
+import { buildDailyLedger, formatLedgerDay } from "@/lib/ledger";
 import clsx from "clsx";
-
-function shortDate(value: string): string {
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return value;
-  return parsed.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-}
 
 export default function SavingsChart({
   data,
   className,
   height = 300,
   compact = false,
+  windowDays,
 }: {
   data: SavingsResponse["series"];
   className?: string;
   height?: number;
   compact?: boolean;
+  windowDays?: number;
 }) {
-  if (!data.length) {
+  const days = buildDailyLedger(data, { windowDays });
+  const hasValues = days.some((day) => day.usd > 0 || day.gramsCO2 > 0);
+
+  if (!days.length || !hasValues) {
     return (
       <div
         className={clsx(
@@ -41,16 +41,19 @@ export default function SavingsChart({
           No savings recorded
         </span>
         <span className="max-w-[36ch] text-[12px] leading-relaxed text-ink-400">
-          Completed proposals will populate this series on the next control-plane refresh.
+          {windowDays
+            ? `No qualifying proposal was recorded in the last ${windowDays} days.`
+            : "Completed proposals will populate this series on the next control-plane refresh."}
         </span>
       </div>
     );
   }
 
-  const chart = data.map((pt) => ({
-    date: shortDate(pt.date),
-    usd: Number(pt.usd.toFixed(2)),
-    kg: Number(((pt.gramsCO2 ?? 0) / 1000).toFixed(2)),
+  const spansYears = days[0].date.slice(0, 4) !== days[days.length - 1].date.slice(0, 4);
+  const chart = days.map((day) => ({
+    date: formatLedgerDay(day.date, spansYears),
+    usd: Number(day.usd.toFixed(2)),
+    kg: Number((day.gramsCO2 / 1000).toFixed(2)),
   }));
 
   return (
@@ -65,9 +68,11 @@ export default function SavingsChart({
             axisLine={false}
             tickLine={false}
             minTickGap={36}
+            interval="preserveStartEnd"
           />
           <YAxis
             yAxisId="usd"
+            domain={[0, "auto"]}
             stroke="transparent"
             tick={{ fill: "#6D7368", fontSize: 10, fontFamily: "IBM Plex Mono" }}
             axisLine={false}
@@ -79,6 +84,7 @@ export default function SavingsChart({
             <YAxis
               yAxisId="co2"
               orientation="right"
+              domain={[0, "auto"]}
               stroke="transparent"
               tick={{ fill: "#6D7368", fontSize: 10, fontFamily: "IBM Plex Mono" }}
               axisLine={false}
@@ -107,29 +113,28 @@ export default function SavingsChart({
             }}
             formatter={(value, name) =>
               name === "usd"
-                ? [`$${Number(value).toFixed(2)}`, "Saved"]
-                : [`${Number(value).toFixed(2)} kg`, "CO₂"]
+                ? [`$${Number(value).toFixed(2)}`, "Saved / mo"]
+                : [`${Number(value).toFixed(2)} kg`, "CO₂ / mo"]
             }
           />
-          <Area
+          <Bar
             yAxisId="usd"
-            type="monotone"
             dataKey="usd"
-            stroke="#C9EF4A"
-            strokeWidth={1.6}
-            fill="rgba(201,239,74,0.10)"
+            fill="#C9EF4A"
+            fillOpacity={0.72}
+            radius={[2, 2, 0, 0]}
+            maxBarSize={compact ? 10 : 18}
             isAnimationActive={false}
-            activeDot={{ r: 3, fill: "#C9EF4A", stroke: "#070806", strokeWidth: 2 }}
           />
           {!compact ? (
             <Line
               yAxisId="co2"
-              type="monotone"
+              type="linear"
               dataKey="kg"
               stroke="#FF5C35"
               strokeWidth={1.4}
               strokeDasharray="3 4"
-              dot={false}
+              dot={chart.length <= 7 ? { r: 2.5, fill: "#FF5C35", strokeWidth: 0 } : false}
               isAnimationActive={false}
               activeDot={{ r: 3, fill: "#FF5C35", stroke: "#070806", strokeWidth: 2 }}
             />

@@ -136,14 +136,14 @@ export default function Overview() {
           className="bg-ink-900"
           label="Spend avoided"
           value={formatCurrency(totalUSD, 0)}
-          detail="Monthly recurring savings from completed proposals."
+          detail="Monthly recurring savings on approved, stabilizing, and completed proposals."
           loading={savingsQuery.loading && !savingsQuery.data}
         />
         <KpiCard
           className="bg-ink-900"
           label="Carbon avoided"
           value={savings.totalCarbonHuman ?? formatCarbonGrams(savings.totalGramsCO2 ?? 0)}
-          detail="Grid-intensity-adjusted reduction across the same proposals."
+          detail="Monthly grid-intensity-adjusted reduction across the same proposals."
           loading={savingsQuery.loading && !savingsQuery.data}
         />
         <KpiCard
@@ -175,7 +175,7 @@ export default function Overview() {
             </div>
             <div className="flex items-center gap-4 font-mono text-[9px] uppercase tracking-[0.14em] text-ink-500">
               <span className="flex items-center gap-2">
-                <span className="h-px w-4 bg-mint-500" aria-hidden />
+                <span className="h-2 w-2 rounded-[2px] bg-mint-500/70" aria-hidden />
                 USD
               </span>
               <span className="flex items-center gap-2">
@@ -185,7 +185,11 @@ export default function Overview() {
             </div>
           </div>
           <div className="px-3 pb-4 pt-5 sm:px-5">
-            <SavingsChart data={savings.series} height={288} />
+            <SavingsChart data={savings.series} height={288} windowDays={30} />
+          </div>
+          <div className="border-t border-white/[0.08] px-5 py-3 font-mono text-[9px] uppercase leading-relaxed tracking-[0.12em] text-ink-600 sm:px-6">
+            Daily buckets for the last 30 UTC days. Values are the monthly impact recorded on each
+            qualifying proposal&apos;s creation date; days without records are zero.
           </div>
         </div>
 
