@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -105,6 +106,11 @@ func (az *AzurePricingProvider) fetchOnDemandLive(ctx context.Context, instanceT
 		Items []struct {
 			ArmSkuName           string  `json:"armSkuName"`
 			ArmRegionName        string  `json:"armRegionName"`
+			SkuName              string  `json:"skuName"`
+			MeterName            string  `json:"meterName"`
+			ProductName          string  `json:"productName"`
+			PriceType            string  `json:"priceType"`
+			ReservationTerm      string  `json:"reservationTerm"`
 			RetailPrice          float64 `json:"retailPrice"`
 			IsPrimaryMeterRegion bool    `json:"isPrimaryMeterRegion"`
 			UnitOfMeasure        string  `json:"unitOfMeasure"`
@@ -123,6 +129,9 @@ func (az *AzurePricingProvider) fetchOnDemandLive(ctx context.Context, instanceT
 		if it.ArmRegionName != "" && it.ArmRegionName != region {
 			continue
 		}
+		if !isLinuxOnDemandAzureMeter(it.SkuName, it.MeterName, it.ProductName, it.PriceType, it.ReservationTerm) {
+			continue
+		}
 		if it.RetailPrice <= 0 {
 			continue
 		}
@@ -137,6 +146,22 @@ func (az *AzurePricingProvider) fetchOnDemandLive(ctx context.Context, instanceT
 		return 0, fmt.Errorf("azure %s/%s not found in retail prices", region, instanceType)
 	}
 	return best, nil
+}
+
+// The Retail Prices API returns every meter for a SKU, including Spot, Low
+// Priority, and Windows variants. Picking the cheapest would understate the
+// Linux on-demand list price, so non-standard meters are excluded.
+func isLinuxOnDemandAzureMeter(skuName, meterName, productName, priceType, reservationTerm string) bool {
+	descriptor := strings.ToLower(strings.Join([]string{skuName, meterName, productName}, " "))
+	if strings.Contains(descriptor, "spot") ||
+		strings.Contains(descriptor, "low priority") ||
+		strings.Contains(descriptor, "windows") {
+		return false
+	}
+	if reservationTerm != "" {
+		return false
+	}
+	return priceType == "" || strings.EqualFold(priceType, "Consumption")
 }
 
 func (az *AzurePricingProvider) OnDemandPrice(ctx context.Context, instanceType, region string) (float64, error) {

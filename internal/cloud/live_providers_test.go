@@ -220,6 +220,27 @@ func TestAzure_LiveOnDemand(t *testing.T) {
 	assert.True(t, p.Live())
 }
 
+func TestAzure_LiveOnDemandIgnoresSpotLowPriorityAndWindowsMeters(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		items := []any{
+			map[string]any{"armSkuName": "Standard_F2s_v2", "armRegionName": "eastus", "skuName": "F2s v2 Low Priority", "meterName": "F2s v2 Low Priority", "productName": "Virtual Machines FSv2 Series", "retailPrice": 0.0169, "isPrimaryMeterRegion": true},
+			map[string]any{"armSkuName": "Standard_F2s_v2", "armRegionName": "eastus", "skuName": "F2s v2 Spot", "meterName": "F2s v2 Spot", "productName": "Virtual Machines FSv2 Series", "retailPrice": 0.018612, "isPrimaryMeterRegion": true},
+			map[string]any{"armSkuName": "Standard_F2s_v2", "armRegionName": "eastus", "skuName": "F2s v2", "meterName": "F2s v2", "productName": "Virtual Machines FSv2 Series Windows", "retailPrice": 0.177, "isPrimaryMeterRegion": true},
+			map[string]any{"armSkuName": "Standard_F2s_v2", "armRegionName": "eastus", "skuName": "F2s v2", "meterName": "F2s v2", "productName": "Virtual Machines FSv2 Series", "retailPrice": 0.0846, "isPrimaryMeterRegion": true},
+		}
+		_, _ = w.Write(mustJSON(t, map[string]any{"Items": items}))
+	}))
+	defer ts.Close()
+
+	p := cloud.NewLiveAzurePricingProvider()
+	p.BaseURL = ts.URL
+	p.HTTPClient = ts.Client()
+
+	got, err := p.OnDemandPrice(context.Background(), "Standard_F2s_v2", "eastus")
+	require.NoError(t, err)
+	assert.InDelta(t, 0.0846, got, 0.0001, "Linux on-demand must win over Spot, Low Priority, and Windows meters")
+}
+
 func TestAzure_HTTP500FallsBack(t *testing.T) {
 	calls := 0
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
