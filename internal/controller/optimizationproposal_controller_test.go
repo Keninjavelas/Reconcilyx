@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -109,6 +110,58 @@ var _ = Describe("OptimizationProposal Controller", func() {
 			Expect(updated.Status.Phase).To(Equal(optimizationv1alpha1.PhaseApproved))
 			Expect(updated.Status.ApprovalState).To(Equal(optimizationv1alpha1.ApprovalApproved))
 			Expect(updated.Status.PolicyApplied).To(Equal("test-policy"))
+		})
+
+		It("should fail closed without local actuation when GitOps PR creation fails", func() {
+			policyResource := &optimizationv1alpha1.OptimizationPolicy{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "test-policy", Namespace: resourceNamespace}, policyResource)).To(Succeed())
+			policyResource.Spec.GitOps = optimizationv1alpha1.GitOpsConfig{
+				Enabled:       true,
+				Provider:      optimizationv1alpha1.GitProviderGitHub,
+				Owner:         "example",
+				Repo:          "example",
+				BaseBranch:    "main",
+				ManifestsPath: "manifests",
+			}
+			Expect(k8sClient.Update(ctx, policyResource)).To(Succeed())
+
+			proposal := &optimizationv1alpha1.OptimizationProposal{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: resourceNamespace,
+				},
+				Spec: optimizationv1alpha1.OptimizationProposalSpec{
+					TargetWorkload: corev1.ObjectReference{
+						Kind:       "Deployment",
+						Name:       "test-deployment",
+						APIVersion: "apps/v1",
+					},
+					Recommendation: optimizationv1alpha1.RecommendationRightSize,
+					DecisionMetadata: optimizationv1alpha1.DecisionMetadata{
+						RiskScore:       10,
+						ConfidenceScore: 90,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, proposal)).To(Succeed())
+
+			reconciler := &OptimizationProposalReconciler{
+				Client:     k8sClient,
+				Scheme:     k8sClient.Scheme(),
+				Recorder:   record.NewFakeRecorder(100),
+				Matcher:    policy.NewMatcher(),
+				Evaluator:  policy.NewEvaluator(),
+				GitFactory: stubGitFactory{err: errors.New("github api unavailable")},
+			}
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			var updated optimizationv1alpha1.OptimizationProposal
+			Expect(k8sClient.Get(ctx, typeNamespacedName, &updated)).To(Succeed())
+			Expect(updated.Status.Phase).To(Equal(optimizationv1alpha1.PhaseFailed))
+			Expect(updated.Status.Reason).To(ContainSubstring("GitOps PR creation failed"))
+			Expect(updated.Status.ExternalPRID).To(BeEmpty())
 		})
 
 		It("should hold a clean Propose-mode proposal for review, then schedule it after approval", func() {

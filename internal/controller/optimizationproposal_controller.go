@@ -203,18 +203,23 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 			if matchedPolicy.Spec.GitOps.Enabled {
 				prID, prErr := r.createGitOpsPR(ctx, proposal, matchedPolicy)
 				if prErr != nil {
-					logger.Error(prErr, "GitOps PR creation failed, falling back to local actuation")
+					logger.Error(prErr, "GitOps PR creation failed")
+					proposal.Status.Phase = optimizationv1alpha1.PhaseFailed
+					proposal.Status.Reason = "GitOps PR creation failed: " + prErr.Error()
 					r.Recorder.Event(proposal, "Warning", "GitOPSError", "PR creation failed: "+prErr.Error())
-				} else {
-					proposal.Status.ExternalPRID = prID
-					proposal.Status.Phase = optimizationv1alpha1.PhaseAwaitingExternalApproval
-					proposal.Status.Reason = "GitOps PR created: " + prID
 					if err := r.Status().Update(ctx, proposal); err != nil {
 						return ctrl.Result{}, err
 					}
-					r.Recorder.Event(proposal, "Normal", "GitOpsPRCreated", "Created pull/merge request: "+prID)
-					return ctrl.Result{RequeueAfter: time.Minute}, nil
+					return ctrl.Result{}, nil
 				}
+				proposal.Status.ExternalPRID = prID
+				proposal.Status.Phase = optimizationv1alpha1.PhaseAwaitingExternalApproval
+				proposal.Status.Reason = "GitOps PR created: " + prID
+				if err := r.Status().Update(ctx, proposal); err != nil {
+					return ctrl.Result{}, err
+				}
+				r.Recorder.Event(proposal, "Normal", "GitOpsPRCreated", "Created pull/merge request: "+prID)
+				return ctrl.Result{RequeueAfter: time.Minute}, nil
 			}
 		} else if result.Decision == optimizationv1alpha1.ApprovalRejected {
 			proposal.Status.Phase = optimizationv1alpha1.PhaseRejected
