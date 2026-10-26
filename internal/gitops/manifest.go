@@ -89,6 +89,8 @@ func manifestCandidates(workload corev1.ObjectReference, manifestsPath string) [
 		path.Join(base, name+".yml"),
 		path.Join(base, name, "deployment.yaml"),
 		path.Join(base, name, "deployment.yml"),
+		path.Join(base, "deployment.yaml"),
+		path.Join(base, "deployment.yml"),
 	}
 	if workload.Kind == "Deployment" && name == "" {
 		candidates = []string{path.Join(base, "deployment.yaml"), path.Join(base, "deployment.yml")}

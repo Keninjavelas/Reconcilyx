@@ -158,9 +158,39 @@ func TestResolveManifest_RequiresCurrentResources(t *testing.T) {
 
 func TestManifestCandidates(t *testing.T) {
 	workload := testWorkload()
-	assert.Equal(t, []string{"apps/demo.yaml", "apps/demo.yml", "apps/demo/deployment.yaml", "apps/demo/deployment.yml"},
+	assert.Equal(t, []string{"apps/demo.yaml", "apps/demo.yml", "apps/demo/deployment.yaml", "apps/demo/deployment.yml", "apps/deployment.yaml", "apps/deployment.yml"},
 		manifestCandidates(workload, "apps/"))
 	assert.Equal(t, []string{"custom/path.yaml"}, manifestCandidates(workload, "custom/path.yaml"))
-	assert.Equal(t, []string{"manifests/demo.yaml", "manifests/demo.yml", "manifests/demo/deployment.yaml", "manifests/demo/deployment.yml"},
+	assert.Equal(t, []string{"manifests/demo.yaml", "manifests/demo.yml", "manifests/demo/deployment.yaml", "manifests/demo/deployment.yml", "manifests/deployment.yaml", "manifests/deployment.yml"},
 		manifestCandidates(workload, ""))
+}
+
+func TestResolveManifest_FindsDeploymentInManifestsDirectory(t *testing.T) {
+	manifest := `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo
+  namespace: default
+spec:
+  template:
+    spec:
+      containers:
+        - name: app
+          resources:
+            requests:
+              cpu: 100m
+`
+	provider := NewMockProvider()
+	provider.Files["workloads/demo/manifests/deployment.yaml"] = []byte(manifest)
+	current := map[string]corev1.ResourceRequirements{
+		"app": {Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")}},
+	}
+	proposed := corev1.ResourceRequirements{Requests: corev1.ResourceList{
+		corev1.ResourceCPU: resource.MustParse("250m"),
+	}}
+
+	patch, err := ResolveManifest(context.Background(), provider, testWorkload(), proposed, nil, current, "workloads/demo/manifests", "main", "p1")
+	require.NoError(t, err)
+	assert.Equal(t, "workloads/demo/manifests/deployment.yaml", patch.Path)
+	assert.Contains(t, string(patch.Content), "cpu: 250m")
 }
