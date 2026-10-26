@@ -1,5 +1,7 @@
 # Reconcilyx v4.0.0-beta
 
+> **Project status: on hiatus (2026-10-26).** Development and external validation are paused until cloud accounts, provider credentials, a GPU host, and CI minutes are available. [HIATUS.md](HIATUS.md) lists every remaining task, its blocker, and the evidence required to close it. No production-readiness claim is made.
+
 Reconcilyx is an open-source Kubernetes optimization platform for evaluating cost, carbon, and workload right-sizing decisions.
 
 ## Console
@@ -8,7 +10,7 @@ The React operator console is embedded in the Hub and served on the same port as
 
 ## Beta Status
 
-Reconcilyx is in active beta hardening. It is not production-ready and should not mutate production workloads without an independent security review, a non-production rollout, and environment-specific validation.
+Reconcilyx is in beta and on hiatus as of 2026-10-26. It is not production-ready and should not mutate production workloads without an independent security review, a non-production rollout, and environment-specific validation.
 
 | Category | Evidence-backed status |
 |---|---|
@@ -18,7 +20,7 @@ Reconcilyx is in active beta hardening. It is not production-ready and should no
 | Actuation safety | Kill switch, health and TTL gates, and HPA/VPA conflict rejection before mutation; in-place resizes are ephemeral, GitOps is the persistence path |
 | eBPF and node consolidation | Explicitly deferred to v5.0 planning |
 
-The conservative inventory is [FEATURE_MATRIX.md](FEATURE_MATRIX.md). [STATUS.md](STATUS.md) and [GITHUB_ISSUES.md](GITHUB_ISSUES.md) are the release and remediation sources of truth.
+The conservative inventory is [FEATURE_MATRIX.md](FEATURE_MATRIX.md). [STATUS.md](STATUS.md) and [GITHUB_ISSUES.md](GITHUB_ISSUES.md) are the release and remediation sources of truth, and [HIATUS.md](HIATUS.md) is the deferred-work list.
 
 ## Deployment Options
 

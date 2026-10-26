@@ -1,5 +1,7 @@
 # Reconcilyx Validation Plan
 
+> **Project status: on hiatus (2026-10-26).** This plan describes the validation strategy; the remaining production-like runs are deferred in [HIATUS.md](../HIATUS.md) until the required accounts, credentials, and hardware are available.
+
 This document defines the functional validation strategy and reproducible scenario testing required to prove Reconcilyx is production-ready. 
 
 ## 1. Functional Validation

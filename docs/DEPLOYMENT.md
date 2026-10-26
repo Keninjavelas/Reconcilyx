@@ -1,5 +1,7 @@
 # Reconcilyx Deployment Guide
 
+> **Project status: on hiatus (2026-10-26).** The project is not production-ready, and no public instance is operated. Production-like cloud/TLS deployments remain deferred; see [HIATUS.md](../HIATUS.md) for the prerequisites and acceptance evidence.
+
 ## Overview
 
 Reconcilyx ships as a single Go control plane with the React dashboard embedded in the binary. The same process serves:

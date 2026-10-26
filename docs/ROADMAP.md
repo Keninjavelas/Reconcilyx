@@ -1,5 +1,7 @@
 # Reconcilyx Product & Engineering Roadmap
 
+> **Project status: on hiatus (2026-10-26).** The completed milestones below describe prior work. Remaining work and resume criteria are tracked in [HIATUS.md](../HIATUS.md); this roadmap is not being updated during the hiatus.
+
 ## Released Milestone: v3.0.0 "Intelligence Fabric" (COMPLETED)
 
 All four novel pillars and core platform features are fully implemented, integrated, and verified against the automated production test suite:

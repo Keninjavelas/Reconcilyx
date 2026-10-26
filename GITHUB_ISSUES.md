@@ -2,6 +2,8 @@
 
 This file stands in for a GitHub Project and is the current planning tracker.
 
+**Project status: on hiatus as of 2026-10-26.** Open items are deferred until the required external accounts, credentials, hardware, and CI minutes are available. [HIATUS.md](HIATUS.md) consolidates the remaining work, explains each blocker, and defines the evidence required to close it. No open item is being worked during the hiatus.
+
 Legend:
 
 - `P0`: release-blocking for beta
@@ -209,6 +211,25 @@ Local TLS pass on 2026-10-25 against the same image: a local CA (`Reconcilyx Loc
 Evidence: Kind v1.36.1, three nodes (one control plane, two workers), ingress-nginx v1.12.1, host ports 18080/18443, and Prometheus v3.1.0. A local CA (`Reconcilyx Multinode Test CA`) issued leaf `CN=reconcilyx.test` with SANs `reconcilyx.test`, `reconcilyx-multinode-control-plane`, `localhost`, `host.docker.internal`, and `127.0.0.1`; the endpoint negotiated TLS 1.3 / `TLS_AES_256_GCM_SHA384` with verification enabled. The harness run `multinode-tls-20261026055631` against manager `live-validation-12` passed 66 checks with 0 failures: `Completed`, `costSavedUSD=4106m`, carbon `11097`, reward `1.0205197183327863`, unchanged pod UIDs, preserved sidecar, 0 restarts, and the full audit/event chain. An in-network 9-check TLS probe exited 0 (`SUMMARY failures=0`), and containerized Chromium rendered all six views at 1440 px from `https://reconcilyx.test` with the expected certificate. Console output contained only expected pre-key 401s and external Google Fonts failures caused by the workstation's TLS interception; no Reconcilyx API request failed.
 
 The first real GitOps attempt exposed two defects. The distroless manager did not trust the workstation's TLS interception root, so GitHub PR creation failed with `x509: certificate signed by unknown authority`; the controller then fell back to live actuation, resizing the pod to `250m/96Mi` while the Deployment template stayed at `500m/128Mi`. The controller now sets `PhaseFailed` and returns without actuation on PR-creation failure (`GitOPSError`), covered by a controller envtest. After mounting an explicit public CA bundle via `SSL_CERT_FILE` (verification still enabled) and publishing `live-validation-14`, the retry created PR #1 on the maintainer-owned `Keninjavelas/Reconcilyx` repository from branch `reconcilyx/reconcilyx-system-cpu-burner`. The PR changed only `workloads/cpu-burner/manifests/deployment.yaml` (`cpu` request `500m → 250m`, memory `128Mi → 96Mi`, limits unchanged). It was closed unmerged and its branch deleted; the proposal moved `AwaitingExternalApproval → Rejected` / `ApprovalRejected` with reason "GitOps pull request was closed without merging". Pod UID `95b7b1af-24a6-47cf-aa4b-01d8b8d63d5e` and requests `500m/128Mi` were unchanged before and after, and the Deployment template remained `500m/128Mi`, confirming no local actuation in GitOps mode. No third-party repository was contacted, and no token or private key is recorded in evidence. A follow-up fix added `<manifestsPath>/deployment.yaml` to manifest discovery (this repository's layout), with a regression test.
+
+## Phase 19 — Hiatus: Deferred External Validation (2026-10-26)
+
+The project is on hiatus. These items consolidate the still-open checks from Phases 7, 15, 16, 17, and 18; nothing here is in progress. Each item maps to a task in [HIATUS.md](HIATUS.md) with its blocker, prerequisites, and acceptance evidence.
+
+- `[ ]` `P0 CI` Observe a GitHub-hosted workflow pass once Actions minutes or a spending limit are available (H-01)
+- `[ ]` `P1 Integration` Validate AWS live pricing with credentials that can call `pricing:GetProducts` (H-02)
+- `[ ]` `P1 Integration` Validate GCP live pricing with a restricted Cloud Billing API key (H-03)
+- `[ ]` `P0 Validation` Exercise a public TLS terminator on a production-like cloud cluster (H-04)
+- `[ ]` `P2 Deployment` Operate a VPS or public instance with a trusted certificate (H-05, optional)
+- `[ ]` `P0 Validation` Exercise GitOps against a branch-protected production repository with required CI (H-06)
+- `[ ]` `P1 Validation` Run a two-cluster federated rollout: chart env wiring, configurable flush/compaction, snapshot publication, spoke bootstrap (H-07)
+- `[ ]` `P0 Validation` Run the 66-check e2e harness on a production-like cloud cluster with Prometheus (H-08)
+- `[ ]` `P1 Integration` Validate a live NVIDIA DCGM exporter and GPU buckets (H-09)
+- `[ ]` `P1 Documentation` Validate a live carbon provider or qualify the "live carbon" claim as credential-gated with a static default (H-10)
+- `[ ]` `P0 Security` Complete an independent security audit before any production-use claim (H-11)
+- `[ ]` `P0 Docs` Resume, close the hiatus, refresh the audit counts only with new production-like evidence, and record the release decision (H-12)
+
+Dependency summary: H-02/H-03/H-10 start when credentials exist; H-01 unblocks the required-check path in H-06; H-04 and H-08 can share one cloud cluster; H-09 needs a GPU host; H-11 follows the cloud and repository validations; H-12 is last. H-07 needs no cloud spend but remains paused by the hiatus decision.
 
 ## Cross-Cutting Remediation (2026-10-23)
 

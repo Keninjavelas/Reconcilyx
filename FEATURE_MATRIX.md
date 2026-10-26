@@ -4,6 +4,10 @@ This file is the current source of truth for feature and release posture. `Verif
 
 Audit baseline as of `2026-07-31`. The P0 remediation on `2026-10-23` did not re-score this inventory; it fixed release blockers and the console, and [STATUS.md](STATUS.md) records that evidence separately. No item is promoted to `Verified` without end-to-end production-like validation.
 
+## Project Status
+
+**On hiatus as of 2026-10-26.** Development and external validation are paused pending cloud accounts, provider credentials, a GPU host, and CI minutes. The counts in this file are unchanged and no feature is being promoted during the hiatus. [HIATUS.md](HIATUS.md) lists the remaining tasks, their blockers, and the evidence required to close them.
+
 | Summary | Count |
 |---|---:|
 | Verified | 0 |
@@ -32,7 +36,7 @@ No public demo instance is operated. The React console is embedded in the Hub an
 | User Experience | 0 | 4 | 2 | Embedded console covers proposals, savings, forecast, policies, and settings; responsive proposal queue, assistant drawer, and confirmation prompts. All six views rendered live Kind-backed data on 2026-10-25 with zero console messages. That pass found and fixed four truth defects: the savings ledger counted approved-but-failed proposals, the proposal list emitted a fabricated `0` baseline when no observed request was recorded, the forecast simulator never POSTed a what-if because it selected zero-baseline workloads, and SPA deep links returned 401. A same-day rebuild also replaced the savings chart's interpolation of same-day rows with daily buckets over a true 30-day window. Re-exercised on 2026-10-26 through ingress-nginx on a three-node Kind cluster over TLS 1.3 (9 of 9 probe checks; all six views) alongside a 66-check TLS e2e run that reached `Completed`. |
 | Deployment & Packaging | 0 | 5 | 1 | Helm/CLI, embedded UI, and a Kind + ngrok evaluation guide exist; the release manager was exercised in a container against Kind and, on 2026-10-25, behind a locally CA-verified TLS 1.3 reverse proxy, and on 2026-10-26 behind ingress-nginx on a three-node Kind cluster with a locally trusted TLS 1.3 endpoint, but a VPS deployment with an operator-managed TLS terminator remains unverified and no public hosted instance is operated |
 | Security | 0 | 6 | 1 | API-key auth and CORS were exercised against a running manager (401/200, allowed/denied origins, preflight); auto-merge webhook rejects unsigned/wrong-token events with 403 and requires a Reconcilyx marker plus a `reconcilyx/` head branch; federated endpoints reuse the same X-API-Key header; policy evaluations and execution outcomes persist to the `reconcilyx-audit` ConfigMap; GitOps PR-creation failures now fail closed with `PhaseFailed` and no local actuation (envtest), after a live run exposed and fixed the previous fallback |
-| Integrations | 0 | 4 | 1 | Prometheus + GitOps (manifest patching, external approval, auto-merge webhook) + live Azure pricing (anonymous API validated 2026-10-26) + live carbon; AWS/GCP pricing clients are credential-gated, and the GitHub PR flow was exercised live on a maintainer-owned repository on 2026-10-26; Karpenter + eBPF moved to v5.0 |
+| Integrations | 0 | 4 | 1 | Prometheus + GitOps (manifest patching, external approval, auto-merge webhook) + live Azure pricing (anonymous API validated 2026-10-26) + carbon provider clients (static by default; live Electricity Maps/WattTime are credential-gated and not live-validated); AWS/GCP pricing clients are credential-gated, and the GitHub PR flow was exercised live on a maintainer-owned repository on 2026-10-26; Karpenter + eBPF moved to v5.0 |
 | Documentation | 0 | 4 | 2 | README now lists real features + v5.0 planned section; FEATURE_MATRIX reflects reality |
 | Roadmap | 0 | 0 | 8 | Planned items only (now includes eBPF + node consolidation deferred to v5.0) |
 
