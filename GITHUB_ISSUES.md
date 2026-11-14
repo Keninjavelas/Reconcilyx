@@ -205,7 +205,7 @@ Local TLS pass on 2026-10-25 against the same image: a local CA (`Reconcilyx Loc
 - `[x]` `P1 Fix` Discover `deployment.yaml` directly under the configured manifests directory
 - `[x]` `P0 Validation` Exercise the GitOps PR flow against a real GitHub repository, close without merging, and verify rejection with no local actuation
 - `[ ]` `P0 Validation` Exercise the console through a public TLS terminator on a production-like cloud cluster
-- `[ ]` `P0 Validation` Exercise GitOps against a production repository with branch protection and CI
+- `[x]` `P0 Validation` Exercise GitOps against a production repository with branch protection and CI — verified on `2026-11-14` (`H-06`: `Keninjavelas/Reconcilyx` `gitops-protected-target` with `build` required check, `1` required approval, `enforce_admins: true`, PR [`#4`](https://github.com/Keninjavelas/Reconcilyx/pull/4), check `132498371777` `success`, `405`/blocked auto-merge, closed unmerged → `Rejected`)
 - `[x]` `P1 CI` Observe a GitHub-hosted workflow pass once the account's included Actions minutes are available — verified on `2026-11-14` for commit `38373ac1d309f542c7d2fd4270043df9d3380e00` (`Build` `43606567760`, `Lint & Security` `43606567683`, `Test` `43606567661`, `E2E Tests` `43606567637`, `Validate E2E Harness` `43606567673`)
 
 Evidence: Kind v1.36.1, three nodes (one control plane, two workers), ingress-nginx v1.12.1, host ports 18080/18443, and Prometheus v3.1.0. A local CA (`Reconcilyx Multinode Test CA`) issued leaf `CN=reconcilyx.test` with SANs `reconcilyx.test`, `reconcilyx-multinode-control-plane`, `localhost`, `host.docker.internal`, and `127.0.0.1`; the endpoint negotiated TLS 1.3 / `TLS_AES_256_GCM_SHA384` with verification enabled. The harness run `multinode-tls-20261026055631` against manager `live-validation-12` passed 66 checks with 0 failures: `Completed`, `costSavedUSD=4106m`, carbon `11097`, reward `1.0205197183327863`, unchanged pod UIDs, preserved sidecar, 0 restarts, and the full audit/event chain. An in-network 9-check TLS probe exited 0 (`SUMMARY failures=0`), and containerized Chromium rendered all six views at 1440 px from `https://reconcilyx.test` with the expected certificate. Console output contained only expected pre-key 401s and external Google Fonts failures caused by the workstation's TLS interception; no Reconcilyx API request failed.
@@ -226,15 +226,15 @@ The project is on hiatus. These items consolidate the still-open checks from Pha
 - `[ ]` `P1 Integration` Validate GCP live pricing with a restricted Cloud Billing API key (H-03)
 - `[ ]` `P0 Validation` Exercise a public TLS terminator on a production-like cloud cluster (H-04)
 - `[ ]` `P2 Deployment` Operate a VPS or public instance with a trusted certificate (H-05, optional)
-- `[ ]` `P0 Validation` Exercise GitOps against a branch-protected production repository with required CI (H-06)
-- `[ ]` `P1 Validation` Run a two-cluster federated rollout: chart env wiring, configurable flush/compaction, snapshot publication, spoke bootstrap (H-07)
+- `[x]` `P0 Validation` Exercise GitOps against a branch-protected production repository with required CI (`H-06` — closed `2026-11-14`, PR [`#4`](https://github.com/Keninjavelas/Reconcilyx/pull/4) on `gitops-protected-target` with `build` check `132498371777` + `1` required review + `enforce_admins: true`, blocked auto-merge, closed unmerged → `Rejected`, `cpu-burner` unchanged at `500m/128Mi`)
+- `[x]` `P1 Validation` Run a two-cluster federated rollout: chart env wiring, configurable flush/compaction, snapshot publication, spoke bootstrap (`H-07` — closed `2026-11-14` via `.github/workflows/validate-federation.yml` run [`43610765983`](https://github.com/Keninjavelas/Reconcilyx/actions/runs/43610765983): Hub/Spoke Kind v1.37.0 clusters, compacted `v2` `modelHash=b3277814cf4dbbfe`, `isStable=true`, `outlierRejectedCount=1`, Spoke `Federated bootstrap loaded global Q-table`)
 - `[ ]` `P0 Validation` Run the 66-check e2e harness on a production-like cloud cluster with Prometheus (H-08)
 - `[ ]` `P1 Integration` Validate a live NVIDIA DCGM exporter and GPU buckets (H-09)
 - `[x]` `P1 Documentation` Validate a live carbon provider or qualify the "live carbon" claim as credential-gated with a static default (`H-10` — closed `2026-11-14` via truthfulness qualification across `FEATURE_MATRIX.md` line 39, `docs/user-guide.md` Section 6, and `README.md` line 19)
 - `[ ]` `P0 Security` Complete an independent security audit before any production-use claim (H-11)
 - `[ ]` `P0 Docs` Resume, close the hiatus, refresh the audit counts only with new production-like evidence, and record the release decision (H-12)
 
-Dependency summary: H-01 (`2026-11-14`) and H-10 (`2026-11-14`, static-default qualification) are closed; H-02/H-03 start when credentials exist; H-01 unblocked the required-check CI path in H-06; H-04 and H-08 can share one cloud cluster; H-09 needs a GPU host; H-11 follows the cloud and repository validations; H-12 is last. H-07 code & Helm prerequisites are complete as of `v4.1.0-rc1` (2026-11-13); multi-cluster Kind execution awaits CI/Docker run evidence.
+Dependency summary: H-01, H-06, H-07, and H-10 (`2026-11-14`) are closed; H-02/H-03 start when credentials exist; H-04 and H-08 can share one cloud cluster; H-09 needs a GPU host; H-11 follows the cloud validations; H-12 is last.
 
 ## Phase 20 — `v4.1.0-rc1` Hardening, Shift-Left CI Gates & Evidence Replay (2026-11-13)
 
@@ -247,7 +247,7 @@ Dependency summary: H-01 (`2026-11-14`) and H-10 (`2026-11-14`, static-default q
 - `[x]` `P0 Zero-Trust` Multi-identity inbound RBAC (`pkg/security/auth`: K8s `TokenReview`+SAR, OIDC/GitHub Actions JWKS, mTLS SPIFFE spoke cluster binding, SHA-256 scoped keys) & outbound secret isolation (`pkg/security/credentials`: `SecretString`, `fsnotify` tmpfs mount hot-reload, AWS IRSA STS, GCP Workload Identity, GitHub App ephemeral tokens)
 - `[x]` `P0 Resilience` Pipeline hardening: full-jitter exponential backoff (`pkg/httpretry` enforcing idempotent-only retries and honoring `429 Retry-After`), durable spoke FIFO disk spooling (`internal/federated/spool.go`) + `X-Reconcilyx-Idempotency-Key` / Hub `batchId` deduplication, watermarked Prometheus backfill (`internal/telemetry/backfill.go` with SHA-256 key, `POST /api/v1/telemetry/backfill`, `kubectl-reconcilyx backfill --step`), and self-monitoring metrics (`pkg/pipelinemetrics`)
 - `[x]` `P0 DevOps/SRE` Add `deploy/terraform/` (EKS/GKE workload identity, `restricted` PSS, remote state backends, atomic `helm_release`), Helm `PDB`/`HPA`/`NetworkPolicy`/`PrometheusRule`/`test-connection.yaml`, W3C `traceparent` propagation (`pkg/tracing`), `docs/RUNBOOK.md`, `.gitleaks.toml` + `trivy@v0.36.0` CI gates, and `.goreleaser.yaml` + `.github/workflows/release.yml`
-- `[ ]` `P1 Validation` Run `scripts/validation/federation-e2e.sh` on two Kind clusters once Docker daemon is running (H-07 runtime execution)
+- `[x]` `P1 Validation` Run `scripts/validation/federation-e2e.sh` on two Kind clusters (`H-07` runtime execution — verified `2026-11-14` on GitHub Actions run [`43610765983`](https://github.com/Keninjavelas/Reconcilyx/actions/runs/43610765983), `v2` `modelHash=b3277814cf4dbbfe`)
 
 ## Cross-Cutting Remediation (2026-10-23)
 

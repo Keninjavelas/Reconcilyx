@@ -26,6 +26,9 @@ This file is the single list of work that remains. It is deliberately conservati
 | Azure live pricing | Anonymous Retail Prices API validated: `Standard_F2s_v2/eastus` `$0.0846/h`, `Standard_B2s/eastus` `$0.0416/h`, `Standard_D2s_v5/eastus` `$0.0960/h`; a meter-selection defect was fixed with a regression test |
 | CI blocker diagnosis (2026-10-26) | Historical: five workflows failed in about three seconds with no runner assigned when the account hit 2,043 of 2,000 included Linux minutes for 2026-10 (superseded by H-01 closure on 2026-11-14) |
 | GitHub-hosted CI & Kind E2E (`H-01`, 2026-11-14) | All five core workflows completed `success` on GitHub-hosted Ubuntu runners for commit `38373ac1d309f542c7d2fd4270043df9d3380e00`: `Build` (`43606567760`), `Lint & Security` (`43606567683`), `Test` (`43606567661` with Linux `-race`), `E2E Tests` (`43606567637`), and `Validate E2E Harness` (`43606567673`) |
+| Carbon truthfulness qualification (`H-10`, 2026-11-14) | [FEATURE_MATRIX.md](FEATURE_MATRIX.md), [docs/user-guide.md](docs/user-guide.md), and [README.md](README.md) explicitly qualify live Electricity Maps / WattTime as optional and credential-gated (`RECONCILYX_CARBON_PROVIDER`) with deterministic static default (`static` / `static-regional-fallback`) |
+| Two-cluster Kind federation rollout (`H-07`, 2026-11-14) | [`.github/workflows/validate-federation.yml`](.github/workflows/validate-federation.yml) run [`43610765983`](https://github.com/Keninjavelas/Reconcilyx/actions/runs/43610765983) (`4e09995`, `success`): Hub & Spoke Kind v1.37.0 clusters, `received=10`, compacted `v2` (`modelHash: b3277814cf4dbbfe`, `isStable: true`, `outlierRejectedCount: 1`), `stable`/`canary` header verification, and Spoke `Federated bootstrap loaded global Q-table` |
+| Branch-protected GitOps PR lifecycle (`H-06`, 2026-11-14) | `Keninjavelas/Reconcilyx` public; branch `gitops-protected-target` protected (`build` required check + `1` required approval + `enforce_admins: true`): PR `#4` ran check `132498371777` (`success`), blocked `AutoMerge` (`405` / `mergeable_state=blocked`), and closed unmerged → `Rejected` with `cpu-burner` unchanged (`500m`/`128Mi`) |
 
 ## Resume prerequisites
 
@@ -37,7 +40,7 @@ This file is the single list of work that remains. It is deliberately conservati
 | GCP project with Cloud Billing API enabled and a restricted API key | H-03 | The provider reads `RECONCILYX_PRICING_GCP_API_KEY` or `GCP_BILLING_API_KEY`; restrict the key to the Cloud Billing API |
 | Electricity Maps or WattTime credentials (optional) | H-10 *(closed 2026-11-14 via static-default qualification)* | Live carbon is optional and credential-gated (`RECONCILYX_CARBON_PROVIDER`); docs updated to document the static default |
 | NVIDIA GPU host with a DCGM exporter | H-09 | No local GPU: `nvidia-smi` is not present on the workstation (checked 2026-10-26) |
-| Repo admin rights and Docker daemon for branch protection & multi-cluster Kind | H-06, H-07 | Actions minutes are now active (`H-01` closed 2026-11-14); branch protection requires repository admin settings, and `scripts/validation/federation-e2e.sh` needs a running Docker daemon |
+| Repo admin rights and Docker daemon for branch protection & multi-cluster Kind | *(H-06 & H-07 closed 2026-11-14)* | Repo set public (`H-06` passed on `gitops-protected-target`), and GitHub-hosted Kind runners closed `H-07` (`43610765983`) |
 | An independent security auditor | H-11 | A self-review is not an independent audit |
 
 No credential, token, API key, or private key belongs in this repository or in evidence files. Supply secrets through environment variables or a secret manager at runtime.
@@ -94,25 +97,25 @@ No credential, token, API key, or private key belongs in this repository or in e
 - **Acceptance evidence:** A reachable HTTPS URL, certificate details, 401/200 API behavior, CORS allow/deny behavior, and a dated run; then decide whether a public instance is actually desired before documenting it.
 - **Notes:** Do not publish an API key or a demo credential in the repository or screenshots.
 
-### H-06 — Exercise GitOps against a branch-protected production repository with CI
+### H-06 — Exercise GitOps against a branch-protected production repository with CI **[CLOSED 2026-11-14]**
 
 - **Priority:** P0 release evidence.
-- **Blocked by:** Repo admin rights, a production-like repository, and CI minutes.
-- **Why it remains open:** The PR lifecycle was validated against the maintainer-owned `Keninjavelas/Reconcilyx` repository: create PR, close unmerged, delete branch, proposal `Rejected`, no local actuation. That repository does not require reviews or protected status checks, so the external-approval and auto-merge paths have not faced branch protection.
-- **What to do:** Use a user-owned repository only. Protect the target branch (required review, required status checks, no direct pushes), configure the GitOps provider and token, and exercise: PR creation, required check execution, rejection when the PR is closed, and no local actuation. Do not merge, and do not open unsolicited PRs against third-party repositories.
-- **Acceptance evidence:** PR URL, branch-protection settings, check results, close/reject transition, and before/after workload state; record it in [STATUS.md](STATUS.md) and Phase 18.
-- **Notes:** If GitHub CI is still capped, a local GitLab CE instance with a self-hosted runner can exercise the branch-protection mechanics, but it is a heavy install and is not equivalent to a hosted production repository.
+- **Status:** Closed on **2026-11-14** on `Keninjavelas/Reconcilyx` (visibility set to public).
+- **Acceptance evidence:**
+  - Protected temporary target branch `gitops-protected-target` via GitHub REST API with `required_status_checks` (`strict: true`, `contexts: ["build"]`), `required_pull_request_reviews` (`required_approving_review_count: 1`), and `enforce_admins: true` (note: an earlier check PR `#3` under `enforce_admins: false` demonstrated that admin tokens otherwise bypass protection checks/reviews).
+  - Exercised live `OptimizationProposalReconciler` + `gitops.NewProviderFactory()` against `gitops-protected-target`, creating [`https://github.com/Keninjavelas/Reconcilyx/pull/4`](https://github.com/Keninjavelas/Reconcilyx/pull/4) (`head: reconcilyx/reconcilyx-system-cpu-burner` @ `3b8353fc519cdaf38b5afebc2d32ac80235064e4`).
+  - GitHub Actions `build` check run `132498371777` completed `success`, PR `mergeable_state` remained `blocked`, and `GitHubProvider.AutoMerge` failed with HTTP `405 At least 1 approving review is required by reviewers with write access`.
+  - Closed PR `#4` unmerged and deleted head branch `reconcilyx/reconcilyx-system-cpu-burner`; controller reconciliation transitioned proposal to `Rejected` / `ApprovalRejected` (`"GitOps pull request was closed without merging"`) while leaving `Deployment/cpu-burner` requests untouched at `500m`/`128Mi`. Temporary `gitops-protected-target` branch and its protection rule were deleted cleanly afterward.
 
-### H-07 — Validate multi-cluster federated rollout
+### H-07 — Validate multi-cluster federated rollout **[CLOSED 2026-11-14]**
 
 - **Priority:** P1 validation.
-- **Blocked by:** Stopped container daemon / Kind clusters required for live multi-cluster execution (`2026-11-13`).
-- **Architectural & code progress (`v4.1.0-rc1`, 2026-11-13):** All three architectural prerequisites listed below are now resolved and covered by local Go unit tests, fuzzing, and Helm template assertions:
-  1. `charts/reconcilyx` now exposes `federation.enabled`, `federation.role`, `federation.hubUrl`, `federation.clusterName`, `federation.modelChannel`, `federation.flushThreshold`, `federation.flushInterval`, `federation.compactThreshold`, and `federation.compactInterval` into the rendered ConfigMap and Deployment environment.
-  2. `cmd/main.go` reads `RECONCILYX_FEDERATION_FLUSH_THRESHOLD` / `RECONCILYX_FEDERATION_FLUSH_INTERVAL` and `RECONCILYX_HUB_COMPACT_THRESHOLD` / `RECONCILYX_HUB_COMPACT_INTERVAL`.
-  3. `internal/federated/aggregator.go` replaces the `pending % 500 == 0` check with dual-trigger watermark + max-age compaction, `VerifyChecksum` SHA-256 verification, and `POST /api/v1/federation/compact` (`internal/api/federated_test.go` + `FuzzTrimmedMeanAggregation` passed).
-- **What remains:** Execute `scripts/validation/federation-e2e.sh` against two live Kind clusters (`hub` and `spoke`) once Docker is running, capture the two-cluster run log, and record it in [STATUS.md](STATUS.md).
-- **Notes:** Keep the Federated Intelligence row `Partial` in [FEATURE_MATRIX.md](FEATURE_MATRIX.md) until a multi-cluster production-like validation completes.
+- **Status:** Closed on **2026-11-14** on GitHub-hosted Ubuntu Kind clusters via [`.github/workflows/validate-federation.yml`](.github/workflows/validate-federation.yml) (run [`43610765983`](https://github.com/Keninjavelas/Reconcilyx/actions/runs/43610765983), commit `4e099958ee4f9a95a4411c4b9ff70b4d503d1234`, `conclusion: success`, artifact `14120307394`).
+- **Acceptance evidence:**
+  - Deployed Hub (`reconcilyx-hub`) and Spoke (`reconcilyx-spoke`) across two live Kind v1.37.0 clusters connected via Hub NodePort `http://172.18.0.2:31633` on the Kind Docker bridge network.
+  - Verified delta batch acceptance (`received: 10`), auto-compaction at threshold 10 (`compacted: true`, `v1`, `modelHash: 1a6bc49e92d542e6`), and explicit `POST /api/v1/federation/compact` (`v2`, deterministic `modelHash: b3277814cf4dbbfe`, `entries: 1`, `isStable: true`, `convergenceScore: 0.00047080979284364055`, `outlierRejectedCount: 1`, `stable: "v2"`, `canary: ""`).
+  - Verified `GET /api/federated/global-model?channel=stable` (`X-Reconcilyx-Model-Channel: stable`, `X-Reconcilyx-Model-Version: v2`) and `channel=canary` fallback to `stable`, plus Spoke startup bootstrap (`Federated bootstrap loaded global Q-table {"entries": 1, "version": 2, "cluster": "spoke-kind-1", "channel": "stable"}`).
+- **Notes:** Keep the Federated Intelligence row `Partial` in [FEATURE_MATRIX.md](FEATURE_MATRIX.md) until a multi-cluster production-like cloud validation completes.
 
 ### H-08 — Run the 66-check e2e harness on a production-like cloud cluster
 
