@@ -230,11 +230,11 @@ The project is on hiatus. These items consolidate the still-open checks from Pha
 - `[ ]` `P1 Validation` Run a two-cluster federated rollout: chart env wiring, configurable flush/compaction, snapshot publication, spoke bootstrap (H-07)
 - `[ ]` `P0 Validation` Run the 66-check e2e harness on a production-like cloud cluster with Prometheus (H-08)
 - `[ ]` `P1 Integration` Validate a live NVIDIA DCGM exporter and GPU buckets (H-09)
-- `[ ]` `P1 Documentation` Validate a live carbon provider or qualify the "live carbon" claim as credential-gated with a static default (H-10)
+- `[x]` `P1 Documentation` Validate a live carbon provider or qualify the "live carbon" claim as credential-gated with a static default (`H-10` — closed `2026-11-14` via truthfulness qualification across `FEATURE_MATRIX.md` line 39, `docs/user-guide.md` Section 6, and `README.md` line 19)
 - `[ ]` `P0 Security` Complete an independent security audit before any production-use claim (H-11)
 - `[ ]` `P0 Docs` Resume, close the hiatus, refresh the audit counts only with new production-like evidence, and record the release decision (H-12)
 
-Dependency summary: H-01 is closed (`2026-11-14`, unblocking the required-check CI path in H-06); H-02/H-03/H-10 start when credentials exist; H-04 and H-08 can share one cloud cluster; H-09 needs a GPU host; H-11 follows the cloud and repository validations; H-12 is last. H-07 code & Helm prerequisites are complete as of `v4.1.0-rc1` (2026-11-13); multi-cluster Kind execution awaits a running Docker daemon.
+Dependency summary: H-01 (`2026-11-14`) and H-10 (`2026-11-14`, static-default qualification) are closed; H-02/H-03 start when credentials exist; H-01 unblocked the required-check CI path in H-06; H-04 and H-08 can share one cloud cluster; H-09 needs a GPU host; H-11 follows the cloud and repository validations; H-12 is last. H-07 code & Helm prerequisites are complete as of `v4.1.0-rc1` (2026-11-13); multi-cluster Kind execution awaits CI/Docker run evidence.
 
 ## Phase 20 — `v4.1.0-rc1` Hardening, Shift-Left CI Gates & Evidence Replay (2026-11-13)
 

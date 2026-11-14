@@ -93,6 +93,8 @@ helm upgrade --install reconcilyx-hub "${REPO_ROOT}/charts/reconcilyx" \
   --set image.pullPolicy=Never \
   --set auth.scopedKeys.secretName="${SCOPED_KEYS_SECRET}" \
   --set service.type=NodePort \
+  --set resources.requests.cpu=50m \
+  --set resources.requests.memory=64Mi \
   --set federation.enabled=true \
   --set federation.role=hub \
   --set federation.clusterName=hub-primary \
@@ -100,14 +102,14 @@ helm upgrade --install reconcilyx-hub "${REPO_ROOT}/charts/reconcilyx" \
   --set federation.compactInterval=30s \
   --wait --timeout 5m
 
-kubectl --context "kind-${HUB_CLUSTER}" -n "${NAMESPACE}" rollout status deployment/reconcilyx-hub-reconcilyx-controller-manager --timeout=180s
+kubectl --context "kind-${HUB_CLUSTER}" -n "${NAMESPACE}" rollout status deployment/reconcilyx-hub-controller-manager --timeout=180s
 
 HUB_NODE_IP="$(kubectl --context "kind-${HUB_CLUSTER}" get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')"
-HUB_NODE_PORT="$(kubectl --context "kind-${HUB_CLUSTER}" -n "${NAMESPACE}" get svc -l app.kubernetes.io/instance=reconcilyx-hub -o jsonpath='{.items[0].spec.ports[?(@.name=="api-ui")].nodePort}')"
+HUB_NODE_PORT="$(kubectl --context "kind-${HUB_CLUSTER}" -n "${NAMESPACE}" get svc reconcilyx-hub -o jsonpath='{.spec.ports[?(@.name=="api-ui")].nodePort}')"
 HUB_REACHABLE_URL="http://${HUB_NODE_IP}:${HUB_NODE_PORT}"
 log "Hub reachable in Kind network at ${HUB_REACHABLE_URL}"
 
-kubectl --context "kind-${HUB_CLUSTER}" -n "${NAMESPACE}" port-forward svc/reconcilyx-hub-reconcilyx "${HUB_PORT}:8082" >/dev/null 2>&1 &
+kubectl --context "kind-${HUB_CLUSTER}" -n "${NAMESPACE}" port-forward svc/reconcilyx-hub "${HUB_PORT}:8082" >/dev/null 2>&1 &
 PF_PID=$!
 sleep 3
 
@@ -155,9 +157,14 @@ HUB_HASH="$(echo "${COMPACT_RESP}" | sed -n 's/.*"modelHash":"\([^"]*\)".*/\1/p'
 RELEASES_RESP="$(curl -fsS -H "X-API-Key: ${ADMIN_API_KEY}" "${LOCAL_HUB}/api/federated/releases")"
 log "Model registry releases: ${RELEASES_RESP}"
 
-MODEL_RESP="$(curl -fsS -H "X-API-Key: ${ADMIN_API_KEY}" "${LOCAL_HUB}/api/federated/global-model?channel=stable&cluster=${SPOKE_CLUSTER_NAME}")"
+MODEL_RESP="$(curl -fsS -D "${ARTIFACT_DIR}/stable-headers.txt" -H "X-API-Key: ${ADMIN_API_KEY}" "${LOCAL_HUB}/api/federated/global-model?channel=stable&cluster=${SPOKE_CLUSTER_NAME}")"
 echo "${MODEL_RESP}" > "${ARTIFACT_DIR}/hub-global-model.json"
 echo "${MODEL_RESP}" | grep -q "\"modelHash\":\"${HUB_HASH}\"" || { echo "Model hash mismatch on /api/federated/global-model"; exit 1; }
+log "Stable channel global-model headers: $(tr '\r\n' ' ' < "${ARTIFACT_DIR}/stable-headers.txt")"
+
+MODEL_CANARY_RESP="$(curl -fsS -D "${ARTIFACT_DIR}/canary-headers.txt" -H "X-API-Key: ${ADMIN_API_KEY}" "${LOCAL_HUB}/api/federated/global-model?channel=canary&cluster=${SPOKE_CLUSTER_NAME}")"
+echo "${MODEL_CANARY_RESP}" > "${ARTIFACT_DIR}/hub-canary-model.json"
+log "Canary channel fallback headers: $(tr '\r\n' ' ' < "${ARTIFACT_DIR}/canary-headers.txt")"
 
 log "Deploying Spoke chart to ${SPOKE_CLUSTER} pointing to ${HUB_REACHABLE_URL}"
 helm upgrade --install reconcilyx-spoke "${REPO_ROOT}/charts/reconcilyx" \
@@ -168,6 +175,8 @@ helm upgrade --install reconcilyx-spoke "${REPO_ROOT}/charts/reconcilyx" \
   --set image.tag="${IMG_TAG}" \
   --set image.pullPolicy=Never \
   --set api.key="${SPOKE_API_KEY}" \
+  --set resources.requests.cpu=50m \
+  --set resources.requests.memory=64Mi \
   --set federation.enabled=true \
   --set federation.role=spoke \
   --set federation.hubUrl="${HUB_REACHABLE_URL}" \
@@ -177,13 +186,27 @@ helm upgrade --install reconcilyx-spoke "${REPO_ROOT}/charts/reconcilyx" \
   --set federation.flushInterval=15s \
   --wait --timeout 5m
 
-kubectl --context "kind-${SPOKE_CLUSTER}" -n "${NAMESPACE}" rollout status deployment/reconcilyx-spoke-reconcilyx-controller-manager --timeout=180s
+kubectl --context "kind-${SPOKE_CLUSTER}" -n "${NAMESPACE}" rollout status deployment/reconcilyx-spoke-controller-manager --timeout=180s
 
-SPOKE_LOGS="$(kubectl --context "kind-${SPOKE_CLUSTER}" -n "${NAMESPACE}" logs deployment/reconcilyx-spoke-reconcilyx-controller-manager --tail=200)"
+SPOKE_LOGS=""
+BOOTSTRAPPED="0"
+for attempt in $(seq 1 15); do
+  SPOKE_LOGS="$(kubectl --context "kind-${SPOKE_CLUSTER}" -n "${NAMESPACE}" logs deployment/reconcilyx-spoke-controller-manager --tail=200)"
+  if echo "${SPOKE_LOGS}" | grep -q "Federated bootstrap loaded global Q-table"; then
+    BOOTSTRAPPED="1"
+    break
+  fi
+  sleep 2
+done
 echo "${SPOKE_LOGS}" > "${ARTIFACT_DIR}/spoke-manager.log"
-echo "${SPOKE_LOGS}" | grep -q "Federated bootstrap loaded global Q-table" || {
-  echo "Spoke did not log successful global Q-table bootstrap"
-  exit 1
-}
+kubectl --context "kind-${HUB_CLUSTER}" -n "${NAMESPACE}" logs deployment/reconcilyx-hub-controller-manager --tail=200 > "${ARTIFACT_DIR}/hub-manager.log" || true
 
+if [[ "${BOOTSTRAPPED}" != "1" ]]; then
+  echo "Spoke did not log successful global Q-table bootstrap"
+  echo "--- Spoke Logs ---"
+  echo "${SPOKE_LOGS}"
+  exit 1
+fi
+
+log "Spoke bootstrap log line: $(echo "${SPOKE_LOGS}" | grep 'Federated bootstrap loaded global Q-table' | head -n 1)"
 log "SUCCESS: 2-cluster federation validation passed (modelHash=${HUB_HASH}, artifacts=${ARTIFACT_DIR})"

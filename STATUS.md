@@ -5,9 +5,10 @@ Reconcilyx is an open-source Kubernetes FinOps, GreenOps, and right-sizing platf
 ## Project Posture (`v4.1.0-rc1`, 2026-11-14)
 
 - External cloud/GPU validation and the independent security audit remain on hiatus until cloud accounts, provider credentials, and a GPU host are available. No feature is promoted to `Verified` during the hiatus.
+- **`H-10` (Carbon provider truthfulness) is closed (2026-11-14) via documentation qualification:** [FEATURE_MATRIX.md](FEATURE_MATRIX.md) (`Integrations`), [docs/user-guide.md](docs/user-guide.md) (Section 6), and [README.md](README.md) explicitly state that live grid carbon providers (`Electricity Maps` / `WattTime`) are optional, credential-gated via `RECONCILYX_CARBON_PROVIDER`, and default to the deterministic static regional provider (`static` runtime source; `static-regional-fallback` in offline CLI `diff`).
 - **`H-01` (GitHub-hosted CI) is closed (2026-11-14):** All five core GitHub Actions workflows (`Build`, `Lint & Security`, `Test`, `E2E Tests`, `Validate E2E Harness`) executed on GitHub-hosted Ubuntu runners and completed `success` on commit `38373ac1d309f542c7d2fd4270043df9d3380e00`. `.github/workflows/deploy-ui.yml` is restricted to `workflow_dispatch`.
 - The dated evidence below remains valid. The audit baseline is unchanged at 0 Verified / 72 Partial / 30 Missing.
-- [HIATUS.md](HIATUS.md) lists every remaining task (`H-02`–`H-12`), its blocker, what to supply, and the evidence required to close it.
+- [HIATUS.md](HIATUS.md) lists every remaining task (`H-02`–`H-09`, `H-11`, `H-12`), its blocker, what to supply, and the evidence required to close it.
 - The repository remains private/maintainer-managed (no public Hub instance is operated, and no production-readiness claim is made).
 
 ## 🚀 Demo and Hosting
@@ -89,6 +90,8 @@ Use `v4.0.0-beta` in documentation and releases. Do not describe Reconcilyx as p
   - `Test` — [`43606567661`](https://github.com/Keninjavelas/Reconcilyx/actions/runs/43606567661) (`2026-11-14T14:46:02Z` → `14:51:35Z`, `conclusion: success`)
   - `E2E Tests` — [`43606567637`](https://github.com/Keninjavelas/Reconcilyx/actions/runs/43606567637) (`2026-11-14T14:46:02Z` → `14:52:56Z`, `conclusion: success`)
   - `Validate E2E Harness` — [`43606567673`](https://github.com/Keninjavelas/Reconcilyx/actions/runs/43606567673) (`2026-11-14T14:46:02Z` → `14:57:28Z`, `conclusion: success`)
+
+- **`H-10` closed via documentation qualification (2026-11-14):** Updated [FEATURE_MATRIX.md](FEATURE_MATRIX.md) (`Integrations`, line 39), [docs/user-guide.md](docs/user-guide.md) (Section 6), and [README.md](README.md) (`Beta Status`, line 19) to state explicitly that live grid carbon providers (`Electricity Maps` and `WattTime`) are optional and credential-gated via `RECONCILYX_CARBON_PROVIDER`, defaulting to the deterministic static regional provider (`static` runtime source; `static-regional-fallback` in offline CLI `diff`).
 
 ### 2026-11-13 — `v4.1.0-rc1`: Full-Stack Architecture, Split-RBAC Security, Offline Evidence Replay & CI Gates
 

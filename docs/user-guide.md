@@ -147,6 +147,7 @@ These are known limits, not configuration mistakes:
 - **Autoscaler conflicts block execution:** proposals targeting a Deployment with an active HPA or VPA are rejected before mutation (VPAs in `updateMode: Off` are recommendation-only). Disable or retarget the autoscaler first.
 - **Federated learning** supports stable/canary channel selection (`RECONCILYX_MODEL_CHANNEL`) and canary rollback; a production multi-cluster rollout is not claimed.
 - **Cloud pricing**: AWS, GCP, and Azure list-price clients are implemented and fall back to a bundled catalog. Spot prices are estimates derived from on-demand prices, not live spot-market feeds, and the clients have not been validated against real cloud accounts.
+- **Carbon intensity (optional, credential-gated live providers; static default)**: Live grid carbon intensity lookups (`Electricity Maps` and `WattTime`) are optional and credential-gated via `RECONCILYX_CARBON_PROVIDER` plus provider API credentials; when credentials are absent or live requests fail, the carbon factory defaults to the deterministic static regional provider (`static`; offline `kubectl-reconcilyx diff` tags `static-regional-fallback`). Live external carbon APIs have not been validated against authenticated accounts.
 - **Workload kinds**: execution supports Deployments. Other kinds may be evaluated but are not actuated by the in-place resize path.
 
 See [FEATURE_MATRIX.md](../FEATURE_MATRIX.md) for the conservative inventory and [STATUS.md](../STATUS.md) for evidence.

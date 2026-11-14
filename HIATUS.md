@@ -35,7 +35,7 @@ This file is the single list of work that remains. It is deliberately conservati
 | Domain plus DNS control | H-04, H-05 | Required for a publicly trusted certificate. Cloudflare Quick Tunnel needs no account but is testing-only, has no SLA and documented limits, so it cannot support a production-like TLS claim |
 | AWS IAM credentials with `pricing:GetProducts` | H-02 | The existing local profile returned `InvalidClientTokenId`, so it is not usable. Never commit keys or session tokens |
 | GCP project with Cloud Billing API enabled and a restricted API key | H-03 | The provider reads `RECONCILYX_PRICING_GCP_API_KEY` or `GCP_BILLING_API_KEY`; restrict the key to the Cloud Billing API |
-| Electricity Maps or WattTime credentials (optional) | H-10 | Only needed if the project continues to claim live carbon. Without credentials the factory defaults to the static provider |
+| Electricity Maps or WattTime credentials (optional) | H-10 *(closed 2026-11-14 via static-default qualification)* | Live carbon is optional and credential-gated (`RECONCILYX_CARBON_PROVIDER`); docs updated to document the static default |
 | NVIDIA GPU host with a DCGM exporter | H-09 | No local GPU: `nvidia-smi` is not present on the workstation (checked 2026-10-26) |
 | Repo admin rights and Docker daemon for branch protection & multi-cluster Kind | H-06, H-07 | Actions minutes are now active (`H-01` closed 2026-11-14); branch protection requires repository admin settings, and `scripts/validation/federation-e2e.sh` needs a running Docker daemon |
 | An independent security auditor | H-11 | A self-review is not an independent audit |
@@ -132,13 +132,11 @@ No credential, token, API key, or private key belongs in this repository or in e
 - **Acceptance evidence:** Prometheus series names and values, inspect output, and the resulting learning buckets; record it in [STATUS.md](STATUS.md) and the Application Intelligence row.
 - **Notes:** Cloud GPU time is billable; a physical GPU host is equally valid.
 
-### H-10 — Validate a live carbon provider (conditional)
+### H-10 — Validate a live carbon provider (conditional) **[CLOSED 2026-11-14 via documentation qualification]**
 
 - **Priority:** P1 truthfulness.
-- **Blocked by:** Electricity Maps or WattTime credentials.
-- **Why it remains open:** The carbon factory defaults to the static provider. The live clients require `RECONCILYX_CARBON_PROVIDER` plus provider credentials, and no live intensity lookup has been recorded. [FEATURE_MATRIX.md](FEATURE_MATRIX.md) describes "live carbon", so that wording needs either live evidence or an explicit "provider-gated, static by default" qualification.
-- **What to do:** Choose one provider, supply credentials at runtime, and validate `IntensityForRegion` against a known region. Confirm the cache TTL, fallback behavior, and that no key is logged. If credentials are unavailable, correct the matrix and user guide to state that live carbon is optional and credential-gated.
-- **Acceptance evidence:** Dated provider response for a named region and the resolved provider name; or a documentation correction if live carbon is not pursued.
+- **Status:** Closed on **2026-11-14** via the explicit documentation-qualification path.
+- **Qualification evidence:** [FEATURE_MATRIX.md](FEATURE_MATRIX.md) (`Integrations`, line 39), [docs/user-guide.md](docs/user-guide.md) (Section 6), and [README.md](README.md) (`Beta Status`, line 19) explicitly state that live carbon providers (`Electricity Maps` / `WattTime`) are optional and credential-gated via `RECONCILYX_CARBON_PROVIDER`, and that when credentials are absent or live requests fail the carbon factory defaults to the deterministic static regional provider (`static`; offline `kubectl-reconcilyx diff` tags `static-regional-fallback`). Live external provider accounts remain unvalidated.
 
 ### H-11 — Complete an independent security audit
 

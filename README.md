@@ -16,7 +16,7 @@ Reconcilyx is in beta and on hiatus as of 2026-10-26. It is not production-ready
 |---|---|
 | Build and automated tests | Locally verified; repeat in your environment |
 | Dashboard | React console embedded in the Hub; optional static hosting pointed at a Hub URL |
-| API, CLI, controller, and integrations | Implemented areas remain beta until end-to-end production-like validation |
+| API, CLI, controller, and integrations | Implemented areas remain beta until end-to-end production-like validation; optional live carbon (`Electricity Maps` / `WattTime` via `RECONCILYX_CARBON_PROVIDER`) is credential-gated and defaults to deterministic static regional data (`static` / `static-regional-fallback`) |
 | Actuation safety | Kill switch, health and TTL gates, and HPA/VPA conflict rejection before mutation; in-place resizes are ephemeral, GitOps is the persistence path |
 | eBPF and node consolidation | Explicitly deferred to v5.0 planning |
 

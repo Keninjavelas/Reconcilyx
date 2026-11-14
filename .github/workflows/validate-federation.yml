@@ -1,0 +1,53 @@
+name: Validate Federation E2E
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: validate-federation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-federation:
+    name: Two-cluster Kind federation harness (H-07)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: '^1.26.11'
+          check-latest: true
+
+      - name: Install kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/latest/kind-linux-$(go env GOARCH)
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+          kind version
+
+      - name: Run two-cluster federation harness
+        env:
+          FED_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: bash scripts/validation/federation-e2e.sh
+
+      - name: Upload federation evidence artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: federation-e2e-evidence
+          path: artifacts/federation-e2e
+          if-no-files-found: warn
+          retention-days: 14
