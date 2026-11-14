@@ -1,15 +1,14 @@
 # Reconcilyx `v4.1.0-rc1` Status
 
-Reconcilyx is an open-source Kubernetes FinOps, GreenOps, and right-sizing platform. Release candidate **`v4.1.0-rc1`** (updated **2026-11-13**) resolves H-07 federated compaction/wiring architecture gaps, adds asymmetric sizing & KEDA/memory-headroom gates, extends CLI SARIF/Markdown/offline gates + composite GitHub Action, defaults Helm deployment to Split-RBAC read-only mode, hardens API/webhook security (`docs/THREAT_MODEL.md`), and adds Read-Only Evidence Replay UI mode (`ui/src/lib/evidenceReplay.ts`). Live multi-cluster Kind (`scripts/validation/federation-e2e.sh` — Docker daemon stopped on host), live cloud/GPU credentials, and GitHub-hosted CI runs remain open in [HIATUS.md](HIATUS.md).
+Reconcilyx is an open-source Kubernetes FinOps, GreenOps, and right-sizing platform. Release candidate **`v4.1.0-rc1`** (updated **2026-11-14**) resolves H-07 federated compaction/wiring architecture gaps, adds asymmetric sizing & KEDA/memory-headroom gates, extends CLI SARIF/Markdown/offline gates + composite GitHub Action, defaults Helm deployment to Split-RBAC read-only mode, hardens API/webhook security (`docs/THREAT_MODEL.md`), adds Read-Only Evidence Replay UI mode (`ui/src/lib/evidenceReplay.ts`), and **closes `H-01`** with all five core GitHub Actions CI & Kind E2E workflows verified passing on commit `38373ac` (`2026-11-14`). Live multi-cluster Kind (`scripts/validation/federation-e2e.sh` — Docker daemon stopped on host), live cloud/GPU credentials, and external audits remain open in [HIATUS.md](HIATUS.md).
 
-## Project Posture (`v4.1.0-rc1`, 2026-11-13)
+## Project Posture (`v4.1.0-rc1`, 2026-11-14)
 
-- The project is on hiatus until cloud accounts, provider credentials, a GPU host, and CI minutes are available. No new external validation is in progress, and no feature is being promoted to `Verified` during the hiatus.
-- Last code commit before the hiatus: `9cbcad2` (`fix(cloud): ignore non-on-demand Azure meters`). The hiatus documentation commit follows it.
+- External cloud/GPU validation and the independent security audit remain on hiatus until cloud accounts, provider credentials, and a GPU host are available. No feature is promoted to `Verified` during the hiatus.
+- **`H-01` (GitHub-hosted CI) is closed (2026-11-14):** All five core GitHub Actions workflows (`Build`, `Lint & Security`, `Test`, `E2E Tests`, `Validate E2E Harness`) executed on GitHub-hosted Ubuntu runners and completed `success` on commit `38373ac1d309f542c7d2fd4270043df9d3380e00`. `.github/workflows/deploy-ui.yml` is restricted to `workflow_dispatch`.
 - The dated evidence below remains valid. The audit baseline is unchanged at 0 Verified / 72 Partial / 30 Missing.
-- [HIATUS.md](HIATUS.md) lists every remaining task, its blocker, what to supply, and the evidence required to close it.
-- GitHub Actions cannot start jobs on this account: the usage API reported 2,043 of the free plan's 2,000 included Linux minutes for 2026-10, Reconcilyx used 0, and the last successful repository run was 2026-09-01. This is an account-level cap, not a workflow failure.
-- The repository remains public. No public instance is operated, and no production-readiness claim is made.
+- [HIATUS.md](HIATUS.md) lists every remaining task (`H-02`–`H-12`), its blocker, what to supply, and the evidence required to close it.
+- The repository remains private/maintainer-managed (no public Hub instance is operated, and no production-readiness claim is made).
 
 ## 🚀 Demo and Hosting
 
@@ -62,8 +61,13 @@ Reconcilyx is an open-source Kubernetes FinOps, GreenOps, and right-sizing platf
 - Multi-node TLS e2e on 2026-10-26 (image `live-validation-12`): a three-node Kind v1.36.1 cluster (one control plane, two workers) behind ingress-nginx v1.12.1 terminated TLS 1.3 with a local CA (`Reconcilyx Multinode Test CA`, leaf `CN=reconcilyx.test` with SANs for the test host, node name, `localhost`, `host.docker.internal`, and `127.0.0.1`) on host ports 18080/18443. Harness run `multinode-tls-20261026055631` passed 66 checks with 0 failures: `Completed`, `costSavedUSD=4106m`, carbon `11097`, reward `1.0205197183327863`, unchanged pod UIDs, preserved sidecar, 0 restarts, and the full audit/event chain. An in-network 9-check probe exited 0, and containerized Chromium rendered all six views over the verified TLS endpoint. Raw evidence is gitignored under `artifacts/e2e-multinode/` and `artifacts/live-ui/multinode/`.
 - Live GitOps PR on 2026-10-26 (image `live-validation-14`): after an explicit public CA bundle was mounted via `SSL_CERT_FILE` (verification stayed enabled), the controller created PR #1 on the maintainer-owned `Keninjavelas/Reconcilyx` repository, changing only `workloads/cpu-burner/manifests/deployment.yaml` from `500m/128Mi` to `250m/96Mi` with limits unchanged. Closing the PR without merging and deleting its branch moved the proposal to `Rejected`/`ApprovalRejected`; the pod UID and `500m/128Mi` requests were unchanged, and the Deployment template stayed `500m/128Mi`, confirming no local actuation in GitOps mode. The earlier run had fallen back to live actuation after an `x509` trust failure; the controller now fails closed on PR-creation errors.
 - `go test ./internal/gitops ./internal/controller -count=1` on 2026-10-26: passed after adding the fail-closed envtest and the `<manifestsPath>/deployment.yaml` discovery regression test; the gitops package reported `ok` in 2.4s and the controller envtest in 16.6s.
-- CI workflow `.github/workflows/validate-e2e.yml` on 2026-10-25: YAML, `helm lint`, and `helm template` checked locally; no GitHub-hosted run has executed, so the workflow itself is not cited as passing evidence.
-- GitHub Actions observation on 2026-10-26: pushing `fd089ef` queued Build, Lint, Test, E2E Tests, and Validate E2E Harness, and all five completed `failure` within three seconds with zero recorded steps and no runner assigned. The account usage API reported 2,043 Actions Linux minutes for 2026-10 against the free plan's 2,000 included private-repository minutes; Reconcilyx accounted for 0 of them, and the repository's last successful run was 2026-09-01. This is an account-level Actions-minutes cap, not a workflow or test failure, and no GitHub-hosted pass is claimed.
+- GitHub-hosted CI & Kind E2E pass on 2026-11-14 (`H-01` closed): on commit `38373ac1d309f542c7d2fd4270043df9d3380e00`, all five core GitHub Actions workflows executed on GitHub-hosted runners and completed `conclusion: success` (`2026-11-14T14:46:02Z` UTC):
+  - `Build`: run [`43606567760`](https://github.com/Keninjavelas/Reconcilyx/actions/runs/43606567760) (`14:46:02Z` → `14:47:08Z`, `success`)
+  - `Lint & Security`: run [`43606567683`](https://github.com/Keninjavelas/Reconcilyx/actions/runs/43606567683) (`14:46:02Z` → `14:48:38Z`, `success`, including `gitleaks`, `golangci-lint`, `govulncheck`, and `trivy`)
+  - `Test`: run [`43606567661`](https://github.com/Keninjavelas/Reconcilyx/actions/runs/43606567661) (`14:46:02Z` → `14:51:35Z`, `success`, including Linux `go test -race` and UI/Helm tests)
+  - `E2E Tests`: run [`43606567637`](https://github.com/Keninjavelas/Reconcilyx/actions/runs/43606567637) (`14:46:02Z` → `14:52:56Z`, `success`)
+  - `Validate E2E Harness`: run [`43606567673`](https://github.com/Keninjavelas/Reconcilyx/actions/runs/43606567673) (`14:46:02Z` → `14:57:28Z`, `success`, Helm deploy + Kind e2e harness under Split-RBAC + `allowInPlaceMemoryShrink=true`)
+- Historical GitHub Actions observation on 2026-10-26: pushing `fd089ef` queued the five workflows, and all five completed `failure` within three seconds with zero recorded steps due to the 2026-10 free-tier Linux minutes cap (2,043 / 2,000); superseded by the 2026-11-14 runs above.
 - Live Kind validation on 2026-10-23: manager container served the embedded console and authenticated API, rejected an HPA-managed resize, resized pods in place after the HPA was removed, and rejected unsigned/wrong webhook signatures (details in the Remediation Log)
 
 ## Public-claim Rule
@@ -71,6 +75,20 @@ Reconcilyx is an open-source Kubernetes FinOps, GreenOps, and right-sizing platf
 Use `v4.0.0-beta` in documentation and releases. Do not describe Reconcilyx as production-ready, fully verified, 95% complete, CNCF-approved, or commercially hosted without evidence for each specific claim.
 
 ## Remediation Log
+
+### 2026-11-14 — GitHub-Hosted CI & Kind E2E Verification (`H-01` Closed)
+
+- **CI workflow & runtime fixes (`c8df550`, `e2577fc`, `38373ac`):**
+  - Pinned Go setup across `.github/workflows/{build,lint,test,validate-e2e,test-e2e,release}.yml` to `^1.26.11` with `check-latest: true`; upgraded `go.opentelemetry.io/otel/*` to `v1.45.0` and `golang.org/x/{mod,net,text}` + `google.golang.org/grpc` in `go.mod`/`go.sum`, clearing `GO-2026-6505` and stdlib CVEs in `govulncheck`.
+  - Allowlisted `STATUS.md` and `HIATUS.md` in `.gitleaks.toml`, excluded test/fixture/dependency directories in Trivy IaC scans, and restricted `.github/workflows/deploy-ui.yml` to `workflow_dispatch` (Vercel builds the UI on push).
+  - Unblocked `E2E Tests` manager readiness by setting `ENABLE_WEBHOOKS: "false"` in `config/manager/manager.yaml`, guarding webhook registration in `cmd/main.go` on explicit opt-in / serving cert existence, and moving startup `CarbonProvider.IntensityForRegion` and `federated.FetchGlobalModelForChannel` probes off the blocking main thread before `/healthz` and `/readyz` bind.
+  - Unblocked `Validate E2E Harness` on 2-vCPU Kind nodes under Split-RBAC by trimming observability and fixture requests, fixing `kubectl auth can-i patch pods --subresource=resize`, moving `AcquireLock`/`ReleaseLock` annotations out of `Deployment` metadata into ConfigMap `reconcilyx-execution-locks` in `internal/controller/actuator.go` (covering `deployments: get;list;watch`), and exposing `actuation.allowInPlaceMemoryShrink` in `charts/reconcilyx` (`RECONCILYX_ALLOW_INPLACE_MEMORY_SHRINK`) enabled in `.github/workflows/validate-e2e.yml`.
+- **Verified passing GitHub Actions runs on commit `38373ac1d309f542c7d2fd4270043df9d3380e00` (2026-11-14 UTC):**
+  - `Build` — [`43606567760`](https://github.com/Keninjavelas/Reconcilyx/actions/runs/43606567760) (`2026-11-14T14:46:02Z` → `14:47:08Z`, `conclusion: success`)
+  - `Lint & Security` — [`43606567683`](https://github.com/Keninjavelas/Reconcilyx/actions/runs/43606567683) (`2026-11-14T14:46:02Z` → `14:48:38Z`, `conclusion: success`)
+  - `Test` — [`43606567661`](https://github.com/Keninjavelas/Reconcilyx/actions/runs/43606567661) (`2026-11-14T14:46:02Z` → `14:51:35Z`, `conclusion: success`)
+  - `E2E Tests` — [`43606567637`](https://github.com/Keninjavelas/Reconcilyx/actions/runs/43606567637) (`2026-11-14T14:46:02Z` → `14:52:56Z`, `conclusion: success`)
+  - `Validate E2E Harness` — [`43606567673`](https://github.com/Keninjavelas/Reconcilyx/actions/runs/43606567673) (`2026-11-14T14:46:02Z` → `14:57:28Z`, `conclusion: success`)
 
 ### 2026-11-13 — `v4.1.0-rc1`: Full-Stack Architecture, Split-RBAC Security, Offline Evidence Replay & CI Gates
 

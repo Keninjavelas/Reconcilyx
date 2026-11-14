@@ -206,7 +206,7 @@ Local TLS pass on 2026-10-25 against the same image: a local CA (`Reconcilyx Loc
 - `[x]` `P0 Validation` Exercise the GitOps PR flow against a real GitHub repository, close without merging, and verify rejection with no local actuation
 - `[ ]` `P0 Validation` Exercise the console through a public TLS terminator on a production-like cloud cluster
 - `[ ]` `P0 Validation` Exercise GitOps against a production repository with branch protection and CI
-- `[ ]` `P1 CI` Observe a GitHub-hosted workflow pass once the account's included Actions minutes are available
+- `[x]` `P1 CI` Observe a GitHub-hosted workflow pass once the account's included Actions minutes are available — verified on `2026-11-14` for commit `38373ac1d309f542c7d2fd4270043df9d3380e00` (`Build` `43606567760`, `Lint & Security` `43606567683`, `Test` `43606567661`, `E2E Tests` `43606567637`, `Validate E2E Harness` `43606567673`)
 
 Evidence: Kind v1.36.1, three nodes (one control plane, two workers), ingress-nginx v1.12.1, host ports 18080/18443, and Prometheus v3.1.0. A local CA (`Reconcilyx Multinode Test CA`) issued leaf `CN=reconcilyx.test` with SANs `reconcilyx.test`, `reconcilyx-multinode-control-plane`, `localhost`, `host.docker.internal`, and `127.0.0.1`; the endpoint negotiated TLS 1.3 / `TLS_AES_256_GCM_SHA384` with verification enabled. The harness run `multinode-tls-20261026055631` against manager `live-validation-12` passed 66 checks with 0 failures: `Completed`, `costSavedUSD=4106m`, carbon `11097`, reward `1.0205197183327863`, unchanged pod UIDs, preserved sidecar, 0 restarts, and the full audit/event chain. An in-network 9-check TLS probe exited 0 (`SUMMARY failures=0`), and containerized Chromium rendered all six views at 1440 px from `https://reconcilyx.test` with the expected certificate. Console output contained only expected pre-key 401s and external Google Fonts failures caused by the workstation's TLS interception; no Reconcilyx API request failed.
 
@@ -216,7 +216,12 @@ The first real GitOps attempt exposed two defects. The distroless manager did no
 
 The project is on hiatus. These items consolidate the still-open checks from Phases 7, 15, 16, 17, and 18; nothing here is in progress. Each item maps to a task in [HIATUS.md](HIATUS.md) with its blocker, prerequisites, and acceptance evidence.
 
-- `[ ]` `P0 CI` Observe a GitHub-hosted workflow pass once Actions minutes or a spending limit are available (H-01)
+- `[x]` `P0 CI` Observe a GitHub-hosted workflow pass once Actions minutes or a spending limit are available (H-01) — closed on `2026-11-14` (`38373ac1d309f542c7d2fd4270043df9d3380e00`):
+  - `Build` [`43606567760`](https://github.com/Keninjavelas/Reconcilyx/actions/runs/43606567760) (`2026-11-14T14:46:02Z` → `14:47:08Z`, `success`)
+  - `Lint & Security` [`43606567683`](https://github.com/Keninjavelas/Reconcilyx/actions/runs/43606567683) (`2026-11-14T14:46:02Z` → `14:48:38Z`, `success`)
+  - `Test` [`43606567661`](https://github.com/Keninjavelas/Reconcilyx/actions/runs/43606567661) (`2026-11-14T14:46:02Z` → `14:51:35Z`, `success`, Linux `-race`)
+  - `E2E Tests` [`43606567637`](https://github.com/Keninjavelas/Reconcilyx/actions/runs/43606567637) (`2026-11-14T14:46:02Z` → `14:52:56Z`, `success`)
+  - `Validate E2E Harness` [`43606567673`](https://github.com/Keninjavelas/Reconcilyx/actions/runs/43606567673) (`2026-11-14T14:46:02Z` → `14:57:28Z`, `success`)
 - `[ ]` `P1 Integration` Validate AWS live pricing with credentials that can call `pricing:GetProducts` (H-02)
 - `[ ]` `P1 Integration` Validate GCP live pricing with a restricted Cloud Billing API key (H-03)
 - `[ ]` `P0 Validation` Exercise a public TLS terminator on a production-like cloud cluster (H-04)
@@ -229,7 +234,7 @@ The project is on hiatus. These items consolidate the still-open checks from Pha
 - `[ ]` `P0 Security` Complete an independent security audit before any production-use claim (H-11)
 - `[ ]` `P0 Docs` Resume, close the hiatus, refresh the audit counts only with new production-like evidence, and record the release decision (H-12)
 
-Dependency summary: H-02/H-03/H-10 start when credentials exist; H-01 unblocks the required-check path in H-06; H-04 and H-08 can share one cloud cluster; H-09 needs a GPU host; H-11 follows the cloud and repository validations; H-12 is last. H-07 code & Helm prerequisites are complete as of `v4.1.0-rc1` (2026-11-13); multi-cluster Kind execution awaits a running Docker daemon.
+Dependency summary: H-01 is closed (`2026-11-14`, unblocking the required-check CI path in H-06); H-02/H-03/H-10 start when credentials exist; H-04 and H-08 can share one cloud cluster; H-09 needs a GPU host; H-11 follows the cloud and repository validations; H-12 is last. H-07 code & Helm prerequisites are complete as of `v4.1.0-rc1` (2026-11-13); multi-cluster Kind execution awaits a running Docker daemon.
 
 ## Phase 20 — `v4.1.0-rc1` Hardening, Shift-Left CI Gates & Evidence Replay (2026-11-13)
 

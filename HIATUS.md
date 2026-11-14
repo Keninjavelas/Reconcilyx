@@ -24,7 +24,8 @@ This file is the single list of work that remains. It is deliberately conservati
 | Console over TLS | All six views rendered over a verified TLS 1.3 endpoint on Kind, with zero Reconcilyx API failures |
 | Live GitOps PR | PR #1 on the maintainer-owned `Keninjavelas/Reconcilyx` repo; closed unmerged, branch deleted, proposal `Rejected`, no local actuation |
 | Azure live pricing | Anonymous Retail Prices API validated: `Standard_F2s_v2/eastus` `$0.0846/h`, `Standard_B2s/eastus` `$0.0416/h`, `Standard_D2s_v5/eastus` `$0.0960/h`; a meter-selection defect was fixed with a regression test |
-| CI blocker diagnosis | Five workflows failed in about three seconds with no runner assigned; the account had used 2,043 of its 2,000 included private-repo Actions minutes for 2026-10 |
+| CI blocker diagnosis (2026-10-26) | Historical: five workflows failed in about three seconds with no runner assigned when the account hit 2,043 of 2,000 included Linux minutes for 2026-10 (superseded by H-01 closure on 2026-11-14) |
+| GitHub-hosted CI & Kind E2E (`H-01`, 2026-11-14) | All five core workflows completed `success` on GitHub-hosted Ubuntu runners for commit `38373ac1d309f542c7d2fd4270043df9d3380e00`: `Build` (`43606567760`), `Lint & Security` (`43606567683`), `Test` (`43606567661` with Linux `-race`), `E2E Tests` (`43606567637`), and `Validate E2E Harness` (`43606567673`) |
 
 ## Resume prerequisites
 
@@ -36,21 +37,26 @@ This file is the single list of work that remains. It is deliberately conservati
 | GCP project with Cloud Billing API enabled and a restricted API key | H-03 | The provider reads `RECONCILYX_PRICING_GCP_API_KEY` or `GCP_BILLING_API_KEY`; restrict the key to the Cloud Billing API |
 | Electricity Maps or WattTime credentials (optional) | H-10 | Only needed if the project continues to claim live carbon. Without credentials the factory defaults to the static provider |
 | NVIDIA GPU host with a DCGM exporter | H-09 | No local GPU: `nvidia-smi` is not present on the workstation (checked 2026-10-26) |
-| GitHub Actions minutes or a spending limit, plus repo admin rights | H-01, H-07 | The current account cannot start jobs; branch protection is a repository setting and needs the owner's approval |
+| Repo admin rights and Docker daemon for branch protection & multi-cluster Kind | H-06, H-07 | Actions minutes are now active (`H-01` closed 2026-11-14); branch protection requires repository admin settings, and `scripts/validation/federation-e2e.sh` needs a running Docker daemon |
 | An independent security auditor | H-11 | A self-review is not an independent audit |
 
 No credential, token, API key, or private key belongs in this repository or in evidence files. Supply secrets through environment variables or a secret manager at runtime.
 
 ## Remaining tasks
 
-### H-01 — Observe a GitHub-hosted CI pass
+### H-01 — Observe a GitHub-hosted CI pass **[CLOSED 2026-11-14]**
 
 - **Priority:** P0 release evidence.
-- **Blocked by:** GitHub Actions minutes/quota (account billing).
-- **Why it remains open:** The workflows are committed, but on 2026-10-26 every job failed before a runner was assigned. The account's usage API reported 2,043 Linux minutes against the free plan's 2,000 included minutes, and Reconcilyx used 0 of them. The last successful repository run was 2026-09-01. This is an account-level cap, not a workflow defect.
-- **What to do:** Wait for the next monthly cycle (2026-11-01 is the earliest plausible reset) or add a spending limit/payment method. Then push a documentation-only commit and observe Build, Lint, Test, E2E Tests, and Validate E2E Harness. If a job fails for a real reason, fix that reason rather than disabling the check.
-- **Acceptance evidence:** Each workflow completes `success` with a runner assigned and steps executed; record the run IDs, dates, and URLs in [STATUS.md](STATUS.md) and tick the Phase 18 item in [GITHUB_ISSUES.md](GITHUB_ISSUES.md).
-- **Do not:** Treat a queued or instantly failed run as evidence, or bypass required checks to make the branch look green.
+- **Status:** Closed on **2026-11-14** on commit `38373ac1d309f542c7d2fd4270043df9d3380e00`.
+- **Historical context:** On 2026-10-26, runs failed immediately due to the account's 2026-10 Linux Actions minutes cap (2,043 / 2,000). After CI quota became active in 2026-11, startup probe timing, Split-RBAC `Deployment` lock mutation, CVE/toolchain pins, and 2-vCPU Kind scheduling headroom defects exposed by real runners were resolved across commits `c8df550`, `e2577fc`, and `38373ac`.
+- **Acceptance evidence (GitHub-hosted Ubuntu runners, 2026-11-14 UTC):**
+  - `Build`: [`43606567760`](https://github.com/Keninjavelas/Reconcilyx/actions/runs/43606567760) (`14:46:02Z` → `14:47:08Z`, `success`)
+  - `Lint & Security`: [`43606567683`](https://github.com/Keninjavelas/Reconcilyx/actions/runs/43606567683) (`14:46:02Z` → `14:48:38Z`, `success`)
+  - `Test`: [`43606567661`](https://github.com/Keninjavelas/Reconcilyx/actions/runs/43606567661) (`14:46:02Z` → `14:51:35Z`, `success`)
+  - `E2E Tests`: [`43606567637`](https://github.com/Keninjavelas/Reconcilyx/actions/runs/43606567637) (`14:46:02Z` → `14:52:56Z`, `success`)
+  - `Validate E2E Harness`: [`43606567673`](https://github.com/Keninjavelas/Reconcilyx/actions/runs/43606567673) (`14:46:02Z` → `14:57:28Z`, `success`)
+  - `.github/workflows/deploy-ui.yml` is set to `workflow_dispatch` only (UI builds on Vercel on push).
+  - Corresponding items in [STATUS.md](STATUS.md) and Phase 18/19 in [GITHUB_ISSUES.md](GITHUB_ISSUES.md) are updated.
 
 ### H-02 — Validate AWS live pricing
 
