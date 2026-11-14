@@ -12,6 +12,8 @@ echo "${STANDALONE}" | grep -q 'RECONCILYX_FEDERATION_ROLE: "standalone"'
 echo "${STANDALONE}" | grep -q 'RECONCILYX_HUB_URL: ""'
 echo "${STANDALONE}" | grep -q 'name: RECONCILYX_ENABLE_INPLACE'
 echo "${STANDALONE}" | grep -A1 'name: RECONCILYX_ENABLE_INPLACE' | grep -q 'value: "false"'
+echo "${STANDALONE}" | grep -q 'name: RECONCILYX_ALLOW_INPLACE_MEMORY_SHRINK'
+echo "${STANDALONE}" | grep -A1 'name: RECONCILYX_ALLOW_INPLACE_MEMORY_SHRINK' | grep -q 'value: "false"'
 echo "${STANDALONE}" | grep -q 'name: RECONCILYX_EXCLUDED_NAMESPACES'
 echo "${STANDALONE}" | grep -q 'scaledobjects'
 if echo "${STANDALONE}" | grep -q 'pods/resize'; then
@@ -20,9 +22,10 @@ if echo "${STANDALONE}" | grep -q 'pods/resize'; then
 fi
 
 # 2. Explicit opt-in actuation grants only pods/resize patch
-ACTUATE="$(helm template rel "${CHART_DIR}" --set actuation.inPlaceResizeEnabled=true --set config.enableInPlaceResizing=true)"
+ACTUATE="$(helm template rel "${CHART_DIR}" --set actuation.inPlaceResizeEnabled=true --set actuation.allowInPlaceMemoryShrink=true --set config.enableInPlaceResizing=true)"
 echo "${ACTUATE}" | grep -q 'pods/resize'
 echo "${ACTUATE}" | grep -A1 'name: RECONCILYX_ENABLE_INPLACE' | grep -q 'value: "true"'
+echo "${ACTUATE}" | grep -A1 'name: RECONCILYX_ALLOW_INPLACE_MEMORY_SHRINK' | grep -q 'value: "true"'
 
 # 3. Spoke mode: custom thresholds & intervals render cleanly into ConfigMap and Deployment
 SPOKE="$(helm template rel "${CHART_DIR}" \

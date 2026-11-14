@@ -385,3 +385,48 @@ func TestInPlaceMemoryShrinkGuard(t *testing.T) {
 		t.Fatal("expected insufficient headroom (< 1.35x working set) to be blocked")
 	}
 }
+
+func TestAcquireAndReleaseLockConfigMapWithoutMutatingDeployment(t *testing.T) {
+	dep := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "checkout",
+			Namespace:  "live-demo",
+			Generation: 7,
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(actuatorTestScheme(t)).WithObjects(dep).Build()
+	act := NewActuator(c, c)
+
+	prop1 := &v1alpha1.OptimizationProposal{
+		ObjectMeta: metav1.ObjectMeta{Name: "prop-1", Namespace: "live-demo"},
+		Spec: v1alpha1.OptimizationProposalSpec{
+			TargetWorkload: corev1.ObjectReference{Kind: "Deployment", Name: "checkout", Namespace: "live-demo"},
+		},
+	}
+	prop2 := &v1alpha1.OptimizationProposal{
+		ObjectMeta: metav1.ObjectMeta{Name: "prop-2", Namespace: "live-demo"},
+		Spec: v1alpha1.OptimizationProposalSpec{
+			TargetWorkload: corev1.ObjectReference{Kind: "Deployment", Name: "checkout", Namespace: "live-demo"},
+		},
+	}
+
+	acquired, err := act.AcquireLock(context.Background(), prop1)
+	if err != nil || !acquired {
+		t.Fatalf("expected prop1 lock acquire to succeed, got acquired=%v err=%v", acquired, err)
+	}
+
+	// Competing proposal yields while prop1 holds the ConfigMap lock.
+	acquired2, err := act.AcquireLock(context.Background(), prop2)
+	if err != nil || acquired2 {
+		t.Fatalf("expected prop2 to yield while prop1 holds lock, got acquired=%v err=%v", acquired2, err)
+	}
+
+	if err := act.ReleaseLock(context.Background(), prop1); err != nil {
+		t.Fatalf("ReleaseLock(prop1) failed: %v", err)
+	}
+
+	acquired2, err = act.AcquireLock(context.Background(), prop2)
+	if err != nil || !acquired2 {
+		t.Fatalf("expected prop2 to acquire lock after prop1 released, got acquired=%v err=%v", acquired2, err)
+	}
+}

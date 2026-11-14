@@ -67,6 +67,8 @@ config:
 actuation:
   # Set to true only when authorizing ephemeral in-place pods/resize mutations.
   inPlaceResizeEnabled: false
+  # Allow live in-place memory shrinking when proposed memory retains >=1.35x working-set headroom.
+  allowInPlaceMemoryShrink: false
   # Namespaces excluded from in-place or workload actuation.
   excludedNamespaces: "kube-system,kube-public,kube-node-lease,reconcilyx-system,flux-system,argocd"
 

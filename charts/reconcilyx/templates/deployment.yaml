@@ -58,6 +58,8 @@ spec:
               value: {{ .Values.config.gridLocation | quote }}
             - name: RECONCILYX_ENABLE_INPLACE
               value: {{ and .Values.config.enableInPlaceResizing .Values.actuation.inPlaceResizeEnabled | quote }}
+            - name: RECONCILYX_ALLOW_INPLACE_MEMORY_SHRINK
+              value: {{ and .Values.config.enableInPlaceResizing .Values.actuation.inPlaceResizeEnabled .Values.actuation.allowInPlaceMemoryShrink | quote }}
             - name: RECONCILYX_EXCLUDED_NAMESPACES
               value: {{ .Values.actuation.excludedNamespaces | quote }}
             - name: RECONCILYX_ENABLE_GITOPS

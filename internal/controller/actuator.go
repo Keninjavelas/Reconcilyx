@@ -17,9 +17,10 @@ import (
 )
 
 const (
-	ExecutionLockAnnotation = "reconcilyx.io/execution-lock"
-	LastActionAnnotation    = "reconcilyx.io/last-action"
-	FieldManagerName        = "reconcilyx-operator"
+	ExecutionLockAnnotation    = "reconcilyx.io/execution-lock"
+	ExecutionLockConfigMapName = "reconcilyx-execution-locks"
+	LastActionAnnotation       = "reconcilyx.io/last-action"
+	FieldManagerName           = "reconcilyx-operator"
 )
 
 // ResizeFieldOwner is the stable field manager used for all Server-Side Apply
@@ -82,13 +83,17 @@ func NewActuatorWithOptions(c client.Client, reader client.Reader, allowInPlaceM
 	}
 }
 
+func executionLockKey(kind, name string) string {
+	return kind + "." + name
+}
+
 func (a *defaultActuator) AcquireLock(ctx context.Context, proposal *v1alpha1.OptimizationProposal) (bool, error) {
 	if proposal.Spec.TargetWorkload.Kind != "Deployment" {
 		return false, fmt.Errorf("unsupported workload kind: %s", proposal.Spec.TargetWorkload.Kind)
 	}
 
 	dep := &appsv1.Deployment{}
-	err := a.client.Get(ctx, types.NamespacedName{Name: proposal.Spec.TargetWorkload.Name, Namespace: proposal.Spec.TargetWorkload.Namespace}, dep)
+	err := a.reader.Get(ctx, types.NamespacedName{Name: proposal.Spec.TargetWorkload.Name, Namespace: proposal.Spec.TargetWorkload.Namespace}, dep)
 	if err != nil {
 		if errors.IsNotFound(err) {
 			return false, nil
@@ -96,17 +101,46 @@ func (a *defaultActuator) AcquireLock(ctx context.Context, proposal *v1alpha1.Op
 		return false, err
 	}
 
+	// Respect external/legacy annotation locks in read-only mode so Split-RBAC
+	// deployments without Deployment write access never fail lock acquisition.
 	if dep.Annotations != nil {
-		lockVal, exists := dep.Annotations[ExecutionLockAnnotation]
-		if exists && lockVal != proposal.Name {
+		if lockVal, exists := dep.Annotations[ExecutionLockAnnotation]; exists && lockVal != "" && lockVal != proposal.Name {
 			return false, nil
 		}
-	} else {
-		dep.Annotations = make(map[string]string)
 	}
 
-	dep.Annotations[ExecutionLockAnnotation] = proposal.Name
-	if err := a.client.Update(ctx, dep); err != nil {
+	lockKey := executionLockKey(proposal.Spec.TargetWorkload.Kind, proposal.Spec.TargetWorkload.Name)
+	cm := &corev1.ConfigMap{}
+	cmKey := types.NamespacedName{Name: ExecutionLockConfigMapName, Namespace: proposal.Spec.TargetWorkload.Namespace}
+	if err := a.reader.Get(ctx, cmKey, cm); err != nil {
+		if !errors.IsNotFound(err) {
+			return false, err
+		}
+		cm = &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      ExecutionLockConfigMapName,
+				Namespace: proposal.Spec.TargetWorkload.Namespace,
+			},
+			Data: map[string]string{lockKey: proposal.Name},
+		}
+		if err := a.client.Create(ctx, cm); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+
+	if cm.Data == nil {
+		cm.Data = make(map[string]string)
+	}
+	if lockVal, exists := cm.Data[lockKey]; exists && lockVal != "" && lockVal != proposal.Name {
+		return false, nil
+	}
+	if cm.Data[lockKey] == proposal.Name {
+		return true, nil
+	}
+
+	cm.Data[lockKey] = proposal.Name
+	if err := a.client.Update(ctx, cm); err != nil {
 		return false, err
 	}
 
@@ -118,20 +152,20 @@ func (a *defaultActuator) ReleaseLock(ctx context.Context, proposal *v1alpha1.Op
 		return nil
 	}
 
-	dep := &appsv1.Deployment{}
-	err := a.client.Get(ctx, types.NamespacedName{Name: proposal.Spec.TargetWorkload.Name, Namespace: proposal.Spec.TargetWorkload.Namespace}, dep)
-	if err != nil {
+	lockKey := executionLockKey(proposal.Spec.TargetWorkload.Kind, proposal.Spec.TargetWorkload.Name)
+	cm := &corev1.ConfigMap{}
+	cmKey := types.NamespacedName{Name: ExecutionLockConfigMapName, Namespace: proposal.Spec.TargetWorkload.Namespace}
+	if err := a.reader.Get(ctx, cmKey, cm); err != nil {
 		if errors.IsNotFound(err) {
 			return nil
 		}
 		return err
 	}
 
-	if dep.Annotations != nil {
-		lockVal, exists := dep.Annotations[ExecutionLockAnnotation]
-		if exists && lockVal == proposal.Name {
-			delete(dep.Annotations, ExecutionLockAnnotation)
-			return a.client.Update(ctx, dep)
+	if cm.Data != nil {
+		if lockVal, exists := cm.Data[lockKey]; exists && lockVal == proposal.Name {
+			delete(cm.Data, lockKey)
+			return a.client.Update(ctx, cm)
 		}
 	}
 	return nil

@@ -72,6 +72,7 @@ jobs:
             --set image.pullPolicy=Never \
             --set api.key="${API_KEY}" \
             --set actuation.inPlaceResizeEnabled=true \
+            --set actuation.allowInPlaceMemoryShrink=true \
             --set config.enableInPlaceResizing=true \
             --set resources.requests.cpu=25m \
             --set resources.requests.memory=64Mi \
