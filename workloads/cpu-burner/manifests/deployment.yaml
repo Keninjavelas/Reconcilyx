@@ -1,10 +1,12 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: cpu-burner
-  namespace: reconcilyx-system
+  annotations:
+    reconcilyx.io/last-proposal: h06-protected-proposal
   labels:
     app: cpu-burner
+  name: cpu-burner
+  namespace: reconcilyx-system
 spec:
   replicas: 1
   selector:
@@ -16,31 +18,31 @@ spec:
         app: cpu-burner
     spec:
       containers:
-      - name: cpu-burner
-        image: reconcilyx/cpu-burner:latest
+      - image: reconcilyx/cpu-burner:latest
         imagePullPolicy: IfNotPresent
+        name: cpu-burner
         ports:
         - containerPort: 8080
           name: http
         resources:
-          requests:
-            cpu: 500m
-            memory: 128Mi
           limits:
             cpu: 1000m
             memory: 256Mi
+          requests:
+            cpu: 250m
+            memory: 96Mi
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: cpu-burner
-  namespace: reconcilyx-system
   labels:
     app: cpu-burner
+  name: cpu-burner
+  namespace: reconcilyx-system
 spec:
   ports:
-  - port: 8080
+  - name: http
+    port: 8080
     targetPort: http
-    name: http
   selector:
     app: cpu-burner
