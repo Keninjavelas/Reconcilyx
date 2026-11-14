@@ -1,9 +1,9 @@
 name: Build
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "gitops-protected-target" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "gitops-protected-target" ]
 jobs:
   build:
     name: build
