@@ -23,7 +23,8 @@ jobs:
           npm run build
       - uses: actions/setup-go@v5
         with:
-          go-version-file: 'go.mod'
+          go-version: '^1.26.11'
+          check-latest: true
       - name: Build manager and kubectl-reconcilyx CLI
         run: |
           go build -o bin/manager ./cmd/main.go

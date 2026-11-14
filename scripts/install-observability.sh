@@ -19,6 +19,14 @@ helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
   --set grafana.enabled="${GRAFANA_ENABLED}" \
   --set prometheus.prometheusSpec.scrapeInterval="15s" \
   --set prometheus.prometheusSpec.evaluationInterval="15s" \
+  --set prometheus.prometheusSpec.resources.requests.cpu="50m" \
+  --set prometheus.prometheusSpec.resources.requests.memory="256Mi" \
+  --set prometheusOperator.resources.requests.cpu="25m" \
+  --set prometheusOperator.resources.requests.memory="64Mi" \
+  --set prometheus-node-exporter.resources.requests.cpu="10m" \
+  --set prometheus-node-exporter.resources.requests.memory="32Mi" \
+  --set kube-state-metrics.resources.requests.cpu="10m" \
+  --set kube-state-metrics.resources.requests.memory="32Mi" \
   --set kubeStateMetrics.enabled=true \
   --set nodeExporter.enabled=true \
   --wait --timeout "${WAIT_TIMEOUT}"

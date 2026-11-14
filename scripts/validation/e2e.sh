@@ -59,9 +59,9 @@ WORKLOAD="e2e-target"
 POLICY="e2e-policy-${RUN_ID}"
 PROPOSAL="e2e-learning-${RUN_ID}"
 
-TEMPLATE_APP_CPU="500m"
+TEMPLATE_APP_CPU="${E2E_TEMPLATE_APP_CPU:-300m}"
 TEMPLATE_APP_MEMORY="256Mi"
-TEMPLATE_SIDECAR_CPU="100m"
+TEMPLATE_SIDECAR_CPU="${E2E_TEMPLATE_SIDECAR_CPU:-50m}"
 TEMPLATE_SIDECAR_MEMORY="64Mi"
 LIVE_CPU="250m"
 LIVE_MEMORY="192Mi"
@@ -259,7 +259,7 @@ $KUBECTL -n "$MANAGER_NAMESPACE" get deployment "$MANAGER_DEPLOYMENT" >/dev/null
 MANAGER_SA=$($KUBECTL -n "$MANAGER_NAMESPACE" get deployment "$MANAGER_DEPLOYMENT" \
 	-o jsonpath='{.spec.template.spec.serviceAccountName}' 2>/dev/null)
 MANAGER_SA="${MANAGER_SA:-default}"
-if ! $KUBECTL auth can-i patch pods/resize --as="system:serviceaccount:${MANAGER_NAMESPACE}:${MANAGER_SA}" >/dev/null 2>&1; then
+if ! $KUBECTL auth can-i patch pods --subresource=resize --as="system:serviceaccount:${MANAGER_NAMESPACE}:${MANAGER_SA}" >/dev/null 2>&1; then
 	log "WARN ServiceAccount ${MANAGER_NAMESPACE}/${MANAGER_SA} lacks pods/resize patch RBAC; re-deploy Helm with --set actuation.inPlaceResizeEnabled=true --set config.enableInPlaceResizing=true"
 fi
 
@@ -417,8 +417,17 @@ then
 	fatal "could not create fixture deployment"
 fi
 
-$KUBECTL -n "$NAMESPACE" rollout status "deployment/${WORKLOAD}" --timeout=180s >"$ARTIFACT_DIR/rollout.log" 2>&1 ||
+if ! $KUBECTL -n "$NAMESPACE" rollout status "deployment/${WORKLOAD}" --timeout=180s >"$ARTIFACT_DIR/rollout.log" 2>&1; then
+	{
+		echo "=== PODS ==="
+		$KUBECTL get pods -A -o wide 2>&1 || true
+		echo "=== DESCRIBE ==="
+		$KUBECTL -n "$NAMESPACE" describe pod -l "app=${WORKLOAD}" 2>&1 || true
+		echo "=== EVENTS ==="
+		$KUBECTL -n "$NAMESPACE" get events --sort-by=.lastTimestamp 2>&1 || true
+	} >>"$ARTIFACT_DIR/rollout.log"
 	fatal "fixture deployment did not become available"
+fi
 
 # Pre-seed live pod requests with the operator's field manager. This reproduces
 # the state that the snapshot must read: pods diverge from the template, and the

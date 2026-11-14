@@ -69,6 +69,9 @@ spec:
         - containerPort: 8081
           name: health
           protocol: TCP
+        env:
+        - name: ENABLE_WEBHOOKS
+          value: "false"
         securityContext:
           readOnlyRootFilesystem: true
           allowPrivilegeEscalation: false

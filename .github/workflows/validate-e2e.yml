@@ -35,7 +35,8 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version-file: go.mod
+          go-version: '^1.26.11'
+          check-latest: true
 
       - name: Install kind
         run: |
@@ -54,6 +55,8 @@ jobs:
         run: |
           make docker-build
           kind load docker-image "${IMG}" --name "${KIND_CLUSTER}"
+          docker pull registry.k8s.io/pause:3.10
+          kind load docker-image registry.k8s.io/pause:3.10 --name "${KIND_CLUSTER}"
 
       - name: Install Prometheus
         env:
@@ -72,6 +75,8 @@ jobs:
             --set api.key="${API_KEY}" \
             --set actuation.inPlaceResizeEnabled=true \
             --set config.enableInPlaceResizing=true \
+            --set resources.requests.cpu=25m \
+            --set resources.requests.memory=64Mi \
             --wait --timeout 5m
           kubectl -n "${MANAGER_NAMESPACE}" rollout status deployment/reconcilyx-controller-manager --timeout=180s
           kubectl get crd optimizationproposals.optimization.reconcilyx.io optimizationpolicies.optimization.reconcilyx.io

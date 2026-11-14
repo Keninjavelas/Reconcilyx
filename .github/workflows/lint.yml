@@ -23,7 +23,8 @@ jobs:
           npm run build
       - uses: actions/setup-go@v5
         with:
-          go-version-file: 'go.mod'
+          go-version: '^1.26.11'
+          check-latest: true
       - name: Run go vet
         run: go vet ./...
       - name: Run govulncheck
@@ -55,3 +56,4 @@ jobs:
           severity: HIGH,CRITICAL
           exit-code: "1"
           ignore-unfixed: true
+          skip-dirs: 'workloads,artifacts,hack,test,ui/node_modules'

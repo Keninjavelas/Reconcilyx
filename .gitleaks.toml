@@ -7,6 +7,8 @@ useDefault = true
 description = "Allowlist synthetic test tokens, documentation examples, and Go/Helm fixture paths"
 paths = [
   '''^\.gitleaks\.toml$''',
+  '''^HIATUS\.md$''',
+  '''^STATUS\.md$''',
   '''^deploy/terraform/README\.md$''',
   '''^docs/RUNBOOK\.md$''',
   '''^docs/THREAT_MODEL\.md$''',

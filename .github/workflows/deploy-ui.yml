@@ -1,11 +1,8 @@
 name: Deploy UI to GitHub Pages
 
+# Production UI deploys via Vercel on push; keep GitHub Pages workflow manual-only
+# so private repositories without GitHub Pages enabled do not fail push checks.
 on:
-  push:
-    branches: [main]
-    paths:
-      - "ui/**"
-      - ".github/workflows/deploy-ui.yml"
   workflow_dispatch:
 
 permissions:

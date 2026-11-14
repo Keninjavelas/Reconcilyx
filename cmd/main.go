@@ -6,6 +6,7 @@ import (
 	"flag"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -262,12 +263,16 @@ func main() {
 	analyzer, err := func() (engine.Analyzer, error) {
 		carbonCfg := carbon.CarbonConfigFromEnv()
 		cp := carbon.NewCarbonProvider(carbonCfg)
-		setupLog.Info("Carbon provider configured", "provider", carbonCfg.Provider, "source", func() string {
-			if it, err := cp.IntensityForRegion(context.Background(), "us-east-1"); err == nil {
-				return it.Source
-			}
-			return "unknown"
-		}())
+		setupLog.Info("Carbon provider configured", "provider", carbonCfg.Provider)
+		if carbonCfg.Provider != "" && carbonCfg.Provider != "static" {
+			go func() {
+				probeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+				if it, probeErr := cp.IntensityForRegion(probeCtx, "us-east-1"); probeErr == nil {
+					setupLog.Info("Carbon provider probe succeeded", "provider", carbonCfg.Provider, "source", it.Source)
+				}
+			}()
+		}
 		return controller.BuildDefaultAnalyzer(prometheusURL, cp)
 	}()
 	if err != nil {
@@ -351,20 +356,20 @@ func main() {
 				api.EmitFederatedDeltaSent(spokeClusterName)
 			})
 			rlAgent.SetFederatedEmitter(emitter)
-			bootstrapCtx, bootstrapCancel := context.WithTimeout(context.Background(), 15*time.Second)
-			snap, bErr := federated.FetchGlobalModelForChannel(bootstrapCtx, hubBaseURL, apiKey, modelChannel, spokeClusterName, nil)
-			if bErr == nil && snap != nil && len(snap.Entries) > 0 {
-				rlAgent.LoadGlobal(bootstrapCtx, snap)
-				setupLog.Info("Federated bootstrap loaded global Q-table", "entries", len(snap.Entries), "version", snap.Version, "cluster", spokeClusterName, "channel", modelChannel)
-				api.EmitFederatedBootstrapOutcome(spokeClusterName, "success")
-			} else if bErr != nil {
-				setupLog.Info("Federated bootstrap skipped (hub unreachable or empty)", "cluster", spokeClusterName, "channel", modelChannel, "error", safeErr(bErr))
-				api.EmitFederatedBootstrapOutcome(spokeClusterName, "skipped")
-			} else {
-				api.EmitFederatedBootstrapOutcome(spokeClusterName, "empty")
-			}
-			bootstrapCancel()
 			go func() {
+				bootstrapCtx, bootstrapCancel := context.WithTimeout(context.Background(), 15*time.Second)
+				snap, bErr := federated.FetchGlobalModelForChannel(bootstrapCtx, hubBaseURL, apiKey, modelChannel, spokeClusterName, nil)
+				if bErr == nil && snap != nil && len(snap.Entries) > 0 {
+					rlAgent.LoadGlobal(bootstrapCtx, snap)
+					setupLog.Info("Federated bootstrap loaded global Q-table", "entries", len(snap.Entries), "version", snap.Version, "cluster", spokeClusterName, "channel", modelChannel)
+					api.EmitFederatedBootstrapOutcome(spokeClusterName, "success")
+				} else if bErr != nil {
+					setupLog.Info("Federated bootstrap skipped (hub unreachable or empty)", "cluster", spokeClusterName, "channel", modelChannel, "error", safeErr(bErr))
+					api.EmitFederatedBootstrapOutcome(spokeClusterName, "skipped")
+				} else {
+					api.EmitFederatedBootstrapOutcome(spokeClusterName, "empty")
+				}
+				bootstrapCancel()
 				mgrCtx, cancel := context.WithCancel(context.Background())
 				defer cancel()
 				if err := emitter.Run(mgrCtx); err != nil {
@@ -504,13 +509,22 @@ func main() {
 
 	// +kubebuilder:scaffold:builder
 
-	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
+	enableWebhooksEnv := strings.TrimSpace(strings.ToLower(os.Getenv("ENABLE_WEBHOOKS")))
+	webhookCertDir := webhookCertPath
+	if webhookCertDir == "" {
+		webhookCertDir = filepath.Join(os.TempDir(), "k8s-webhook-server", "serving-certs")
+	}
+	webhookCertFile := filepath.Join(webhookCertDir, webhookCertName)
+	_, certStatErr := os.Stat(webhookCertFile)
+	if enableWebhooksEnv != "false" && (enableWebhooksEnv == "true" || certStatErr == nil) {
 		mgr.GetWebhookServer().Register("/mutate-v1-pod", &webhook.Admission{
 			Handler: &reconcilyxwebhook.PodMutator{Decoder: admission.NewDecoder(mgr.GetScheme())},
 		})
 		mgr.GetWebhookServer().Register("/validate-v1-pod-eviction", &webhook.Admission{
 			Handler: &reconcilyxwebhook.EvictionValidator{Decoder: admission.NewDecoder(mgr.GetScheme())},
 		})
+	} else if enableWebhooksEnv != "false" {
+		setupLog.Info("Webhook serving certificates not found; skipping webhook server registration", "certPath", webhookCertFile)
 	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
