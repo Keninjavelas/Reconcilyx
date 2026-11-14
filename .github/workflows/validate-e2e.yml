@@ -55,8 +55,6 @@ jobs:
         run: |
           make docker-build
           kind load docker-image "${IMG}" --name "${KIND_CLUSTER}"
-          docker pull registry.k8s.io/pause:3.10
-          kind load docker-image registry.k8s.io/pause:3.10 --name "${KIND_CLUSTER}"
 
       - name: Install Prometheus
         env:
