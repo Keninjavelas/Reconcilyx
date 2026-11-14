@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { readReplayPreference, writeReplayPreference } from "@/lib/evidenceReplay";
 
 type ToastKind = "info" | "success" | "error" | "warn";
 
@@ -17,6 +18,8 @@ interface AppState {
   selectedProposals: string[];
   autoRefresh: boolean;
   shortcutsOpen: boolean;
+  hubGateOpen: boolean;
+  replayMode: boolean;
   monthlySavingsGoalUSD: number;
 
   setCluster: (c: string) => void;
@@ -29,6 +32,8 @@ interface AppState {
   clearSelectedProposals: () => void;
   toggleAutoRefresh: () => void;
   setShortcutsOpen: (open: boolean) => void;
+  setHubGateOpen: (open: boolean) => void;
+  setReplayMode: (enabled: boolean) => void;
   setMonthlySavingsGoalUSD: (goal: number) => void;
 }
 
@@ -53,6 +58,8 @@ export const useAppStore = create<AppState>((set) => ({
   selectedProposals: [],
   autoRefresh: initialAutoRefresh(),
   shortcutsOpen: false,
+  hubGateOpen: false,
+  replayMode: readReplayPreference(),
   monthlySavingsGoalUSD: initialGoal(),
   setCluster: (c) => set({ cluster: c }),
   setNamespaceFilter: (n) => set({ namespaceFilter: n }),
@@ -86,6 +93,11 @@ export const useAppStore = create<AppState>((set) => ({
       return { autoRefresh: next };
     }),
   setShortcutsOpen: (open) => set({ shortcutsOpen: open }),
+  setHubGateOpen: (open) => set({ hubGateOpen: open }),
+  setReplayMode: (enabled) => {
+    writeReplayPreference(enabled);
+    set((s) => ({ replayMode: enabled, refreshEpoch: s.refreshEpoch + 1 }));
+  },
 }));
 
 export function formatCurrency(n: number, digits = 2): string {

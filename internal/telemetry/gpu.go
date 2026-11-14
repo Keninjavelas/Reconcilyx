@@ -33,6 +33,15 @@ func ScrapeGPUMetrics(ctx context.Context, promClient MetricsClient, workload, n
 		aggregate.GPUUtilizationPct += m.GPUUtilizationPct * float64(m.GPUCount)
 		aggregate.GPUMemoryUsedBytes += m.GPUMemoryUsedBytes
 		aggregate.GPUMemoryTotalBytes += m.GPUMemoryTotalBytes
+		aggregate.PowerUsageWatts += m.PowerUsageWatts
+		aggregate.SMClockMHz += m.SMClockMHz * float64(m.GPUCount)
+		aggregate.GREngineActivePct += m.GREngineActivePct * float64(m.GPUCount)
+		if m.MIGProfile != "" && aggregate.MIGProfile == "" {
+			aggregate.MIGProfile = m.MIGProfile
+		}
+		if m.TelemetryStatus != "" {
+			aggregate.TelemetryStatus = m.TelemetryStatus
+		}
 		if m.TemperatureCelsius > aggregate.TemperatureCelsius {
 			aggregate.TemperatureCelsius = m.TemperatureCelsius
 		}
@@ -40,6 +49,10 @@ func ScrapeGPUMetrics(ctx context.Context, promClient MetricsClient, workload, n
 	}
 	if containers > 0 {
 		aggregate.GPUUtilizationPct /= float64(containers)
+		aggregate.SMClockMHz /= float64(containers)
+		aggregate.GREngineActivePct /= float64(containers)
+	} else {
+		aggregate.TelemetryStatus = "unmonitored"
 	}
 	return aggregate, nil
 }

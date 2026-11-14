@@ -92,11 +92,18 @@ rejects the request, scan exits non-zero and reports the API error.`,
 			return err
 		}
 
-		if format == "json" {
+		switch format {
+		case "json":
 			return writeJSONOutput(cmd.OutOrStdout(), report)
+		case "markdown":
+			writeScanMarkdown(cmd.OutOrStdout(), report)
+			return nil
+		case "sarif":
+			return writeScanSARIF(cmd.OutOrStdout(), report)
+		default:
+			writeScanTable(cmd, report)
+			return nil
 		}
-		writeScanTable(cmd, report)
-		return nil
 	},
 }
 

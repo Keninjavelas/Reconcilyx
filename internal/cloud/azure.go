@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/reconcilyx/operator/pkg/pipelinemetrics"
 )
 
 const (
@@ -167,13 +169,18 @@ func isLinuxOnDemandAzureMeter(skuName, meterName, productName, priceType, reser
 func (az *AzurePricingProvider) OnDemandPrice(ctx context.Context, instanceType, region string) (float64, error) {
 	if az.enableLive {
 		if v, err := az.fetchOnDemandLive(ctx, instanceType, region); err == nil && v > 0 {
+			pipelinemetrics.FallbackActive.WithLabelValues("cloud_pricing", "azure").Set(0)
 			return v, nil
 		} else if err != nil {
+			pipelinemetrics.FallbackActive.WithLabelValues("cloud_pricing", "azure").Set(1)
 			slog.Warn("Live Azure pricing unavailable; using bundled fallback",
 				"instance", instanceType, "region", region, "error", err.Error())
 		}
 	}
 	if rate, ok := az.fallback.rates[instanceType]; ok {
+		if !az.enableLive {
+			pipelinemetrics.FallbackActive.WithLabelValues("cloud_pricing", "azure").Set(1)
+		}
 		return rate, nil
 	}
 	return 0, fmt.Errorf("no Azure price for %s in %s and no local fallback", instanceType, region)

@@ -5,9 +5,12 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/reconcilyx/operator/pkg/pipelinemetrics"
 )
 
 // RetryPolicy controls retries for idempotent live pricing requests.
@@ -25,7 +28,7 @@ func (p RetryPolicy) withDefaults() RetryPolicy {
 		p.BaseDelay = 200 * time.Millisecond
 	}
 	if p.MaxDelay <= 0 {
-		p.MaxDelay = 2 * time.Second
+		p.MaxDelay = 5 * time.Second
 	}
 	return p
 }
@@ -33,9 +36,13 @@ func (p RetryPolicy) withDefaults() RetryPolicy {
 func (p RetryPolicy) delay(attempt int) time.Duration {
 	d := p.BaseDelay << uint(attempt-1)
 	if d > p.MaxDelay || d <= 0 {
-		return p.MaxDelay
+		d = p.MaxDelay
 	}
-	return d
+	if d <= 0 {
+		return 0
+	}
+	// Full jitter: uniform [0, exp].
+	return time.Duration(rand.Int64N(int64(d) + 1))
 }
 
 // doWithRetry issues requests built by newRequest and retries network errors,
@@ -62,6 +69,7 @@ func doWithRetry(ctx context.Context, client *http.Client, newRequest func() (*h
 			if attempt == policy.MaxAttempts {
 				break
 			}
+			pipelinemetrics.RetriesTotal.WithLabelValues("cloud_pricing", "transport_error").Inc()
 			if err := sleepContext(ctx, policy.delay(attempt)); err != nil {
 				return nil, err
 			}
@@ -84,11 +92,13 @@ func doWithRetry(ctx context.Context, client *http.Client, newRequest func() (*h
 
 		lastErr = fmt.Errorf("pricing api status %d", resp.StatusCode)
 		delay := retryAfter(resp, policy, attempt)
+		statusCode := resp.StatusCode
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
 		resp.Body.Close()
 		if attempt == policy.MaxAttempts {
 			break
 		}
+		pipelinemetrics.RetriesTotal.WithLabelValues("cloud_pricing", strconv.Itoa(statusCode)).Inc()
 		if err := sleepContext(ctx, delay); err != nil {
 			return nil, err
 		}

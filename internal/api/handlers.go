@@ -27,6 +27,7 @@ import (
 	optimizationv1alpha1 "github.com/reconcilyx/operator/api/v1alpha1"
 	"github.com/reconcilyx/operator/internal/federated"
 	"github.com/reconcilyx/operator/internal/notifiers"
+	"github.com/reconcilyx/operator/internal/telemetry"
 )
 
 // --- Common helpers ---------------------------------------------------------
@@ -1011,6 +1012,18 @@ func (s *Server) handleFederatedDeltas(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Invalid delta batch body", err.Error())
 		return
 	}
+	if code, msg, ok := ValidateSpokeClusterBinding(r.Context(), body.ClusterName); !ok {
+		writeError(w, code, msg)
+		return
+	}
+	for _, d := range body.Deltas {
+		if d.ClusterName != "" {
+			if code, msg, ok := ValidateSpokeClusterBinding(r.Context(), d.ClusterName); !ok {
+				writeError(w, code, msg)
+				return
+			}
+		}
+	}
 	if len(body.Deltas) == 0 {
 		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "received": 0})
 		return
@@ -1026,20 +1039,68 @@ func (s *Server) handleFederatedDeltas(w http.ResponseWriter, r *http.Request) {
 		}
 		normalized = append(normalized, d)
 	}
-	s.fedAggregator.AddDeltas(normalized)
+	batchID := strings.TrimSpace(body.BatchID)
+	if batchID == "" {
+		batchID = strings.TrimSpace(r.Header.Get("X-Reconcilyx-Idempotency-Key"))
+	}
+	if !s.fedAggregator.AddBatch(batchID, normalized) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":    "ok",
+			"received":  0,
+			"duplicate": true,
+			"batchId":   batchID,
+		})
+		return
+	}
 	telemetryDeltasReceivedAdd(cluster, len(normalized))
-	if n := s.fedAggregator.PendingDeltaCount(); n > 0 && n%500 == 0 {
-		snap := s.fedAggregator.CompactAndSnapshot()
-		if s.deps.Client != nil && snap != nil {
-			_ = federated.SaveGlobalModel(r.Context(), s.deps.Client, s.fedNamespace, s.fedModelName, snap)
+
+	var compacted *federated.GlobalQTable
+	if s.fedAggregator.ShouldCompact(s.compactThreshold, s.compactInterval) {
+		if snap, err := s.compactAndPersistSnapshot(r.Context()); err == nil {
+			compacted = snap
 		}
-		syncGauges(s.fedAggregator)
+	}
+	resp := map[string]any{
+		"status":    "accepted",
+		"cluster":   cluster,
+		"received":  len(normalized),
+		"duplicate": false,
+		"pending":   s.fedAggregator.PendingDeltaCount(),
+		"compacted": compacted != nil,
+	}
+	if batchID != "" {
+		resp["batchId"] = batchID
+	}
+	if compacted != nil {
+		resp["version"] = compacted.Version
+		resp["versionStr"] = compacted.VersionStr
+		resp["modelHash"] = compacted.ModelHash
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleFederationCompact(w http.ResponseWriter, r *http.Request) {
+	if s.fedAggregator == nil {
+		writeError(w, http.StatusServiceUnavailable, "Federated aggregator is not initialized")
+		return
+	}
+	snap, err := s.compactAndPersistSnapshot(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to persist compacted snapshot", err.Error())
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":   "accepted",
-		"cluster":  cluster,
-		"received": len(normalized),
-		"pending":  s.fedAggregator.PendingDeltaCount(),
+		"status":               "compacted",
+		"version":              snap.Version,
+		"versionStr":           snap.VersionStr,
+		"modelHash":            snap.ModelHash,
+		"entries":              len(snap.Entries),
+		"isStable":             snap.IsStable,
+		"convergenceScore":     snap.ConvergenceScore,
+		"outlierRejectedCount": snap.OutlierRejectedCount,
+		"pending":              s.fedAggregator.PendingDeltaCount(),
+		"stable":               s.modelRegistry.StableVersion(),
+		"canary":               s.modelRegistry.CanaryVersion(),
 	})
 }
 
@@ -1093,6 +1154,58 @@ func (s *Server) handleFederatedCanaryRollback(w http.ResponseWriter, r *http.Re
 		"stable": s.modelRegistry.StableVersion(),
 		"canary": s.modelRegistry.CanaryVersion(),
 	})
+}
+
+func (s *Server) handleBackfill(w http.ResponseWriter, r *http.Request) {
+	if s.backfillEngine == nil {
+		writeError(w, http.StatusServiceUnavailable, "Telemetry backfill engine is not initialized")
+		return
+	}
+	var reqBody struct {
+		Namespace string `json:"namespace"`
+		From      string `json:"from"`
+		To        string `json:"to"`
+		Step      string `json:"step,omitempty"`
+	}
+	if err := readBody(r, &reqBody); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid backfill request body", err.Error())
+		return
+	}
+	fromTime, err := time.Parse(time.RFC3339, strings.TrimSpace(reqBody.From))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid 'from' timestamp (expected RFC3339)", err.Error())
+		return
+	}
+	toTime, err := time.Parse(time.RFC3339, strings.TrimSpace(reqBody.To))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid 'to' timestamp (expected RFC3339)", err.Error())
+		return
+	}
+	if !fromTime.Before(toTime) {
+		writeError(w, http.StatusBadRequest, "Invalid range: 'from' must be earlier than 'to'")
+		return
+	}
+	var step time.Duration
+	if sVal := strings.TrimSpace(reqBody.Step); sVal != "" {
+		parsedStep, err := time.ParseDuration(sVal)
+		if err != nil || parsedStep <= 0 {
+			writeError(w, http.StatusBadRequest, "Invalid 'step' duration (expected positive Go duration like 5m)")
+			return
+		}
+		step = parsedStep
+	}
+
+	report, err := s.backfillEngine.Backfill(r.Context(), telemetry.BackfillRequest{
+		Namespace: strings.TrimSpace(reqBody.Namespace),
+		From:      fromTime,
+		To:        toTime,
+		Step:      step,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "Telemetry backfill failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, report)
 }
 
 var _ = context.Background

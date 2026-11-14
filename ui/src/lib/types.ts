@@ -368,4 +368,7 @@ export interface AuditEntry {
 export interface HealthResponse {
   status: string;
   time: string;
+  version?: string;
+  carbonSource?: string;
+  pricingSources?: Record<string, string>;
 }

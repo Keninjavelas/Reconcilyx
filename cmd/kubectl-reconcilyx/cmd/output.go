@@ -28,7 +28,7 @@ func withExitCode(code int, err error) error {
 }
 
 func addOutputFlag(cmd *cobra.Command) {
-	cmd.Flags().StringP("output", "o", "table", "Output format: table or json")
+	cmd.Flags().StringP("output", "o", "table", "Output format: table, json, markdown, or sarif")
 }
 
 func resolveOutputFormat(cmd *cobra.Command) (string, error) {
@@ -41,8 +41,12 @@ func resolveOutputFormat(cmd *cobra.Command) (string, error) {
 		return "table", nil
 	case "json":
 		return "json", nil
+	case "markdown", "md":
+		return "markdown", nil
+	case "sarif":
+		return "sarif", nil
 	default:
-		return "", fmt.Errorf("unsupported output format %q (use table or json)", raw)
+		return "", fmt.Errorf("unsupported output format %q (use table, json, markdown, or sarif)", raw)
 	}
 }
 

@@ -3,10 +3,37 @@ package controller
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/reconcilyx/operator/api/v1alpha1"
 )
+
+var defaultExcludedNamespaces = []string{
+	"kube-system",
+	"kube-public",
+	"kube-node-lease",
+	"reconcilyx-system",
+	"flux-system",
+	"argocd",
+}
+
+func excludedNamespaceSet() map[string]struct{} {
+	raw, ok := os.LookupEnv("RECONCILYX_EXCLUDED_NAMESPACES")
+	list := defaultExcludedNamespaces
+	if ok {
+		list = strings.Split(raw, ",")
+	}
+	set := make(map[string]struct{}, len(list))
+	for _, ns := range list {
+		ns = strings.TrimSpace(ns)
+		if ns != "" {
+			set[ns] = struct{}{}
+		}
+	}
+	return set
+}
 
 // ExecutionDecision defines the outcome of a JIT validation.
 type ExecutionDecision string
@@ -62,6 +89,17 @@ func (g *defaultExecutionGate) ValidateJIT(ctx context.Context, proposal *v1alph
 	// 4. Restrict execution scope to what the in-place resize actuator supports.
 	if !isActuatableRecommendation(proposal.Spec.Recommendation) {
 		return ExecutionReject, fmt.Errorf("recommendation type %s is not supported by in-place resize actuation", proposal.Spec.Recommendation)
+	}
+
+	// 4b. Deny actuation on protected system / GitOps control-plane namespaces.
+	targetNS := strings.TrimSpace(proposal.Spec.TargetWorkload.Namespace)
+	if targetNS == "" {
+		targetNS = strings.TrimSpace(proposal.Namespace)
+	}
+	if targetNS != "" {
+		if _, denied := excludedNamespaceSet()[targetNS]; denied {
+			return ExecutionReject, fmt.Errorf("namespace %q is protected by excludedNamespaces deny-list", targetNS)
+		}
 	}
 
 	// 5. Verify no other autoscaler owns resource sizing for this workload.

@@ -57,12 +57,14 @@ func (p *defaultProvider) GetWorkloadMetrics(ctx context.Context, ref corev1.Obj
 		seen[k] = struct{}{}
 	}
 
+	usageByContainer := make(map[string]float64, len(seen))
 	for containerName := range seen {
 		cm := &ContainerMetrics{
 			Name: containerName,
 		}
 		if c, ok := cpuMap[containerName]; ok {
 			cm.CPU = c
+			usageByContainer[containerName] = c.UsageCores
 		}
 		if m, ok := memMap[containerName]; ok {
 			cm.Memory = m
@@ -83,9 +85,19 @@ func (p *defaultProvider) GetWorkloadMetrics(ctx context.Context, ref corev1.Obj
 		containerMetrics[containerName] = cm
 	}
 
+	energyMap, energySource := InspectEnergy(ctx, p.client, ref, usageByContainer)
+	for containerName, cm := range containerMetrics {
+		if e, ok := energyMap[containerName]; ok {
+			cm.Energy = e
+		}
+	}
+	costAttribution, _ := InspectOpenCost(ctx, p.client, ref)
+
 	workloadMetrics := &WorkloadMetrics{
-		Replicas:   replicas,
-		Containers: containerMetrics,
+		Replicas:        replicas,
+		Containers:      containerMetrics,
+		EnergySource:    energySource,
+		CostAttribution: costAttribution,
 	}
 
 	if errCPU != nil || errMem != nil || errRestart != nil {

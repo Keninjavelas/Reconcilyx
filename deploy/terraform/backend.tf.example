@@ -1,0 +1,26 @@
+# Copy this file to backend.tf and uncomment exactly ONE remote state backend.
+# Never commit real bucket names, KMS keys, or terraform.tfstate files to Git.
+
+# ---------------------------------------------------------------------------
+# Option A: AWS S3 + DynamoDB state locking (recommended for EKS deployments)
+# ---------------------------------------------------------------------------
+# terraform {
+#   backend "s3" {
+#     bucket         = "example-org-terraform-state"
+#     key            = "reconcilyx/prod/terraform.tfstate"
+#     region         = "us-east-1"
+#     dynamodb_table = "terraform-state-locks"
+#     encrypt        = true
+#     kms_key_id     = "alias/terraform-state"
+#   }
+# }
+
+# ---------------------------------------------------------------------------
+# Option B: Google Cloud Storage (GCS) native object locking (for GKE)
+# ---------------------------------------------------------------------------
+# terraform {
+#   backend "gcs" {
+#     bucket = "example-org-reconcilyx-tfstate"
+#     prefix = "reconcilyx/prod"
+#   }
+# }

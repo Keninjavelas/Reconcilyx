@@ -13,6 +13,11 @@ const (
 	ProviderAWS   ProviderName = "AWS"
 	ProviderGCP   ProviderName = "GCP"
 	ProviderAzure ProviderName = "Azure"
+
+	SourceAWSLive         = "aws-price-list-api"
+	SourceGCPLive         = "gcp-cloud-billing-api"
+	SourceAzureLive       = "azure-retail-prices-api"
+	SourceBundledFallback = "bundled-catalog-fallback"
 )
 
 type InstanceType struct {

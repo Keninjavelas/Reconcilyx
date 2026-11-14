@@ -105,15 +105,19 @@ func TestAnalyzer_Analyze(t *testing.T) {
 
 		assert.Equal(t, v1alpha1.RecommendationRightSize, proposal.Spec.Recommendation)
 
-		// CPU target is 0.5 * 1.2 = 0.6 cores (600m)
-		assert.Equal(t, int64(600), proposal.Spec.ProposedResources.Requests.Cpu().MilliValue())
+		// Asymmetric CPU target: 0.5 * 1.15 = 0.575 cores (575m)
+		assert.Equal(t, int64(575), proposal.Spec.ProposedResources.Requests.Cpu().MilliValue())
 
-		// Memory target is 512 * 1.2 = 614.4 MB (approx 614Mi)
-		assert.Equal(t, int64(614), proposal.Spec.ProposedResources.Requests.Memory().Value()/(1024*1024))
+		// Asymmetric Memory target: 512 * 1.25 = 640Mi on BOTH requests and limits
+		assert.Equal(t, int64(640), proposal.Spec.ProposedResources.Requests.Memory().Value()/(1024*1024))
+		assert.Equal(t, int64(640), proposal.Spec.ProposedResources.Limits.Memory().Value()/(1024*1024))
 
 		byContainer, ok := proposal.Spec.ProposedResourcesByContainer["app"]
 		assert.True(t, ok)
-		assert.Equal(t, int64(600), byContainer.Requests.Cpu().MilliValue())
+		assert.Equal(t, int64(575), byContainer.Requests.Cpu().MilliValue())
+		assert.Equal(t, int64(640), byContainer.Limits.Memory().Value()/(1024*1024))
+		_, hasCPULimit := byContainer.Limits[corev1.ResourceCPU]
+		assert.False(t, hasCPULimit, "omitCpuLimits policy should avoid setting CPU limits")
 
 		// Check positive savings
 		assert.True(t, proposal.Spec.ExpectedImpact.EstimatedSavingsUSD.Value() > 0)
@@ -146,5 +150,41 @@ func TestAnalyzer_Analyze(t *testing.T) {
 		proposal, err := analyzer.Analyze(context.Background(), corev1.ObjectReference{Name: "test-deploy"}, currentResources)
 		assert.NoError(t, err)
 		assert.Nil(t, proposal) // Expect nil proposal if no rules fired
+	})
+
+	t.Run("OmitCPULimits strips existing CPU limits while keeping Memory symmetry", func(t *testing.T) {
+		provider := &mockTelemetryProvider{
+			metrics: &telemetry.WorkloadMetrics{
+				Replicas: 1,
+				Containers: map[string]*telemetry.ContainerMetrics{
+					"app": {
+						Name:   "app",
+						CPU:    telemetry.CPUMetrics{P95Cores: 0.4},
+						Memory: telemetry.MemoryMetrics{P99WorkingSetBytes: 256 * 1024 * 1024},
+					},
+				},
+			},
+		}
+		analyzer := engine.NewAnalyzer(provider, registry, scorer, forecasting.NewPredictor(mockClient), engine.WithRLAgent(mockAgent), engine.WithOmitCPULimits(true))
+		currentResources := map[string]corev1.ResourceRequirements{
+			"app": {
+				Requests: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("2000m"),
+					corev1.ResourceMemory: resource.MustParse("2Gi"),
+				},
+				Limits: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("4000m"),
+					corev1.ResourceMemory: resource.MustParse("2Gi"),
+				},
+			},
+		}
+		proposal, err := analyzer.Analyze(context.Background(), corev1.ObjectReference{Name: "test-deploy"}, currentResources)
+		assert.NoError(t, err)
+		assert.NotNil(t, proposal)
+		appSpec := proposal.Spec.ProposedResourcesByContainer["app"]
+		_, hasCPULim := appSpec.Limits[corev1.ResourceCPU]
+		assert.False(t, hasCPULim)
+		assert.Equal(t, int64(320*1024*1024), appSpec.Limits.Memory().Value())
+		assert.Contains(t, proposal.Spec.DecisionMetadata.Rationale, "omitCpuLimits")
 	})
 }

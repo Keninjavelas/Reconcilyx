@@ -214,11 +214,18 @@ after execution. Use --output json for machine-readable reconciliation data.`,
 		if err != nil {
 			return err
 		}
-		if format == "json" {
+		switch format {
+		case "json":
 			return writeJSONOutput(cmd.OutOrStdout(), report)
+		case "markdown":
+			writeExplainMarkdown(cmd.OutOrStdout(), report)
+			return nil
+		case "sarif":
+			return writeExplainSARIF(cmd.OutOrStdout(), report)
+		default:
+			writeExplainReport(cmd, report)
+			return nil
 		}
-		writeExplainReport(cmd, report)
-		return nil
 	},
 }
 

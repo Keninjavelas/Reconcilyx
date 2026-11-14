@@ -344,3 +344,19 @@ helm-chart: helm-crds ## Package Helm chart for release
 	@mkdir -p dist
 	helm package charts/reconcilyx -d dist/
 
+.PHONY: verify-pricing-aws
+verify-pricing-aws: ## Verify AWS Price List provider contract and fallback catalog
+	go test -v ./internal/cloud -run 'Test(AWS|ProviderSourceProvenance)'
+
+.PHONY: verify-pricing-gcp
+verify-pricing-gcp: ## Verify GCP Cloud Billing catalog contract and expanded machine specs
+	go test -v ./internal/cloud -run 'Test(GCP|ProviderSourceProvenance)'
+
+.PHONY: trivy-scan
+trivy-scan: ## Scan container image IMG (e.g. make trivy-scan IMG=reconcilyx:latest) with Trivy for CRITICAL/HIGH CVEs
+	trivy image --severity HIGH,CRITICAL --exit-code 1 $(IMG)
+
+.PHONY: cosign-verify
+cosign-verify: ## Verify keyless SLSA/OIDC signature on container image IMG with cosign
+	cosign verify --certificate-oidc-issuer https://token.actions.githubusercontent.com --certificate-identity-regexp '^https://github.com/keninjavelas/Reconcilyx/' $(IMG)
+

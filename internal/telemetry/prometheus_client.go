@@ -65,14 +65,22 @@ func (c *prometheusClient) Query(ctx context.Context, query string) (model.Value
 }
 
 func (c *prometheusClient) QueryRange(ctx context.Context, query string, r time.Duration) (model.Value, error) {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	now := time.Now()
+	return c.QueryRangeWindow(ctx, query, now.Add(-r), now, r/10)
+}
+
+// QueryRangeWindow executes an explicit [start, end] PromQL range query at the given step.
+func (c *prometheusClient) QueryRangeWindow(ctx context.Context, query string, start, end time.Time, step time.Duration) (model.Value, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	now := time.Now()
+	if step <= 0 {
+		step = 5 * time.Minute
+	}
 	ran := v1.Range{
-		Start: now.Add(-r),
-		End:   now,
-		Step:  r / 10, // Example step calculation
+		Start: start,
+		End:   end,
+		Step:  step,
 	}
 
 	res, _, err := c.api.QueryRange(ctx, query, ran)

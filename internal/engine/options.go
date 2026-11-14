@@ -37,6 +37,26 @@ func WithCarbonWeight(w float64) AnalyzerOption {
 	}
 }
 
+// WithOmitCPULimits controls whether proposed Container Resources drop CPU
+// limits to avoid artificial CFS throttling while still setting CPU requests
+// and Memory requests/limits.
+func WithOmitCPULimits(omit bool) AnalyzerOption {
+	return func(a *defaultAnalyzer) {
+		a.omitCPULimits = omit
+	}
+}
+
+func OmitCPULimitsFrom(a Analyzer) bool {
+	if a == nil {
+		return true
+	}
+	impl, ok := a.(*defaultAnalyzer)
+	if !ok {
+		return true
+	}
+	return impl.omitCPULimits
+}
+
 func RLAgentFrom(a Analyzer) (rl.Agent, bool) {
 	impl, ok := a.(*defaultAnalyzer)
 	if !ok {

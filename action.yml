@@ -1,0 +1,94 @@
+name: 'Reconcilyx FinOps & Carbon PR Gate'
+description: 'Shift-left Kubernetes FinOps, GreenOps carbon, and safety guardrail gating on pull requests.'
+branding:
+  icon: 'shield'
+  color: 'green'
+
+inputs:
+  manifests:
+    description: 'Directory or file path containing Kubernetes manifests to analyze'
+    required: true
+    default: 'deploy/'
+  base-ref:
+    description: 'Git base ref for comparison (e.g. origin/main)'
+    required: false
+    default: 'origin/main'
+  provider:
+    description: 'Cloud pricing provider (aws, gcp, azure)'
+    required: false
+    default: 'aws'
+  region:
+    description: 'Cloud region for pricing and grid carbon intensity'
+    required: false
+    default: 'us-east-1'
+  fail-on:
+    description: 'Comma-separated policy gates that return exit code 2 (cost-increase,carbon-increase,guardrail,risk>=70)'
+    required: false
+    default: 'cost-increase,carbon-increase,guardrail'
+  offline:
+    description: 'Use bundled static pricing and carbon catalogs without external HTTP calls'
+    required: false
+    default: 'true'
+  sarif-file:
+    description: 'Path to write SARIF v2.1.0 output for GitHub Code Scanning'
+    required: false
+    default: 'reconcilyx-diff.sarif'
+  markdown-file:
+    description: 'Path to write collapsible Markdown summary for PR comments and step summaries'
+    required: false
+    default: 'reconcilyx-diff.md'
+
+outputs:
+  exit-code:
+    description: 'Exit code returned by kubectl-reconcilyx diff (0=pass, 2=policy violation)'
+    value: ${{ steps.gate.outputs.exit-code }}
+  sarif-file:
+    description: 'Path to the generated SARIF v2.1.0 report'
+    value: ${{ inputs.sarif-file }}
+  markdown-file:
+    description: 'Path to the generated Markdown PR report'
+    value: ${{ inputs.markdown-file }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Build kubectl-reconcilyx CLI
+      shell: bash
+      run: |
+        go build -o "${RUNNER_TEMP}/kubectl-reconcilyx" ./cmd/kubectl-reconcilyx
+
+    - name: Run Reconcilyx manifest diff (Markdown + SARIF + Policy Gate)
+      id: gate
+      shell: bash
+      run: |
+        OFFLINE_FLAG=""
+        if [ "${{ inputs.offline }}" = "true" ]; then
+          OFFLINE_FLAG="--offline"
+        fi
+
+        set +e
+        "${RUNNER_TEMP}/kubectl-reconcilyx" diff \
+          --manifests "${{ inputs.manifests }}" \
+          --base "${{ inputs.base-ref }}" \
+          --provider "${{ inputs.provider }}" \
+          --region "${{ inputs.region }}" \
+          --fail-on "${{ inputs.fail-on }}" \
+          ${OFFLINE_FLAG} \
+          -o sarif > "${{ inputs.sarif-file }}"
+        GATE_EXIT=$?
+
+        "${RUNNER_TEMP}/kubectl-reconcilyx" diff \
+          --manifests "${{ inputs.manifests }}" \
+          --base "${{ inputs.base-ref }}" \
+          --provider "${{ inputs.provider }}" \
+          --region "${{ inputs.region }}" \
+          ${OFFLINE_FLAG} \
+          -o markdown > "${{ inputs.markdown-file }}"
+        set -e
+
+        if [ -f "${{ inputs.markdown-file }}" ]; then
+          cat "${{ inputs.markdown-file }}" >> "$GITHUB_STEP_SUMMARY"
+        fi
+
+        echo "exit-code=${GATE_EXIT}" >> "$GITHUB_OUTPUT"
+        exit "${GATE_EXIT}"

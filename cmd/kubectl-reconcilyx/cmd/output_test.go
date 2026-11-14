@@ -158,6 +158,9 @@ func TestResolveOutputFormat(t *testing.T) {
 		{"table", "table"},
 		{"json", "json"},
 		{" JSON ", "json"},
+		{"markdown", "markdown"},
+		{"md", "markdown"},
+		{"sarif", "sarif"},
 	} {
 		if err := cmd.Flags().Set("output", tc.value); err != nil {
 			t.Fatalf("set: %v", err)

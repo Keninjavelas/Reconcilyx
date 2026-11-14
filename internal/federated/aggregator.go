@@ -20,6 +20,10 @@ type Aggregator struct {
 	trimRatio          float64
 	maxDeltaCutoff     float64
 	stabilityThreshold float64
+
+	seenBatches    map[string]struct{}
+	seenOrder      []string
+	maxSeenBatches int
 }
 
 func NewAggregator(maxBuffer int) *Aggregator {
@@ -38,20 +42,75 @@ func NewAggregator(maxBuffer int) *Aggregator {
 		},
 		deltas:             make([]QTableDelta, 0, 1024),
 		maxDeltas:          maxBuffer,
+		lastCompact:        time.Now().UTC(),
 		trimRatio:          DefaultTrimRatio,
 		maxDeltaCutoff:     DefaultMaxDeltaQ,
 		stabilityThreshold: DefaultStabilityThreshold,
+		seenBatches:        make(map[string]struct{}, 1024),
+		maxSeenBatches:     10000,
 	}
 }
 
-func (a *Aggregator) AddDeltas(batch []QTableDelta) {
+// LastCompactionTime returns the timestamp of the last snapshot compaction.
+func (a *Aggregator) LastCompactionTime() time.Time {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.lastCompact
+}
+
+// ShouldCompact returns true when pending deltas meet or exceed threshold, or
+// when at least one delta is pending and compactMaxAge has elapsed since the
+// previous compaction.
+func (a *Aggregator) ShouldCompact(threshold int, compactMaxAge time.Duration) bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	pending := len(a.deltas)
+	if pending == 0 {
+		return false
+	}
+	if threshold > 0 && pending >= threshold {
+		return true
+	}
+	if compactMaxAge > 0 && time.Since(a.lastCompact) >= compactMaxAge {
+		return true
+	}
+	return false
+}
+
+// AddBatch records deltas only once per non-empty batchID using a bounded FIFO
+// deduplication cache so replayed spooled batches are idempotent.
+// Returns true if the batch was accepted (or had no batchID), false if duplicate.
+func (a *Aggregator) AddBatch(batchID string, batch []QTableDelta) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if batchID != "" {
+		if a.seenBatches == nil {
+			a.seenBatches = make(map[string]struct{}, 1024)
+		}
+		if a.maxSeenBatches <= 0 {
+			a.maxSeenBatches = 10000
+		}
+		if _, exists := a.seenBatches[batchID]; exists {
+			return false
+		}
+		if len(a.seenOrder) >= a.maxSeenBatches {
+			evict := a.seenOrder[0]
+			a.seenOrder = a.seenOrder[1:]
+			delete(a.seenBatches, evict)
+		}
+		a.seenBatches[batchID] = struct{}{}
+		a.seenOrder = append(a.seenOrder, batchID)
+	}
 	a.deltas = append(a.deltas, batch...)
 	if len(a.deltas) > a.maxDeltas {
 		trim := len(a.deltas) - a.maxDeltas
 		a.deltas = a.deltas[trim:]
 	}
+	return true
+}
+
+func (a *Aggregator) AddDeltas(batch []QTableDelta) {
+	_ = a.AddBatch("", batch)
 }
 
 // CompactAndSnapshot performs Byzantine-resistant Trimmed Mean Aggregation,
@@ -87,9 +146,15 @@ func (a *Aggregator) CompactAndSnapshot() *GlobalQTable {
 
 	a.global.OutlierRejectedCount += rejectedCount
 
-	if len(grouped) == 0 && len(a.global.Entries) > 0 {
+	if len(grouped) == 0 {
+		a.deltas = a.deltas[:0]
+		a.lastCompact = time.Now().UTC()
 		out := *a.global
-		out.CreatedAt = time.Now().UTC()
+		out.CreatedAt = a.lastCompact
+		out.Entries = make(map[string]GlobalQEntry, len(a.global.Entries))
+		for k, v := range a.global.Entries {
+			out.Entries[k] = v
+		}
 		return &out
 	}
 
@@ -175,9 +240,18 @@ func (a *Aggregator) CompactAndSnapshot() *GlobalQTable {
 		a.global.IsStable = false
 	}
 
-	// Step 4: Compute Model Hash
+	// Step 4: Compute deterministic SHA-256 Model Hash over canonicalized bucket weights
+	sortedKeys := make([]string, 0, len(a.global.Entries))
+	for k := range a.global.Entries {
+		sortedKeys = append(sortedKeys, k)
+	}
+	sort.Strings(sortedKeys)
 	h := sha256.New()
-	h.Write([]byte(fmt.Sprintf("%d:%d:%f", a.global.Version, len(a.global.Entries), maxShift)))
+	_, _ = fmt.Fprintf(h, "v=%d;n=%d", a.global.Version, len(sortedKeys))
+	for _, k := range sortedKeys {
+		entry := a.global.Entries[k]
+		_, _ = fmt.Fprintf(h, "|%s=%.8f:%d", k, entry.QValue, entry.VisitCount)
+	}
 	a.global.ModelHash = fmt.Sprintf("%x", h.Sum(nil))[:16]
 
 	out := *a.global
@@ -220,6 +294,11 @@ func (a *Aggregator) LoadSnapshot(snap *GlobalQTable) {
 		ModelHash:            snap.ModelHash,
 		MinSpokeVersion:      snap.MinSpokeVersion,
 		OutlierRejectedCount: snap.OutlierRejectedCount,
+	}
+	if !snap.CreatedAt.IsZero() {
+		a.lastCompact = snap.CreatedAt
+	} else {
+		a.lastCompact = time.Now().UTC()
 	}
 }
 

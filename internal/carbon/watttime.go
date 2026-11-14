@@ -8,7 +8,12 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
+
+	"github.com/reconcilyx/operator/pkg/httpretry"
+	"github.com/reconcilyx/operator/pkg/pipelinemetrics"
+	"github.com/reconcilyx/operator/pkg/security/credentials"
 )
 
 const (
@@ -16,17 +21,18 @@ const (
 )
 
 type WattTimeProvider struct {
-	HTTPClient *http.Client
-	BaseURL    string
-	Username   string
-	Password   string
-	APIKey     string
-	Fallback   Provider
+	HTTPClient   *http.Client
+	BaseURL      string
+	Username     string
+	Password     string
+	APIKey       string
+	SecretSource func() credentials.SecretString
+	Fallback     Provider
 }
 
 func NewWattTimeProvider(apiKey string) *WattTimeProvider {
 	return &WattTimeProvider{
-		HTTPClient: &http.Client{Timeout: 15 * time.Second},
+		HTTPClient: httpretry.WrapClient(&http.Client{Timeout: 15 * time.Second}, "carbon_watttime"),
 		BaseURL:    wtDefaultBaseURL,
 		APIKey:     apiKey,
 		Fallback:   NewStaticProvider(),
@@ -41,6 +47,11 @@ func NewWattTimeProviderWithCreds(username, password string) *WattTimeProvider {
 }
 
 func (w *WattTimeProvider) bearerToken() string {
+	if w.SecretSource != nil {
+		if sec := w.SecretSource(); !sec.IsEmpty() {
+			return "Bearer " + sec.Expose()
+		}
+	}
 	if w.APIKey != "" {
 		return "Bearer " + w.APIKey
 	}
@@ -59,16 +70,23 @@ func (w *WattTimeProvider) IntensityForRegion(ctx context.Context, region string
 		}
 		return Intensity{}, fmt.Errorf("watttime disabled (no credentials)")
 	}
-	u, _ := url.Parse(w.BaseURL + "/current")
+	endpoint := strings.TrimRight(w.BaseURL, "/") + "/current"
+	if strings.Contains(w.BaseURL, "watttime.org") && !strings.Contains(w.BaseURL, "/signal-index") {
+		endpoint = strings.TrimRight(w.BaseURL, "/") + "/signal-index"
+	}
+	u, _ := url.Parse(endpoint)
 	q := u.Query()
 	q.Set("region", region)
+	if strings.Contains(endpoint, "signal-index") {
+		q.Set("signal_type", "co2_moer")
+	}
 	u.RawQuery = q.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return w.fallbackOrErr(ctx, region, err)
 	}
 	req.Header.Set("Authorization", tok)
-	resp, err := w.HTTPClient.Do(req)
+	resp, err := httpretry.WrapClient(w.HTTPClient, "carbon_watttime").Do(req)
 	if err != nil {
 		return w.fallbackOrErr(ctx, region, err)
 	}
@@ -83,21 +101,40 @@ func (w *WattTimeProvider) IntensityForRegion(ctx context.Context, region string
 	var doc struct {
 		Value  float64 `json:"value"`
 		Region string  `json:"region"`
+		Data   []struct {
+			Value float64 `json:"value"`
+		} `json:"data"`
+		Meta struct {
+			Region string `json:"region"`
+		} `json:"meta"`
 	}
 	if err := json.Unmarshal(body, &doc); err != nil {
 		return w.fallbackOrErr(ctx, region, err)
 	}
-	if doc.Value <= 0 {
+	val := doc.Value
+	reg := doc.Region
+	if val <= 0 && len(doc.Data) > 0 {
+		val = doc.Data[0].Value
+	}
+	if reg == "" {
+		reg = doc.Meta.Region
+	}
+	if reg == "" {
+		reg = region
+	}
+	if val <= 0 {
 		return w.fallbackOrErr(ctx, region, fmt.Errorf("invalid intensity response"))
 	}
+	pipelinemetrics.FallbackActive.WithLabelValues("carbon", "watttime").Set(0)
 	return Intensity{
-		Value:  doc.Value,
+		Value:  val,
 		Source: "watttime",
-		Region: doc.Region,
+		Region: reg,
 	}, nil
 }
 
 func (w *WattTimeProvider) fallbackOrErr(ctx context.Context, region string, err error) (Intensity, error) {
+	pipelinemetrics.FallbackActive.WithLabelValues("carbon", "watttime").Set(1)
 	if w.Fallback != nil {
 		return w.Fallback.IntensityForRegion(ctx, region)
 	}

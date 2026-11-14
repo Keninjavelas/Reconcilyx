@@ -229,7 +229,20 @@ The project is on hiatus. These items consolidate the still-open checks from Pha
 - `[ ]` `P0 Security` Complete an independent security audit before any production-use claim (H-11)
 - `[ ]` `P0 Docs` Resume, close the hiatus, refresh the audit counts only with new production-like evidence, and record the release decision (H-12)
 
-Dependency summary: H-02/H-03/H-10 start when credentials exist; H-01 unblocks the required-check path in H-06; H-04 and H-08 can share one cloud cluster; H-09 needs a GPU host; H-11 follows the cloud and repository validations; H-12 is last. H-07 needs no cloud spend but remains paused by the hiatus decision.
+Dependency summary: H-02/H-03/H-10 start when credentials exist; H-01 unblocks the required-check path in H-06; H-04 and H-08 can share one cloud cluster; H-09 needs a GPU host; H-11 follows the cloud and repository validations; H-12 is last. H-07 code & Helm prerequisites are complete as of `v4.1.0-rc1` (2026-11-13); multi-cluster Kind execution awaits a running Docker daemon.
+
+## Phase 20 — `v4.1.0-rc1` Hardening, Shift-Left CI Gates & Evidence Replay (2026-11-13)
+
+- `[x]` `P0 Federation` Replace modulo compaction with dual-trigger watermark + max-age compaction, `VerifyChecksum`, `POST /api/v1/federation/compact`, fuzzing, and Helm env wiring (H-07 architecture prerequisites)
+- `[x]` `P0 Safety` Asymmetric p95/p99 sizing, OOM/restart guard, omitted CPU limits by default, KEDA `ScaledObject` conflict rejection, `1.35x` working-set in-place memory shrink headroom guard, and `RECONCILYX_EXCLUDED_NAMESPACES` deny-list
+- `[x]` `P1 Engine` Two-tier node consolidation evaluator (`EvaluateNodeWithConstraints`), Kepler/OpenCost adapters, custom CA TLS (`RECONCILYX_CA_BUNDLE`), WattTime v3 `/signal-index`, extended DCGM metrics, and `/api/v1/healthz` provenance
+- `[x]` `P0 CLI/CI` Add `-o markdown` and `-o sarif` (SARIF v2.1.0), `diff --offline`/`--base-manifests`, composite GitHub Action (`action.yml` & `.github/actions/reconcilyx-gate/action.yml`), and hardened CI workflows (`govulncheck`, `-race`, Helm checks)
+- `[x]` `P0 UI` Add Hub Control Plane Connection Gate and Read-Only Evidence Replay Mode (`ui/src/lib/evidenceReplay.ts`) backed by verified Run `#20261026055631`
+- `[x]` `P0 Security` Split-RBAC read-only Helm defaults, `controller-gen` RBAC sync, `RateLimiter`, CSP/HSTS/body-limit middleware, webhook replay window, and `docs/THREAT_MODEL.md`
+- `[x]` `P0 Zero-Trust` Multi-identity inbound RBAC (`pkg/security/auth`: K8s `TokenReview`+SAR, OIDC/GitHub Actions JWKS, mTLS SPIFFE spoke cluster binding, SHA-256 scoped keys) & outbound secret isolation (`pkg/security/credentials`: `SecretString`, `fsnotify` tmpfs mount hot-reload, AWS IRSA STS, GCP Workload Identity, GitHub App ephemeral tokens)
+- `[x]` `P0 Resilience` Pipeline hardening: full-jitter exponential backoff (`pkg/httpretry` enforcing idempotent-only retries and honoring `429 Retry-After`), durable spoke FIFO disk spooling (`internal/federated/spool.go`) + `X-Reconcilyx-Idempotency-Key` / Hub `batchId` deduplication, watermarked Prometheus backfill (`internal/telemetry/backfill.go` with SHA-256 key, `POST /api/v1/telemetry/backfill`, `kubectl-reconcilyx backfill --step`), and self-monitoring metrics (`pkg/pipelinemetrics`)
+- `[x]` `P0 DevOps/SRE` Add `deploy/terraform/` (EKS/GKE workload identity, `restricted` PSS, remote state backends, atomic `helm_release`), Helm `PDB`/`HPA`/`NetworkPolicy`/`PrometheusRule`/`test-connection.yaml`, W3C `traceparent` propagation (`pkg/tracing`), `docs/RUNBOOK.md`, `.gitleaks.toml` + `trivy@v0.36.0` CI gates, and `.goreleaser.yaml` + `.github/workflows/release.yml`
+- `[ ]` `P1 Validation` Run `scripts/validation/federation-e2e.sh` on two Kind clusters once Docker daemon is running (H-07 runtime execution)
 
 ## Cross-Cutting Remediation (2026-10-23)
 

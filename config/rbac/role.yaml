@@ -93,6 +93,14 @@ rules:
   - list
   - watch
 - apiGroups:
+  - keda.sh
+  resources:
+  - scaledobjects
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - optimization.reconcilyx.io
   resources:
   - optimizationpolicies

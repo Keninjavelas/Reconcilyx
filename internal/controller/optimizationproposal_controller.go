@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"os"
 	"strings"
@@ -50,11 +51,12 @@ type OptimizationProposalReconciler struct {
 	policyIndexReady bool
 	policyIndexErr   error
 	// RL Learning Loop dependencies
-	RLAgent           rl.Agent
-	TelemetryProvider telemetry.TelemetryProvider
-	CarbonProvider    carbon.Provider
-	WorkloadRegion    string
-	CarbonWeight      float64
+	RLAgent                  rl.Agent
+	TelemetryProvider        telemetry.TelemetryProvider
+	CarbonProvider           carbon.Provider
+	WorkloadRegion           string
+	CarbonWeight             float64
+	AllowInPlaceMemoryShrink bool
 }
 
 // +kubebuilder:rbac:groups=optimization.reconcilyx.io,resources=optimizationproposals,verbs=get;list;watch;create;update;patch;delete
@@ -71,6 +73,7 @@ type OptimizationProposalReconciler struct {
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch
 // +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch
+// +kubebuilder:rbac:groups=keda.sh,resources=scaledobjects,verbs=get;list;watch
 
 func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -275,6 +278,9 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 			reason := "JIT Validation Rejected"
 			if gateErr != nil {
 				reason += ": " + gateErr.Error()
+				if strings.Contains(gateErr.Error(), "autoscaler conflict:") && r.Recorder != nil {
+					r.Recorder.Event(proposal, "Warning", "AutoscalerConflictDetected", gateErr.Error())
+				}
 			}
 			r.recordExecutionAttempt(ctx, proposal, "rejected: "+reason)
 			return r.failScheduledProposal(ctx, proposal, reason), nil
@@ -329,7 +335,12 @@ func (r *OptimizationProposalReconciler) Reconcile(ctx context.Context, req ctrl
 			proposal.Status.ExecutionState = optimizationv1alpha1.ExecutionFailed
 			proposal.Status.Reason = "In-Place Pod Resize Failed: " + err.Error()
 			_ = r.Status().Update(ctx, proposal)
-			r.Recorder.Event(proposal, "Warning", "ExecutionFailed", proposal.Status.Reason)
+			var memShrinkErr *MemoryShrinkBlockedError
+			if stderrors.As(err, &memShrinkErr) {
+				r.Recorder.Event(proposal, "Warning", "MemoryShrinkBlockedInPlace", proposal.Status.Reason)
+			} else {
+				r.Recorder.Event(proposal, "Warning", "ExecutionFailed", proposal.Status.Reason)
+			}
 			r.recordExecutionAttempt(ctx, proposal, "failed: "+err.Error())
 			_ = r.Actuator.ReleaseLock(ctx, proposal)
 			return ctrl.Result{}, nil
@@ -753,7 +764,7 @@ func (r *OptimizationProposalReconciler) SetupWithManager(mgr ctrl.Manager) erro
 		NewAutoscalerConflictGate(mgr.GetClient()),
 		NewPolicyGuard(mgr.GetClient()),
 	)
-	r.Actuator = NewActuator(mgr.GetClient(), mgr.GetAPIReader())
+	r.Actuator = NewActuatorWithOptions(mgr.GetClient(), mgr.GetAPIReader(), r.AllowInPlaceMemoryShrink)
 	r.GitFactory = gitops.NewProviderFactory()
 
 	telemetryProvider := r.TelemetryProvider

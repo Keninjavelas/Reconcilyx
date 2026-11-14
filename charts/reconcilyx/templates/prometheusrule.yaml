@@ -1,0 +1,70 @@
+{{- if .Values.monitoring.prometheusRule.enabled }}
+{{- $runbookBase := .Values.monitoring.prometheusRule.runbookBaseUrl | default "https://github.com/keninjavelas/Reconcilyx/blob/main/docs/RUNBOOK.md" }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "reconcilyx.fullname" . }}-alerts
+  labels:
+    {{- include "reconcilyx.labels" . | nindent 4 }}
+    {{- with .Values.monitoring.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: reconcilyx.pipeline.rules
+      rules:
+        - alert: ReconcilyxFallbackModeSustained
+          expr: reconcilyx_pipeline_fallback_active == 1
+          for: 15m
+          labels:
+            severity: warning
+            service: reconcilyx
+          annotations:
+            summary: "Reconcilyx pipeline in sustained static fallback mode ({{ "{{ $labels.component }}" }}/{{ "{{ $labels.provider }}" }})"
+            description: "External telemetry, cloud pricing, or carbon API has remained unreachable or rejected credentials for >15m; deterministic static catalog fallback is active."
+            runbook_url: "{{ $runbookBase }}#reconcilyxfallbackmodesustained"
+
+        - alert: ReconcilyxSpokeSpoolBacklogCritical
+          expr: reconcilyx_spoke_spool_queued_batches > 20
+          for: 10m
+          labels:
+            severity: critical
+            service: reconcilyx
+          annotations:
+            summary: "Federated Spoke WAL spool backlog exceeds 20 batches ({{ "{{ $labels.cluster }}" }})"
+            description: "Spoke cluster {{ "{{ $labels.cluster }}" }} cannot flush Q-table delta batches to the Hub and is queueing batches toward the 50 MiB disk FIFO cap."
+            runbook_url: "{{ $runbookBase }}#reconcilyxspokespoolbacklogcritical"
+
+        - alert: ReconcilyxRetryStormDetected
+          expr: sum by (component) (rate(reconcilyx_pipeline_retries_total[5m])) > 1
+          for: 10m
+          labels:
+            severity: warning
+            service: reconcilyx
+          annotations:
+            summary: "Elevated HTTP retry rate on Reconcilyx component {{ "{{ $labels.component }}" }}"
+            description: "Sustained HTTP 429/502/503/504 or transport retries (>1 req/s over 5m) on {{ "{{ $labels.component }}" }}."
+            runbook_url: "{{ $runbookBase }}#reconcilyxretrystormdetected"
+
+        - alert: ReconcilyxControllerPodCrashLoop
+          expr: increase(kube_pod_container_status_restarts_total{namespace="{{ .Release.Namespace }}", container="manager"}[15m]) > 2
+          for: 5m
+          labels:
+            severity: critical
+            service: reconcilyx
+          annotations:
+            summary: "Reconcilyx controller manager pod restarting repeatedly"
+            description: "Container manager in namespace {{ .Release.Namespace }} restarted more than twice in the last 15 minutes."
+            runbook_url: "{{ $runbookBase }}#reconcilyxcontrollerpodcrashloop"
+
+        - alert: ReconcilyxAutomatedRollbacksSpike
+          expr: sum(increase(reconcilyx_rollback_total[30m])) > 2
+          for: 5m
+          labels:
+            severity: warning
+            service: reconcilyx
+          annotations:
+            summary: "Multiple automated Reconcilyx optimization rollbacks triggered"
+            description: "More than 2 rollbacks fired within 30 minutes across active workloads; investigate OOMKills, throttling, or aggressive safety guardrails."
+            runbook_url: "{{ $runbookBase }}#reconcilyxautomatedrollbacksspike"
+{{- end }}

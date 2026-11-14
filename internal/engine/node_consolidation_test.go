@@ -26,4 +26,37 @@ func TestNodeConsolidationAnalyzer(t *testing.T) {
 	if propHigh != nil {
 		t.Errorf("Expected no proposal for well-utilized node")
 	}
+
+	// Case 3: Evacuatable vs PDB-blocked node separates allocated vs realizable savings
+	evacuatable := analyzer.EvaluateNodeWithConstraints(NodeConsolidationInput{
+		NodeName:                  "ip-10-0-1-44.ec2.internal",
+		CPUAllocatedCores:         1.0,
+		CPUCapacityCores:          8.0,
+		DaemonSetCPUOverheadCores: 0.5,
+		MonthlyNodeCostUSD:        240.0,
+	})
+	if evacuatable == nil || !evacuatable.CanEvacuateWholeNode || evacuatable.RealizableNodeSavingsUSD != 240.0 {
+		t.Fatalf("expected full $240 realizable savings when node can be evacuated, got %+v", evacuatable)
+	}
+	if evacuatable.RealizableCarbonKgCO2e <= 0 {
+		t.Fatalf("expected positive realizable carbon reduction when whole node terminates")
+	}
+
+	pdbBlocked := analyzer.EvaluateNodeWithConstraints(NodeConsolidationInput{
+		NodeName:          "ip-10-0-1-45.ec2.internal",
+		CPUAllocatedCores: 1.0,
+		CPUCapacityCores:  8.0,
+		MonthlyNodeCostUSD: 240.0,
+		PDBBlocksEviction: true,
+		PDBBlockerReason:  "pdb default/critical-api allows 0 disruptions",
+	})
+	if pdbBlocked == nil || pdbBlocked.CanEvacuateWholeNode {
+		t.Fatalf("expected PDB-blocked node not to be evacuatable")
+	}
+	if pdbBlocked.AllocatedSavingsUSD <= 0 {
+		t.Fatalf("expected positive allocated headroom savings even when node evacuation is blocked")
+	}
+	if pdbBlocked.RealizableNodeSavingsUSD != 0 || pdbBlocked.RealizableCarbonKgCO2e != 0 {
+		t.Fatalf("expected zero realizable savings when PDB blocks drain, got usd=%.2f carbon=%.2f", pdbBlocked.RealizableNodeSavingsUSD, pdbBlocked.RealizableCarbonKgCO2e)
+	}
 }

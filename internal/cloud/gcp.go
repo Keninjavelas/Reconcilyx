@@ -11,6 +11,9 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/reconcilyx/operator/pkg/pipelinemetrics"
+	"github.com/reconcilyx/operator/pkg/security/credentials"
 )
 
 const (
@@ -18,12 +21,14 @@ const (
 )
 
 type GCPPricingProvider struct {
-	HTTPClient *http.Client
-	BaseURL    string
-	Retry      RetryPolicy
-	apiKey     string
-	enableLive bool
-	fallback   *staticGCPCatalog
+	HTTPClient  *http.Client
+	BaseURL     string
+	Retry       RetryPolicy
+	apiKey      string
+	keySource   func() credentials.SecretString
+	tokenSource *GCPMetadataTokenSource
+	enableLive  bool
+	fallback    *staticGCPCatalog
 }
 
 type gcpMachineSpec struct {
@@ -38,8 +43,12 @@ type gcpMachineSpec struct {
 var gcpLiveMachineSpecs = map[string]gcpMachineSpec{
 	"e2-standard-2": {family: "e2", vcpu: 2, memGB: 8},
 	"e2-standard-4": {family: "e2", vcpu: 4, memGB: 16},
+	"e2-standard-8": {family: "e2", vcpu: 8, memGB: 32},
 	"n2-standard-2": {family: "n2", vcpu: 2, memGB: 8},
 	"n2-standard-4": {family: "n2", vcpu: 4, memGB: 16},
+	"n2-standard-8": {family: "n2", vcpu: 8, memGB: 32},
+	"c3-standard-4": {family: "c3", vcpu: 4, memGB: 16},
+	"c3-standard-8": {family: "c3", vcpu: 8, memGB: 32},
 }
 
 type gcpBillingSKU struct {
@@ -78,24 +87,39 @@ func newStaticGCPCatalog() *staticGCPCatalog {
 		rates: map[string]float64{
 			"e2-standard-2": 0.067,
 			"e2-standard-4": 0.134,
+			"e2-standard-8": 0.268,
 			"n2-standard-2": 0.082,
 			"n2-standard-4": 0.164,
+			"n2-standard-8": 0.328,
+			"c3-standard-4": 0.194,
+			"c3-standard-8": 0.388,
 		},
 		carbon: map[string]float64{
-			"us-central1":  320.0,
-			"us-west1":     90.0,
-			"europe-west1": 130.0,
+			"us-central1":    320.0,
+			"us-west1":       90.0,
+			"us-east1":       340.0,
+			"europe-west1":   130.0,
+			"europe-west4":   250.0,
+			"asia-southeast1": 405.0,
 		},
 	}
 }
 
 func NewGCPPricingProvider() *GCPPricingProvider {
 	return &GCPPricingProvider{
-		HTTPClient: &http.Client{Timeout: 15 * time.Second},
+		HTTPClient: newHTTPClientWithCustomCA(15 * time.Second),
 		BaseURL:    gcpBillingCatalogURL,
 		enableLive: false,
 		fallback:   newStaticGCPCatalog(),
 	}
+}
+
+// Source returns the active pricing data provenance (never fabricating live rates).
+func (g *GCPPricingProvider) Source() string {
+	if g.enableLive {
+		return SourceGCPLive
+	}
+	return SourceBundledFallback
 }
 
 func NewLiveGCPPricingProvider(apiKey string) *GCPPricingProvider {
@@ -103,6 +127,27 @@ func NewLiveGCPPricingProvider(apiKey string) *GCPPricingProvider {
 	p.enableLive = apiKey != ""
 	p.apiKey = apiKey
 	return p
+}
+
+// NewWorkloadIdentityGCPPricingProvider enables GCP Cloud Billing live pricing using
+// GCE / GKE Workload Identity OAuth2 tokens from the metadata server instead of static keys.
+func NewWorkloadIdentityGCPPricingProvider(metadataURL string) *GCPPricingProvider {
+	p := NewGCPPricingProvider()
+	p.tokenSource = &GCPMetadataTokenSource{
+		MetadataURL: metadataURL,
+		HTTPClient:  p.HTTPClient,
+	}
+	p.enableLive = true
+	return p
+}
+
+func (g *GCPPricingProvider) resolveAPIKey() string {
+	if g.keySource != nil {
+		if sec := g.keySource(); !sec.IsEmpty() {
+			return sec.Expose()
+		}
+	}
+	return g.apiKey
 }
 
 func (g *GCPPricingProvider) Name() ProviderName { return ProviderGCP }
@@ -117,7 +162,8 @@ func carbonForGCP(region string, cmap map[string]float64) float64 {
 }
 
 func (g *GCPPricingProvider) fetchOnDemandLive(ctx context.Context, instanceType, region string) (float64, error) {
-	if !g.enableLive || g.HTTPClient == nil || g.BaseURL == "" || g.apiKey == "" {
+	resolvedKey := g.resolveAPIKey()
+	if !g.enableLive || g.HTTPClient == nil || g.BaseURL == "" || (resolvedKey == "" && g.tokenSource == nil) {
 		return 0, fmt.Errorf("live GCP pricing disabled (need credentials, client, and base URL)")
 	}
 	spec, ok := gcpLiveMachineSpecs[instanceType]
@@ -130,20 +176,37 @@ func (g *GCPPricingProvider) fetchOnDemandLive(ctx context.Context, instanceType
 	var corePrice, ramPrice float64
 	for page := 0; page < maxPages; page++ {
 		token := pageToken
+		var bearer string
+		if g.tokenSource != nil {
+			var tokErr error
+			bearer, tokErr = g.tokenSource.Token(ctx)
+			if tokErr != nil {
+				return 0, tokErr
+			}
+		}
 		resp, err := doWithRetry(ctx, g.HTTPClient, func() (*http.Request, error) {
 			u, err := url.Parse(g.BaseURL)
 			if err != nil {
 				return nil, err
 			}
 			q := u.Query()
-			q.Set("key", g.apiKey)
+			if bearer == "" {
+				q.Set("key", resolvedKey)
+			}
 			q.Set("pageSize", "5000")
 			q.Set("currencyCode", "USD")
 			if token != "" {
 				q.Set("pageToken", token)
 			}
 			u.RawQuery = q.Encode()
-			return http.NewRequestWithContext(ctx, http.MethodGet, u.String(), http.NoBody)
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), http.NoBody)
+			if err != nil {
+				return nil, err
+			}
+			if bearer != "" {
+				req.Header.Set("Authorization", "Bearer "+bearer)
+			}
+			return req, nil
 		}, g.Retry)
 		if err != nil {
 			return 0, err
@@ -242,13 +305,18 @@ func strconvParseFloat64(s string) (float64, error) {
 func (g *GCPPricingProvider) OnDemandPrice(ctx context.Context, instanceType, region string) (float64, error) {
 	if g.enableLive {
 		if v, err := g.fetchOnDemandLive(ctx, instanceType, region); err == nil && v > 0 {
+			pipelinemetrics.FallbackActive.WithLabelValues("cloud_pricing", "gcp").Set(0)
 			return v, nil
 		} else if err != nil {
+			pipelinemetrics.FallbackActive.WithLabelValues("cloud_pricing", "gcp").Set(1)
 			slog.Warn("Live GCP pricing unavailable; using bundled fallback",
 				"instance", instanceType, "region", region, "error", err.Error())
 		}
 	}
 	if rate, ok := g.fallback.rates[instanceType]; ok {
+		if !g.enableLive {
+			pipelinemetrics.FallbackActive.WithLabelValues("cloud_pricing", "gcp").Set(1)
+		}
 		return rate, nil
 	}
 	return 0, fmt.Errorf("no GCP price for %s in %s and no local fallback", instanceType, region)

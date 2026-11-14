@@ -14,7 +14,9 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -34,6 +36,8 @@ import (
 	"github.com/reconcilyx/operator/internal/notifiers"
 	"github.com/reconcilyx/operator/internal/telemetry"
 	reconcilyxwebhook "github.com/reconcilyx/operator/internal/webhook"
+	secauth "github.com/reconcilyx/operator/pkg/security/auth"
+	"github.com/reconcilyx/operator/pkg/security/credentials"
 	reconcilyxui "github.com/reconcilyx/operator/ui"
 	_ "net/http/pprof"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -64,6 +68,25 @@ func parseIntEnv(key string, def int) int {
 	return n
 }
 
+func parseDurationEnv(key string, def time.Duration) time.Duration {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return def
+	}
+	return d
+}
+
+func envOrDefault(key, def string) string {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		return v
+	}
+	return def
+}
+
 // nolint:gocyclo
 func main() {
 	var metricsAddr string
@@ -80,6 +103,14 @@ func main() {
 	var pprofAddr string
 	var apiPort string
 	var apiKey string
+	var hubBaseURL string
+	var spokeClusterName string
+	var modelChannel string
+	var fedFlushThreshold int
+	var fedFlushInterval time.Duration
+	var hubCompactThreshold int
+	var hubCompactInterval time.Duration
+	var allowInPlaceMemoryShrink bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -120,6 +151,22 @@ func main() {
 	}(), "Bind address for the Reconcilyx REST API + embedded UI (disabled if empty).")
 	flag.StringVar(&apiKey, "api-key", os.Getenv("RECONCILYX_API_KEY"),
 		"Shared secret for API calls. The UI and all integrations must send X-API-Key. Unset = dev mode (open).")
+	flag.StringVar(&hubBaseURL, "hub-url", strings.TrimSpace(os.Getenv("RECONCILYX_HUB_URL")),
+		"Control-plane Hub URL for federated spoke delta emission and bootstrap.")
+	flag.StringVar(&spokeClusterName, "cluster-name", strings.TrimSpace(os.Getenv("RECONCILYX_CLUSTER_NAME")),
+		"Unique spoke cluster identifier for federated learning.")
+	flag.StringVar(&modelChannel, "model-channel", envOrDefault("RECONCILYX_MODEL_CHANNEL", federated.ModelTagStable),
+		"Federated model rollout channel (stable or canary).")
+	flag.IntVar(&fedFlushThreshold, "federation-flush-threshold", parseIntEnv("RECONCILYX_FEDERATION_FLUSH_THRESHOLD", 100),
+		"Buffered delta count that triggers a spoke federation flush (minimum 1).")
+	flag.DurationVar(&fedFlushInterval, "federation-flush-interval", parseDurationEnv("RECONCILYX_FEDERATION_FLUSH_INTERVAL", time.Hour),
+		"Interval between spoke federation delta flushes (minimum 5s).")
+	flag.IntVar(&hubCompactThreshold, "hub-compact-threshold", parseIntEnv("RECONCILYX_HUB_COMPACT_THRESHOLD", 500),
+		"Pending delta watermark that triggers Hub snapshot compaction (minimum 1).")
+	flag.DurationVar(&hubCompactInterval, "hub-compact-interval", parseDurationEnv("RECONCILYX_HUB_COMPACT_INTERVAL", 15*time.Minute),
+		"Maximum interval before pending Hub deltas are compacted into a snapshot (minimum 5s).")
+	flag.BoolVar(&allowInPlaceMemoryShrink, "allow-inplace-memory-shrink", strings.EqualFold(strings.TrimSpace(os.Getenv("RECONCILYX_ALLOW_INPLACE_MEMORY_SHRINK")), "true"),
+		"Allow live in-place memory shrinking via pods/resize only when proposed memory retains >=1.35x working-set headroom.")
 
 	opts := zap.Options{
 		Development: true,
@@ -128,6 +175,28 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	modelChannel = strings.ToLower(strings.TrimSpace(modelChannel))
+	if modelChannel != federated.ModelTagStable && modelChannel != federated.ModelTagCanary {
+		setupLog.Info("Invalid model channel; defaulting to stable", "configured", modelChannel)
+		modelChannel = federated.ModelTagStable
+	}
+	if fedFlushThreshold < 1 {
+		setupLog.Info("Clamping federation flush threshold to minimum", "configured", fedFlushThreshold, "effective", 1)
+		fedFlushThreshold = 1
+	}
+	if fedFlushInterval < 5*time.Second {
+		setupLog.Info("Clamping federation flush interval to minimum", "configured", fedFlushInterval, "effective", "5s")
+		fedFlushInterval = 5 * time.Second
+	}
+	if hubCompactThreshold < 1 {
+		setupLog.Info("Clamping hub compact threshold to minimum", "configured", hubCompactThreshold, "effective", 1)
+		hubCompactThreshold = 1
+	}
+	if hubCompactInterval < 5*time.Second {
+		setupLog.Info("Clamping hub compact interval to minimum", "configured", hubCompactInterval, "effective", "5s")
+		hubCompactInterval = 5 * time.Second
+	}
 
 	disableHTTP2 := func(c *tls.Config) {
 		setupLog.Info("Disabling HTTP/2")
@@ -206,12 +275,6 @@ func main() {
 	}
 
 	// --- Federated intelligence wiring -------------------------------------
-	hubBaseURL := os.Getenv("RECONCILYX_HUB_URL")
-	spokeClusterName := os.Getenv("RECONCILYX_CLUSTER_NAME")
-	modelChannel := strings.ToLower(strings.TrimSpace(os.Getenv("RECONCILYX_MODEL_CHANNEL")))
-	if modelChannel == "" {
-		modelChannel = federated.ModelTagStable
-	}
 	fedNamespace := os.Getenv("RECONCILYX_FED_NAMESPACE")
 	if fedNamespace == "" {
 		fedNamespace = "reconcilyx-system"
@@ -250,10 +313,16 @@ func main() {
 		carbonProvider = engine.DefaultCarbonProviderFrom(analyzer)
 	}
 
-	// Always build the telemetry provider (used by rollback manager too)
+	// Always build the telemetry provider (used by rollback manager and backfill engine)
+	var backfillEngine *telemetry.BackfillEngine
 	if promClient, tErr := telemetry.NewPrometheusClient(prometheusURL); tErr == nil {
 		retriable := telemetry.NewRetriableMetricsClient(promClient)
 		telemetryProvider = telemetry.NewTelemetryProvider(retriable)
+		if windowed, ok := retriable.(telemetry.WindowedMetricsClient); ok {
+			backfillEngine = telemetry.NewBackfillEngine(windowed)
+		} else if windowed, ok := promClient.(telemetry.WindowedMetricsClient); ok {
+			backfillEngine = telemetry.NewBackfillEngine(windowed)
+		}
 	}
 
 	if carbonProvider == nil {
@@ -265,10 +334,17 @@ func main() {
 			if spokeClusterName == "" {
 				spokeClusterName = "spoke-local"
 			}
+			spoolDir := strings.TrimSpace(os.Getenv("RECONCILYX_SPOKE_SPOOL_DIR"))
+			if spoolDir == "" {
+				spoolDir = federated.DefaultSpoolDir()
+			}
 			cfg := federated.EmitterConfig{
-				HubBaseURL:  hubBaseURL,
-				ClusterName: spokeClusterName,
-				APIKey:      apiKey,
+				HubBaseURL:     hubBaseURL,
+				ClusterName:    spokeClusterName,
+				APIKey:         apiKey,
+				FlushThreshold: fedFlushThreshold,
+				FlushInterval:  fedFlushInterval,
+				SpoolDir:       spoolDir,
 			}
 			emitter := federated.NewEmitter(cfg)
 			emitter.SetObserver(func(d federated.QTableDelta) {
@@ -313,13 +389,14 @@ func main() {
 	}
 
 	proposalReconciler := &controller.OptimizationProposalReconciler{
-		Client:            mgr.GetClient(),
-		Scheme:            mgr.GetScheme(),
-		RLAgent:           rlAgent,
-		TelemetryProvider: telemetryProvider,
-		CarbonProvider:    carbonProvider,
-		WorkloadRegion:    workloadRegion,
-		CarbonWeight:      carbonWeight,
+		Client:                   mgr.GetClient(),
+		Scheme:                   mgr.GetScheme(),
+		RLAgent:                  rlAgent,
+		TelemetryProvider:        telemetryProvider,
+		CarbonProvider:           carbonProvider,
+		WorkloadRegion:           workloadRegion,
+		CarbonWeight:             carbonWeight,
+		AllowInPlaceMemoryShrink: allowInPlaceMemoryShrink,
 	}
 	if err := proposalReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "optimizationproposal")
@@ -343,6 +420,30 @@ func main() {
 
 	if apiPort != "" {
 		uiDist, uiOK := reconcilyxui.Dist()
+		var k8sReviewer secauth.K8sTokenReviewer
+		authCfg := rest.CopyConfig(mgr.GetConfig())
+		authCfg.QPS = 25
+		authCfg.Burst = 50
+		authCfg.Timeout = 3 * time.Second
+		if kubeClient, k8sErr := kubernetes.NewForConfig(authCfg); k8sErr == nil {
+			k8sReviewer = &secauth.KubernetesTokenReviewer{Client: kubeClient}
+		} else {
+			setupLog.Error(k8sErr, "Unable to initialize Kubernetes TokenReview client; continuing without k8s-token auth")
+		}
+		credMgr, credErr := credentials.NewCredentialManager(os.Getenv("RECONCILYX_SECRETS_DIR"),
+			credentials.ProviderSpec{Name: "electricitymaps", FileName: "api_key", EnvFallback: []string{"RECONCILYX_EM_API_KEY", "ELECTRICITY_MAPS_API_KEY"}},
+			credentials.ProviderSpec{Name: "watttime", FileName: "api_key", EnvFallback: []string{"RECONCILYX_WT_API_KEY", "WATTTIME_API_KEY"}},
+			credentials.ProviderSpec{Name: "gcp", FileName: "api_key", EnvFallback: []string{"RECONCILYX_PRICING_GCP_API_KEY", "GCP_BILLING_API_KEY"}},
+			credentials.ProviderSpec{Name: "github", FileName: "token", EnvFallback: []string{"GITHUB_TOKEN"}},
+		)
+		if credErr != nil {
+			setupLog.Error(credErr, "Unable to start file-mounted credential hot-reload watcher")
+		} else {
+			go func() {
+				<-ctx.Done()
+				_ = credMgr.Close()
+			}()
+		}
 		deps := api.ServerDeps{
 			Client:              mgr.GetClient(),
 			Analyzer:            analyzer,
@@ -354,6 +455,10 @@ func main() {
 			FederatedAggregator: fedAggregator,
 			FederatedNamespace:  fedNamespace,
 			FederatedModelName:  federated.DefaultConfigMapName,
+			HubCompactThreshold: hubCompactThreshold,
+			HubCompactInterval:  hubCompactInterval,
+			K8sTokenReviewer:    k8sReviewer,
+			BackfillEngine:      backfillEngine,
 		}
 		apiServer := api.NewServer(apiPort, apiKey, deps)
 		go func() {

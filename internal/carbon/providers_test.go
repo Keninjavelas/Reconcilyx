@@ -160,3 +160,25 @@ func TestFactory_WattTimeFromEnv(t *testing.T) {
 	assert.Equal(t, "watttime", cfg.Provider)
 	assert.Equal(t, "wt-env-key", cfg.WattTime.APIKey)
 }
+
+func TestWattTime_V3SignalIndexResponse(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		doc := map[string]any{
+			"meta": map[string]any{"region": "DE", "signal_type": "co2_moer"},
+			"data": []map[string]any{{"value": 312.4}},
+		}
+		b, _ := json.Marshal(doc)
+		_, _ = w.Write(b)
+	}))
+	defer ts.Close()
+
+	p := carbon.NewWattTimeProvider("wt-v3-key")
+	p.BaseURL = ts.URL + "/v3/signal-index"
+	p.HTTPClient = ts.Client()
+
+	it, err := p.IntensityForRegion(context.Background(), "DE")
+	require.NoError(t, err)
+	assert.InDelta(t, 312.4, it.Value, 0.001)
+	assert.Equal(t, "watttime", it.Source)
+	assert.Equal(t, "DE", it.Region)
+}

@@ -21,7 +21,7 @@ spec:
         - name: manager
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}{{- if .Values.image.digest }}@{{ .Values.image.digest }}{{- end }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command:
             - /manager
@@ -57,7 +57,9 @@ spec:
             - name: RECONCILYX_GRID_LOCATION
               value: {{ .Values.config.gridLocation | quote }}
             - name: RECONCILYX_ENABLE_INPLACE
-              value: {{ .Values.config.enableInPlaceResizing | quote }}
+              value: {{ and .Values.config.enableInPlaceResizing .Values.actuation.inPlaceResizeEnabled | quote }}
+            - name: RECONCILYX_EXCLUDED_NAMESPACES
+              value: {{ .Values.actuation.excludedNamespaces | quote }}
             - name: RECONCILYX_ENABLE_GITOPS
               value: {{ .Values.config.enableGitOpsPR | quote }}
             - name: RECONCILYX_CORS_ORIGINS
@@ -120,5 +122,147 @@ spec:
             {{- end }}
             - name: RECONCILYX_PRICING_AZURE_ENABLED
               value: {{ .Values.pricing.providers.azure.enabled | quote }}
+            # --- Federated Intelligence ---
+            - name: RECONCILYX_HUB_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "reconcilyx.fullname" . }}-federation
+                  key: RECONCILYX_HUB_URL
+            - name: RECONCILYX_CLUSTER_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "reconcilyx.fullname" . }}-federation
+                  key: RECONCILYX_CLUSTER_NAME
+            - name: RECONCILYX_MODEL_CHANNEL
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "reconcilyx.fullname" . }}-federation
+                  key: RECONCILYX_MODEL_CHANNEL
+            - name: RECONCILYX_FEDERATION_FLUSH_THRESHOLD
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "reconcilyx.fullname" . }}-federation
+                  key: RECONCILYX_FEDERATION_FLUSH_THRESHOLD
+            - name: RECONCILYX_FEDERATION_FLUSH_INTERVAL
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "reconcilyx.fullname" . }}-federation
+                  key: RECONCILYX_FEDERATION_FLUSH_INTERVAL
+            - name: RECONCILYX_HUB_COMPACT_THRESHOLD
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "reconcilyx.fullname" . }}-federation
+                  key: RECONCILYX_HUB_COMPACT_THRESHOLD
+            - name: RECONCILYX_HUB_COMPACT_INTERVAL
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "reconcilyx.fullname" . }}-federation
+                  key: RECONCILYX_HUB_COMPACT_INTERVAL
+            - name: RECONCILYX_SECRETS_DIR
+              value: {{ .Values.externalSecrets.mountPath | default "/var/run/secrets/reconcilyx" | quote }}
+            {{- if .Values.auth.oidc.issuerUrl }}
+            - name: RECONCILYX_OIDC_ISSUER_URL
+              value: {{ .Values.auth.oidc.issuerUrl | quote }}
+            - name: RECONCILYX_OIDC_CLIENT_ID
+              value: {{ .Values.auth.oidc.clientId | quote }}
+            {{- if .Values.auth.oidc.jwksUrl }}
+            - name: RECONCILYX_OIDC_JWKS_URL
+              value: {{ .Values.auth.oidc.jwksUrl | quote }}
+            {{- end }}
+            - name: RECONCILYX_OIDC_ADMIN_GROUPS
+              value: {{ .Values.auth.oidc.adminGroups | quote }}
+            - name: RECONCILYX_OIDC_CI_GROUPS
+              value: {{ .Values.auth.oidc.ciGroups | quote }}
+            {{- if .Values.auth.oidc.viewerGroups }}
+            - name: RECONCILYX_OIDC_VIEWER_GROUPS
+              value: {{ .Values.auth.oidc.viewerGroups | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.auth.oidc.githubRepos }}
+            - name: RECONCILYX_GITHUB_OIDC_REPOS
+              value: {{ .Values.auth.oidc.githubRepos | quote }}
+            {{- end }}
+            {{- if .Values.auth.tlsClientCA.secretName }}
+            - name: RECONCILYX_TLS_CLIENT_CA
+              value: /var/run/secrets/reconcilyx/tls-ca/{{ .Values.auth.tlsClientCA.key | default "ca.crt" }}
+            {{- end }}
+            {{- if .Values.auth.scopedKeys.secretName }}
+            - name: RECONCILYX_SCOPED_API_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.scopedKeys.secretName }}
+                  key: {{ .Values.auth.scopedKeys.key | default "RECONCILYX_SCOPED_API_KEYS" }}
+                  optional: true
+            {{- end }}
+          {{- if or .Values.externalSecrets.enabled .Values.auth.tlsClientCA.secretName }}
+          volumeMounts:
+            {{- if .Values.externalSecrets.enabled }}
+            - name: external-provider-secrets
+              mountPath: {{ .Values.externalSecrets.mountPath | default "/var/run/secrets/reconcilyx" }}
+              readOnly: true
+            {{- end }}
+            {{- if .Values.auth.tlsClientCA.secretName }}
+            - name: tls-client-ca
+              mountPath: /var/run/secrets/reconcilyx/tls-ca
+              readOnly: true
+            {{- end }}
+          {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+      {{- if or .Values.externalSecrets.enabled .Values.auth.tlsClientCA.secretName }}
+      volumes:
+        {{- if .Values.externalSecrets.enabled }}
+        - name: external-provider-secrets
+          {{- if or .Values.externalSecrets.awsSecretName .Values.externalSecrets.gcpSecretName .Values.externalSecrets.githubSecretName .Values.externalSecrets.electricityMapsSecretName .Values.externalSecrets.wattTimeSecretName }}
+          projected:
+            defaultMode: 0400
+            sources:
+              {{- if .Values.externalSecrets.awsSecretName }}
+              - secret:
+                  name: {{ .Values.externalSecrets.awsSecretName }}
+                  items:
+                    - key: access_key_id
+                      path: aws/access_key_id
+                    - key: secret_access_key
+                      path: aws/secret_access_key
+              {{- end }}
+              {{- if .Values.externalSecrets.gcpSecretName }}
+              - secret:
+                  name: {{ .Values.externalSecrets.gcpSecretName }}
+                  items:
+                    - key: api_key
+                      path: gcp/api_key
+              {{- end }}
+              {{- if .Values.externalSecrets.githubSecretName }}
+              - secret:
+                  name: {{ .Values.externalSecrets.githubSecretName }}
+                  items:
+                    - key: app_private_key.pem
+                      path: github/app_private_key.pem
+              {{- end }}
+              {{- if .Values.externalSecrets.electricityMapsSecretName }}
+              - secret:
+                  name: {{ .Values.externalSecrets.electricityMapsSecretName }}
+                  items:
+                    - key: api_key
+                      path: electricitymaps/api_key
+              {{- end }}
+              {{- if .Values.externalSecrets.wattTimeSecretName }}
+              - secret:
+                  name: {{ .Values.externalSecrets.wattTimeSecretName }}
+                  items:
+                    - key: api_key
+                      path: watttime/api_key
+              {{- end }}
+          {{- else }}
+          emptyDir:
+            medium: Memory
+          {{- end }}
+        {{- end }}
+        {{- if .Values.auth.tlsClientCA.secretName }}
+        - name: tls-client-ca
+          secret:
+            secretName: {{ .Values.auth.tlsClientCA.secretName }}
+            defaultMode: 0400
+        {{- end }}
+      {{- end }}

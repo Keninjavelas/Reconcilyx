@@ -4,14 +4,17 @@ import (
 	"os"
 	"strconv"
 	"time"
+
+	"github.com/reconcilyx/operator/pkg/security/credentials"
 )
 
 type CarbonConfig struct {
-	Provider         string
-	CacheTTL         time.Duration
-	ElectricityMaps  ElectricityMapsConfig
-	WattTime         WattTimeConfig
-	StaticFallback   StaticConfig
+	Provider        string
+	CacheTTL        time.Duration
+	MountDir        string
+	ElectricityMaps ElectricityMapsConfig
+	WattTime        WattTimeConfig
+	StaticFallback  StaticConfig
 }
 
 type ElectricityMapsConfig struct {
@@ -43,15 +46,11 @@ func CarbonConfigFromEnv() CarbonConfig {
 			cfg.CacheTTL = time.Duration(h) * time.Hour
 		}
 	}
-	cfg.ElectricityMaps.APIKey = os.Getenv("RECONCILYX_EM_API_KEY")
-	if cfg.ElectricityMaps.APIKey == "" {
-		cfg.ElectricityMaps.APIKey = os.Getenv("ELECTRICITY_MAPS_API_KEY")
-	}
+	mountDir := os.Getenv("RECONCILYX_SECRETS_DIR")
+	cfg.MountDir = mountDir
+	cfg.ElectricityMaps.APIKey = credentials.LoadFromFileOrEnv(mountDir, "electricitymaps", "api_key", "RECONCILYX_EM_API_KEY", "ELECTRICITY_MAPS_API_KEY").Secret.Expose()
 	cfg.ElectricityMaps.BaseURL = os.Getenv("RECONCILYX_EM_BASE_URL")
-	cfg.WattTime.APIKey = os.Getenv("RECONCILYX_WT_API_KEY")
-	if cfg.WattTime.APIKey == "" {
-		cfg.WattTime.APIKey = os.Getenv("WATTTIME_API_KEY")
-	}
+	cfg.WattTime.APIKey = credentials.LoadFromFileOrEnv(mountDir, "watttime", "api_key", "RECONCILYX_WT_API_KEY", "WATTTIME_API_KEY").Secret.Expose()
 	cfg.WattTime.Username = os.Getenv("WATTTIME_USERNAME")
 	cfg.WattTime.Password = os.Getenv("WATTTIME_PASSWORD")
 	cfg.WattTime.BaseURL = os.Getenv("RECONCILYX_WT_BASE_URL")

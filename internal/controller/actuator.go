@@ -50,16 +50,36 @@ type Actuator interface {
 	ApplyMutation(ctx context.Context, proposal *v1alpha1.OptimizationProposal) error
 }
 
+// MemoryShrinkBlockedError is returned when an in-place pods/resize mutation
+// attempts to shrink container memory without opt-in flag and 1.35x working-set headroom.
+type MemoryShrinkBlockedError struct {
+	Container string
+	Reason    string
+}
+
+func (e *MemoryShrinkBlockedError) Error() string {
+	return fmt.Sprintf("in-place memory shrink blocked for container %s: %s (route memory shrinks via GitOps PR or set --allow-inplace-memory-shrink with >=1.35x working-set headroom)", e.Container, e.Reason)
+}
+
 type defaultActuator struct {
-	client client.Client
-	reader client.Reader
+	client                   client.Client
+	reader                   client.Reader
+	allowInPlaceMemoryShrink bool
 }
 
 func NewActuator(c client.Client, reader client.Reader) Actuator {
+	return NewActuatorWithOptions(c, reader, false)
+}
+
+func NewActuatorWithOptions(c client.Client, reader client.Reader, allowInPlaceMemoryShrink bool) Actuator {
 	if reader == nil {
 		reader = c
 	}
-	return &defaultActuator{client: c, reader: reader}
+	return &defaultActuator{
+		client:                   c,
+		reader:                   reader,
+		allowInPlaceMemoryShrink: allowInPlaceMemoryShrink,
+	}
 }
 
 func (a *defaultActuator) AcquireLock(ctx context.Context, proposal *v1alpha1.OptimizationProposal) (bool, error) {
@@ -310,6 +330,9 @@ func (a *defaultActuator) ApplyMutation(ctx context.Context, proposal *v1alpha1.
 	if err := validateProposedContainers(proposal, snapshot); err != nil {
 		return err
 	}
+	if err := checkInPlaceMemoryShrinkGuard(proposal, snapshot, a.allowInPlaceMemoryShrink); err != nil {
+		return err
+	}
 
 	podList := &corev1.PodList{}
 	if err := a.client.List(ctx, podList, client.InNamespace(dep.Namespace), client.MatchingLabelsSelector{Selector: selector}); err != nil {
@@ -393,6 +416,12 @@ func desiredResizeResources(
 			if mem, ok := proposed.Requests[corev1.ResourceMemory]; ok {
 				resources.Requests[corev1.ResourceMemory] = mem
 			}
+			if memLim, ok := proposed.Limits[corev1.ResourceMemory]; ok {
+				if resources.Limits == nil {
+					resources.Limits = corev1.ResourceList{}
+				}
+				resources.Limits[corev1.ResourceMemory] = memLim
+			}
 		case v1alpha1.RecommendationReduceCPURequest:
 			if cpu, ok := proposed.Requests[corev1.ResourceCPU]; ok {
 				resources.Requests[corev1.ResourceCPU] = cpu
@@ -401,8 +430,68 @@ func desiredResizeResources(
 			if mem, ok := proposed.Requests[corev1.ResourceMemory]; ok {
 				resources.Requests[corev1.ResourceMemory] = mem
 			}
+			if memLim, ok := proposed.Limits[corev1.ResourceMemory]; ok {
+				if resources.Limits == nil {
+					resources.Limits = corev1.ResourceList{}
+				}
+				resources.Limits[corev1.ResourceMemory] = memLim
+			}
 		}
 		desired[c.Name] = resources
 	}
 	return desired
+}
+
+// checkInPlaceMemoryShrinkGuard blocks live in-place memory downsizing unless
+// explicitly opted in AND proposed memory retains >= 1.35x working-set headroom.
+func checkInPlaceMemoryShrinkGuard(proposal *v1alpha1.OptimizationProposal, snapshot *v1alpha1.ExecutionSnapshot, allowInPlace bool) error {
+	if snapshot == nil {
+		return nil
+	}
+	for cName, state := range snapshot.ContainerResources {
+		proposed, selected := proposedResourcesForContainer(proposal, cName)
+		if !selected {
+			continue
+		}
+
+		curReq := state.Resources.Requests[corev1.ResourceMemory]
+		curLim := state.Resources.Limits[corev1.ResourceMemory]
+
+		propReq, hasPropReq := proposed.Requests[corev1.ResourceMemory]
+		propLim, hasPropLim := proposed.Limits[corev1.ResourceMemory]
+
+		reqShrink := hasPropReq && curReq.Value() > 0 && propReq.Value() < curReq.Value()
+		limShrink := hasPropLim && curLim.Value() > 0 && propLim.Value() < curLim.Value()
+		if !reqShrink && !limShrink {
+			continue
+		}
+
+		if !allowInPlace {
+			return &MemoryShrinkBlockedError{
+				Container: cName,
+				Reason:    "in-place memory shrinking is disabled by default",
+			}
+		}
+
+		var workingSet int64
+		if proposal.Status.Learning != nil {
+			if pre, ok := proposal.Status.Learning.Pre[cName]; ok {
+				workingSet = pre.MemoryWorkingSetBytes
+			}
+		}
+		if workingSet <= 0 {
+			return &MemoryShrinkBlockedError{
+				Container: cName,
+				Reason:    "live memory working set telemetry is unavailable to verify 1.35x safety headroom",
+			}
+		}
+		minSafe := int64(float64(workingSet) * 1.35)
+		if (hasPropReq && propReq.Value() < minSafe) || (hasPropLim && propLim.Value() < minSafe) {
+			return &MemoryShrinkBlockedError{
+				Container: cName,
+				Reason:    fmt.Sprintf("proposed memory (%dB req / %dB lim) violates 1.35x working-set headroom (%dB minimum)", propReq.Value(), propLim.Value(), minSafe),
+			}
+		}
+	}
+	return nil
 }

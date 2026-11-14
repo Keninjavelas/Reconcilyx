@@ -50,24 +50,34 @@ in CI. A triggered condition exits with code 2; errors exit with code 1.`,
 			return fmt.Errorf("--max-increase-percent cannot be negative")
 		}
 
-		report, err := buildManifestDiffReport(
-			flagString(cmd, "manifests"),
-			flagString(cmd, "base"),
-			flagString(cmd, "region"),
-			minReplicas,
-			maxIncrease,
-			maxReplicas,
-		)
+		offline, _ := cmd.Flags().GetBool("offline")
+		report, err := buildManifestDiffReportWithOptions(manifestDiffOptions{
+			ManifestsPath:      flagString(cmd, "manifests"),
+			BaseRef:            flagString(cmd, "base"),
+			BaseManifestsPath:  flagString(cmd, "base-manifests"),
+			Region:             flagString(cmd, "region"),
+			MinReplicas:        minReplicas,
+			MaxIncreasePercent: maxIncrease,
+			MaxReplicas:        maxReplicas,
+			Offline:            offline,
+		})
 		if err != nil {
 			return err
 		}
 
-		if format == "json" {
+		all, _ := cmd.Flags().GetBool("all")
+		switch format {
+		case "json":
 			if err := writeJSONOutput(cmd.OutOrStdout(), report); err != nil {
 				return err
 			}
-		} else {
-			all, _ := cmd.Flags().GetBool("all")
+		case "markdown":
+			writeDiffMarkdown(cmd.OutOrStdout(), report, all)
+		case "sarif":
+			if err := writeDiffSARIF(cmd.OutOrStdout(), report); err != nil {
+				return err
+			}
+		default:
 			writeDiffReport(cmd, report, all)
 		}
 
@@ -225,6 +235,8 @@ func formatSignedCarbon(grams float64) string {
 func init() {
 	diffCmd.Flags().String("manifests", "", "Manifest file or directory to diff (required)")
 	diffCmd.Flags().String("base", "HEAD", "Git ref to compare the working tree against")
+	diffCmd.Flags().String("base-manifests", "", "Optional baseline manifest file or directory (used instead of git in offline/air-gapped mode)")
+	diffCmd.Flags().Bool("offline", false, "Run fully offline using bundled catalog pricing and static regional carbon intensity")
 	diffCmd.Flags().String("region", "", "Carbon intensity region (for example aws-eu-west-1); empty uses the global average")
 	diffCmd.Flags().Int32("min-replicas", 1, "Minimum replicas before flagging a guardrail violation (0 disables)")
 	diffCmd.Flags().Int32("max-replicas", 0, "Maximum replicas before flagging a guardrail violation (0 disables)")

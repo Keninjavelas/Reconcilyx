@@ -20,6 +20,9 @@ func (r *IdleWorkloadRule) Description() string {
 }
 
 func (r *IdleWorkloadRule) Evaluate(containerName string, metrics *telemetry.ContainerMetrics, currentResources corev1.ResourceRequirements) (*engine.Finding, error) {
+	if metrics.Memory.OOMCount > 0 || metrics.Restarts >= 3 {
+		return nil, nil
+	}
 	// A workload is considered idle if CPU < 0.01 cores and Memory < 50MB
 	if metrics.CPU.UsageCores < 0.01 && metrics.Memory.WorkingSetBytes < (50*1024*1024) {
 		return &engine.Finding{

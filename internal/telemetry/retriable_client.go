@@ -126,6 +126,16 @@ func (c *retriableClient) QueryRange(ctx context.Context, query string, r time.D
 	return v, err
 }
 
+func (c *retriableClient) QueryRangeWindow(ctx context.Context, query string, start, end time.Time, step time.Duration) (model.Value, error) {
+	windowed, ok := c.inner.(WindowedMetricsClient)
+	if !ok {
+		return nil, fmt.Errorf("underlying metrics client does not support QueryRangeWindow")
+	}
+	return c.retry(ctx, func() (model.Value, error) {
+		return windowed.QueryRangeWindow(ctx, query, start, end, step)
+	})
+}
+
 func (c *retriableClient) HealthCheck(ctx context.Context) error {
 	_, err := c.retry(ctx, func() (model.Value, error) {
 		return nil, c.inner.HealthCheck(ctx)

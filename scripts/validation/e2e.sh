@@ -13,9 +13,11 @@
 #   - the learning receipt was finalized with the expected cost saving
 #   - the policy evaluation, resize, and completion were written to the audit log
 #
-# Requirements: kubectl access, curl, a deployed manager, and Prometheus
-# installed with `make install-observability` (or another metrics backend
-# reachable through RECONCILYX_PROMETHEUS_URL).
+# Requirements: kubectl access, curl, a deployed manager (installed with
+# `--set actuation.inPlaceResizeEnabled=true --set config.enableInPlaceResizing=true`
+# when validating split-RBAC live resize), and Prometheus installed with
+# `make install-observability` (or another metrics backend reachable through
+# RECONCILYX_PROMETHEUS_URL).
 #
 # Usage:
 #   scripts/validation/e2e.sh
@@ -253,6 +255,13 @@ $KUBECTL get crd optimizationproposals.optimization.reconcilyx.io >/dev/null 2>&
 	fatal "OptimizationProposal CRD not found; is the operator installed?"
 $KUBECTL -n "$MANAGER_NAMESPACE" get deployment "$MANAGER_DEPLOYMENT" >/dev/null 2>&1 ||
 	fatal "manager deployment ${MANAGER_NAMESPACE}/${MANAGER_DEPLOYMENT} not found"
+
+MANAGER_SA=$($KUBECTL -n "$MANAGER_NAMESPACE" get deployment "$MANAGER_DEPLOYMENT" \
+	-o jsonpath='{.spec.template.spec.serviceAccountName}' 2>/dev/null)
+MANAGER_SA="${MANAGER_SA:-default}"
+if ! $KUBECTL auth can-i patch pods/resize --as="system:serviceaccount:${MANAGER_NAMESPACE}:${MANAGER_SA}" >/dev/null 2>&1; then
+	log "WARN ServiceAccount ${MANAGER_NAMESPACE}/${MANAGER_SA} lacks pods/resize patch RBAC; re-deploy Helm with --set actuation.inPlaceResizeEnabled=true --set config.enableInPlaceResizing=true"
+fi
 
 PROMETHEUS_URL=$($KUBECTL -n "$MANAGER_NAMESPACE" get deployment "$MANAGER_DEPLOYMENT" \
 	-o jsonpath='{range .spec.template.spec.containers[0].env[?(@.name=="RECONCILYX_PROMETHEUS_URL")]}{.value}{end}' 2>/dev/null)

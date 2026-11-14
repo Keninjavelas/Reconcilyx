@@ -199,3 +199,42 @@ func TestTelemetryProvider_GetWorkloadMetrics(t *testing.T) {
 		assert.Equal(t, float64(4096*1024*1024), app.GPU.GPUMemoryUsedBytes)
 	})
 }
+
+func TestKeplerAndOpenCostAdapters(t *testing.T) {
+	ref := corev1.ObjectReference{Namespace: "default", Name: "web"}
+
+	keplerClient := &MockMetricsClient{
+		QueryFunc: func(ctx context.Context, query string) (model.Value, error) {
+			if strings.Contains(query, "kepler_container_joules_total") {
+				return model.Vector{&model.Sample{Metric: model.Metric{"container_name": "app"}, Value: 42.5}}, nil
+			}
+			if strings.Contains(query, "kepler_container_package_joules_total") {
+				return model.Vector{&model.Sample{Metric: model.Metric{"container_name": "app"}, Value: 36.0}}, nil
+			}
+			if strings.Contains(query, "node_total_hourly_cost") {
+				return model.Vector{&model.Sample{Value: 1.25}}, nil
+			}
+			if strings.Contains(query, "kubecost_cluster_management_cost") {
+				return model.Vector{&model.Sample{Value: 0.15}}, nil
+			}
+			return nil, ErrNoData
+		},
+	}
+
+	energyMap, prov := InspectEnergy(context.Background(), keplerClient, ref, map[string]float64{"app": 1.0})
+	assert.Equal(t, ProvenanceKeplerEBPF, prov)
+	assert.Equal(t, 42.5, energyMap["app"].TotalWatts)
+	assert.Equal(t, 36.0, energyMap["app"].PackageWatts)
+
+	costAttr, err := InspectOpenCost(context.Background(), keplerClient, ref)
+	assert.NoError(t, err)
+	assert.NotNil(t, costAttr)
+	assert.Equal(t, ProvenanceOpenCostPrometheus, costAttr.Source)
+	assert.Equal(t, 1.25, costAttr.HourlyNodeCostUSD)
+
+	// Without Kepler installed, InspectEnergy falls back to explicit TDP estimate provenance.
+	fallbackMap, fallbackProv := InspectEnergy(context.Background(), nil, ref, map[string]float64{"app": 2.0})
+	assert.Equal(t, ProvenanceTDPEstimate, fallbackProv)
+	assert.Equal(t, ProvenanceTDPEstimate, fallbackMap["app"].Provenance)
+	assert.Greater(t, fallbackMap["app"].TotalWatts, 0.0)
+}

@@ -19,6 +19,20 @@ import type {
   WhatIfRequest,
   WhatIfResponse,
 } from "./types";
+import {
+  REPLAY_ANOMALIES,
+  REPLAY_AUDIT,
+  REPLAY_CLUSTERS,
+  REPLAY_HEALTH,
+  REPLAY_POLICIES,
+  REPLAY_PROPOSALS,
+  REPLAY_SAVINGS,
+  computeReplayWhatIf,
+  getReplayForecast,
+  getReplayProposalDetail,
+  readReplayPreference,
+  replayMutationBlockedError,
+} from "./evidenceReplay";
 
 const apiUrlStorageKey = "reconcilyx_api_url";
 const apiKeyStorageKey = "reconcilyx_api_key";
@@ -218,11 +232,29 @@ export const api = {
       sortBy?: string;
       limit?: number;
     }): Promise<ProposalListItem[]> {
+      if (readReplayPreference()) {
+        const items = REPLAY_PROPOSALS.filter((p) => {
+          if (params?.phase && p.phase !== params.phase) return false;
+          if (params?.approvalState && p.approvalState !== params.approvalState) return false;
+          if (params?.namespace && p.namespace !== params.namespace) return false;
+          if (params?.cluster && p.cluster !== params.cluster) return false;
+          if (params?.workload && p.workloadName !== params.workload) return false;
+          return true;
+        });
+        return Promise.resolve(items.slice(0, params?.limit ?? items.length));
+      }
       return json<ListEnvelope<ProposalListItem>>("/api/proposals", { params }).then(
         (env) => env.items ?? [],
       );
     },
     detail(name: string, namespace = "default"): Promise<ProposalDetail> {
+      if (readReplayPreference()) {
+        const detail = getReplayProposalDetail(name);
+        if (!detail) {
+          return Promise.reject(new Error(`Proposal ${namespace}/${name} not found in replay snapshot`));
+        }
+        return Promise.resolve(detail);
+      }
       return json<{ proposal: RawProposal; events?: RawProposalEvent[] }>(
         `/api/proposals/${encodeURIComponent(name)}`,
         { params: { namespace } },
@@ -262,6 +294,7 @@ export const api = {
       });
     },
     approve(ref: ProposalRef, reason = "Approved via UI"): Promise<void> {
+      if (readReplayPreference()) return Promise.reject(replayMutationBlockedError());
       return json<void>(`/api/proposals/${encodeURIComponent(ref.name)}/approve`, {
         method: "POST",
         params: { namespace: ref.namespace },
@@ -269,6 +302,7 @@ export const api = {
       });
     },
     reject(ref: ProposalRef, reason = "Rejected via UI"): Promise<void> {
+      if (readReplayPreference()) return Promise.reject(replayMutationBlockedError());
       return json<void>(`/api/proposals/${encodeURIComponent(ref.name)}/reject`, {
         method: "POST",
         params: { namespace: ref.namespace },
@@ -276,6 +310,7 @@ export const api = {
       });
     },
     rollback(ref: ProposalRef, reason = "Rollback requested via UI"): Promise<void> {
+      if (readReplayPreference()) return Promise.reject(replayMutationBlockedError());
       return json<void>(`/api/proposals/${encodeURIComponent(ref.name)}/rollback`, {
         method: "POST",
         params: { namespace: ref.namespace },
@@ -283,24 +318,29 @@ export const api = {
       });
     },
     bulkApprove(refs: ProposalRef[], reason?: string): Promise<void[]> {
+      if (readReplayPreference()) return Promise.reject(replayMutationBlockedError());
       return Promise.all(refs.map((ref) => api.proposals.approve(ref, reason ?? "Bulk approved via UI")));
     },
     bulkReject(refs: ProposalRef[], reason?: string): Promise<void[]> {
+      if (readReplayPreference()) return Promise.reject(replayMutationBlockedError());
       return Promise.all(refs.map((ref) => api.proposals.reject(ref, reason ?? "Bulk rejected via UI")));
     },
   },
   savings: {
     get(): Promise<SavingsResponse> {
+      if (readReplayPreference()) return Promise.resolve(REPLAY_SAVINGS);
       return json<SavingsResponse>("/api/metrics/savings");
     },
   },
   forecast: {
     get(workload: string, namespace = "default"): Promise<ForecastPoint[]> {
+      if (readReplayPreference()) return Promise.resolve(getReplayForecast(workload));
       return json<ForecastResponse>(`/api/forecast/${encodeURIComponent(workload)}`, {
         params: { namespace },
       }).then((env) => env.series ?? []);
     },
     whatIf(req: WhatIfRequest): Promise<WhatIfResponse> {
+      if (readReplayPreference()) return Promise.resolve(computeReplayWhatIf(req));
       return json<WhatIfResponse>("/api/what-if", {
         method: "POST",
         body: JSON.stringify(req),
@@ -309,11 +349,13 @@ export const api = {
   },
   policies: {
     list(): Promise<PolicyView[]> {
+      if (readReplayPreference()) return Promise.resolve(REPLAY_POLICIES);
       return json<ListEnvelope<RawPolicy>>("/api/policies").then((env) =>
         (env.items ?? []).map(toPolicyView),
       );
     },
     create(policy: RawPolicy): Promise<RawPolicy> {
+      if (readReplayPreference()) return Promise.reject(replayMutationBlockedError());
       return json<RawPolicy>("/api/policies", {
         method: "POST",
         body: JSON.stringify(policy),
@@ -322,6 +364,7 @@ export const api = {
   },
   anomalies: {
     list(limit = 10): Promise<AnomalyItem[]> {
+      if (readReplayPreference()) return Promise.resolve(REPLAY_ANOMALIES.slice(0, limit));
       return json<ListEnvelope<AnomalyItem>>("/api/anomalies", { params: { limit } }).then(
         (env) => env.items ?? [],
       );
@@ -329,11 +372,13 @@ export const api = {
   },
   clusters: {
     list(): Promise<ClusterItem[]> {
+      if (readReplayPreference()) return Promise.resolve(REPLAY_CLUSTERS);
       return json<ListEnvelope<ClusterItem>>("/api/clusters").then((env) => env.items ?? []);
     },
   },
   audit: {
     tail(limit = 20): Promise<AuditEntry[]> {
+      if (readReplayPreference()) return Promise.resolve(REPLAY_AUDIT.slice(0, limit));
       return json<{ items: AuditEntry[] }>("/api/audit", { params: { limit } }).then(
         (res) => res.items ?? [],
       );
@@ -341,6 +386,7 @@ export const api = {
   },
   healthz: {
     get(): Promise<HealthResponse> {
+      if (readReplayPreference()) return Promise.resolve(REPLAY_HEALTH);
       return json<HealthResponse>("/healthz");
     },
   },
@@ -351,6 +397,7 @@ export const api = {
       apiKey?: string;
       confirmToken?: string;
     }): Promise<ChatResponse> {
+      if (readReplayPreference()) return Promise.reject(replayMutationBlockedError());
       return json<ChatResponse>("/api/chat", {
         method: "POST",
         body: JSON.stringify(params),

@@ -57,6 +57,14 @@ func (i *defaultInspector) InspectCPU(ctx context.Context, ref corev1.ObjectRefe
 	}
 	throttleMap := parseVectorToMap(throttleVal)
 
+	// 5. P95 CPU Usage over 24h lookback (optional enrichment)
+	p95Query := fmt.Sprintf(`max(quantile_over_time(0.95, rate(container_cpu_usage_seconds_total{namespace="%s", pod=~"`+podMatchRegex+`", container!="POD", container!=""}[5m])[24h:5m])) by (container)`, ref.Namespace, ref.Name)
+	p95Val, err := i.client.Query(ctx, p95Query)
+	p95Map := map[string]float64{}
+	if err == nil {
+		p95Map = parseVectorToMap(p95Val)
+	}
+
 	// Merge into CPUMetrics map
 	containers := gatherContainers(reqMap, limMap, usageMap, throttleMap)
 	for _, c := range containers {
@@ -64,6 +72,7 @@ func (i *defaultInspector) InspectCPU(ctx context.Context, ref corev1.ObjectRefe
 			RequestedCores: reqMap[c],
 			LimitedCores:   limMap[c],
 			UsageCores:     usageMap[c],
+			P95Cores:       p95Map[c],
 			ThrottledSecs:  throttleMap[c],
 		}
 	}
@@ -98,7 +107,7 @@ func (i *defaultInspector) InspectMemory(ctx context.Context, ref corev1.ObjectR
 	}
 	usageMap := parseVectorToMap(usageVal)
 
-	// 4. OOM Count
+	// 4. OOM Count (current terminated state + 7d lookback window)
 	oomQuery := fmt.Sprintf(`max(kube_pod_container_status_last_terminated_reason{namespace="%s", pod=~"`+podMatchRegex+`", container!="POD", container!="", reason="OOMKilled"}) by (container)`, ref.Namespace, ref.Name)
 	oomVal, err := i.client.Query(ctx, oomQuery)
 	if err != nil && err != ErrNoData {
@@ -106,14 +115,23 @@ func (i *defaultInspector) InspectMemory(ctx context.Context, ref corev1.ObjectR
 	}
 	oomMap := parseVectorToMap(oomVal)
 
+	// 5. P99 Memory Working Set over 24h lookback (optional enrichment)
+	p99Query := fmt.Sprintf(`max(quantile_over_time(0.99, container_memory_working_set_bytes{namespace="%s", pod=~"`+podMatchRegex+`", container!="POD", container!=""}[24h])) by (container)`, ref.Namespace, ref.Name)
+	p99Val, err := i.client.Query(ctx, p99Query)
+	p99Map := map[string]float64{}
+	if err == nil {
+		p99Map = parseVectorToMap(p99Val)
+	}
+
 	// Merge into MemoryMetrics map
 	containers := gatherContainers(reqMap, limMap, usageMap, oomMap)
 	for _, c := range containers {
 		result[c] = MemoryMetrics{
-			RequestedBytes:  reqMap[c],
-			LimitedBytes:    limMap[c],
-			WorkingSetBytes: usageMap[c],
-			OOMCount:        int32(oomMap[c]),
+			RequestedBytes:     reqMap[c],
+			LimitedBytes:       limMap[c],
+			WorkingSetBytes:    usageMap[c],
+			P99WorkingSetBytes: p99Map[c],
+			OOMCount:           int32(oomMap[c]),
 		}
 	}
 
@@ -235,6 +253,16 @@ func (i *defaultInspector) InspectGPU(ctx context.Context, ref corev1.ObjectRefe
 	if err != nil {
 		return nil, err
 	}
+	smClockMap, _ := i.queryByContainer(ctx, fmt.Sprintf(
+		`avg(DCGM_FI_DEV_SM_CLOCK{namespace="%s", pod=~"`+podMatchRegex+`"}) by (container)`,
+		ref.Namespace, ref.Name))
+	powerMap, _ := i.queryByContainer(ctx, fmt.Sprintf(
+		`sum(DCGM_FI_DEV_POWER_USAGE{namespace="%s", pod=~"`+podMatchRegex+`"}) by (container)`,
+		ref.Namespace, ref.Name))
+	grEngineMap, _ := i.queryByContainer(ctx, fmt.Sprintf(
+		`avg(DCGM_FI_PROF_GR_ENGINE_ACTIVE{namespace="%s", pod=~"`+podMatchRegex+`"}) by (container)`,
+		ref.Namespace, ref.Name))
+	migProfiles := i.queryMIGProfiles(ctx, ref)
 
 	for _, containerName := range gatherContainers(utilMap, countMap, usedMap, totalMap, tempMap) {
 		count := int32(countMap[containerName])
@@ -254,6 +282,11 @@ func (i *defaultInspector) InspectGPU(ctx context.Context, ref corev1.ObjectRefe
 			GPUMemoryUsedBytes:  used * 1024 * 1024,
 			GPUMemoryTotalBytes: total * 1024 * 1024,
 			TemperatureCelsius:  temp,
+			SMClockMHz:          smClockMap[containerName],
+			PowerUsageWatts:     powerMap[containerName],
+			GREngineActivePct:   grEngineMap[containerName] * 100.0,
+			MIGProfile:          migProfiles[containerName],
+			TelemetryStatus:     "monitored",
 		}
 	}
 	if len(result) > 0 {
@@ -284,15 +317,49 @@ func (i *defaultInspector) InspectGPU(ctx context.Context, ref corev1.ObjectRefe
 		temp, _ := i.queryScalar(ctx, fmt.Sprintf(
 			`max(DCGM_FI_DEV_GPU_TEMP{namespace="%s", pod=~"`+podMatchRegex+`"})`,
 			ref.Namespace, ref.Name))
+		smClock, _ := i.queryScalar(ctx, fmt.Sprintf(
+			`avg(DCGM_FI_DEV_SM_CLOCK{namespace="%s", pod=~"`+podMatchRegex+`"})`,
+			ref.Namespace, ref.Name))
+		powerW, _ := i.queryScalar(ctx, fmt.Sprintf(
+			`sum(DCGM_FI_DEV_POWER_USAGE{namespace="%s", pod=~"`+podMatchRegex+`"})`,
+			ref.Namespace, ref.Name))
+		grEngine, _ := i.queryScalar(ctx, fmt.Sprintf(
+			`avg(DCGM_FI_PROF_GR_ENGINE_ACTIVE{namespace="%s", pod=~"`+podMatchRegex+`"})`,
+			ref.Namespace, ref.Name))
 		result[""] = GPUMetrics{
 			GPUCount:            int32(count),
 			GPUUtilizationPct:   util,
 			GPUMemoryUsedBytes:  used * 1024 * 1024,
 			GPUMemoryTotalBytes: total * 1024 * 1024,
 			TemperatureCelsius:  temp,
+			SMClockMHz:          smClock,
+			PowerUsageWatts:     powerW,
+			GREngineActivePct:   grEngine * 100.0,
+			MIGProfile:          migProfiles[""],
+			TelemetryStatus:     "monitored",
 		}
 	}
 	return result, nil
+}
+
+func (i *defaultInspector) queryMIGProfiles(ctx context.Context, ref corev1.ObjectReference) map[string]string {
+	profiles := make(map[string]string)
+	q := fmt.Sprintf(`max(kube_pod_container_resource_requests{namespace="%s", pod=~"`+podMatchRegex+`", resource=~"nvidia\\.com/mig-.*"}) by (container, resource)`, ref.Namespace, ref.Name)
+	val, err := i.client.Query(ctx, q)
+	if err != nil {
+		return profiles
+	}
+	vec, ok := val.(model.Vector)
+	if !ok {
+		return profiles
+	}
+	for _, s := range vec {
+		if resName, ok := s.Metric["resource"]; ok {
+			container := string(s.Metric["container"])
+			profiles[container] = string(resName)
+		}
+	}
+	return profiles
 }
 
 func (i *defaultInspector) queryByContainer(ctx context.Context, query string) (map[string]float64, error) {

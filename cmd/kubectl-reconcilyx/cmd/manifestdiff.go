@@ -108,6 +108,9 @@ type manifestDiffReport struct {
 	BaseRef                   string              `json:"baseRef"`
 	ManifestsPath             string              `json:"manifestsPath"`
 	Region                    string              `json:"region,omitempty"`
+	Offline                   bool                `json:"offline,omitempty"`
+	PricingSource             string              `json:"pricingSource,omitempty"`
+	CarbonSource              string              `json:"carbonSource,omitempty"`
 	CarbonIntensityGCO2PerKWh float64             `json:"carbonIntensityGCO2PerKWh"`
 	Summary                   manifestDiffSummary `json:"summary"`
 	Workloads                 []workloadDiff      `json:"workloads"`
@@ -115,7 +118,36 @@ type manifestDiffReport struct {
 	Warnings                  []string            `json:"warnings,omitempty"`
 }
 
+type manifestDiffOptions struct {
+	ManifestsPath      string
+	BaseRef            string
+	BaseManifestsPath  string
+	Region             string
+	MinReplicas        int32
+	MaxIncreasePercent float64
+	MaxReplicas        int32
+	Offline            bool
+}
+
 func buildManifestDiffReport(manifestsPath, baseRef, region string, minReplicas int32, maxIncreasePercent float64, maxReplicas int32) (manifestDiffReport, error) {
+	return buildManifestDiffReportWithOptions(manifestDiffOptions{
+		ManifestsPath:      manifestsPath,
+		BaseRef:            baseRef,
+		Region:             region,
+		MinReplicas:        minReplicas,
+		MaxIncreasePercent: maxIncreasePercent,
+		MaxReplicas:        maxReplicas,
+	})
+}
+
+func buildManifestDiffReportWithOptions(opts manifestDiffOptions) (manifestDiffReport, error) {
+	manifestsPath := opts.ManifestsPath
+	baseRef := opts.BaseRef
+	region := opts.Region
+	minReplicas := opts.MinReplicas
+	maxIncreasePercent := opts.MaxIncreasePercent
+	maxReplicas := opts.MaxReplicas
+
 	if strings.TrimSpace(manifestsPath) == "" {
 		return manifestDiffReport{}, fmt.Errorf("diff failed: --manifests is required")
 	}
@@ -129,7 +161,21 @@ func buildManifestDiffReport(manifestsPath, baseRef, region string, minReplicas 
 		return manifestDiffReport{}, fmt.Errorf("diff failed: resolve carbon intensity: %w", err)
 	}
 
-	base, current, warnings, err := loadManifestWorkloads(manifestsPath, baseRef, intensity.Value)
+	var (
+		base     map[string]manifestWorkload
+		current  map[string]manifestWorkload
+		warnings []string
+	)
+	if opts.Offline || strings.TrimSpace(opts.BaseManifestsPath) != "" {
+		base, current, warnings, err = loadOfflineManifestWorkloads(manifestsPath, opts.BaseManifestsPath, intensity.Value)
+		if opts.Offline && opts.BaseManifestsPath == "" {
+			baseRef = "offline-standalone"
+		} else if opts.BaseManifestsPath != "" {
+			baseRef = opts.BaseManifestsPath
+		}
+	} else {
+		base, current, warnings, err = loadManifestWorkloads(manifestsPath, baseRef, intensity.Value)
+	}
 	if err != nil {
 		return manifestDiffReport{}, err
 	}
@@ -139,6 +185,9 @@ func buildManifestDiffReport(manifestsPath, baseRef, region string, minReplicas 
 		BaseRef:                   baseRef,
 		ManifestsPath:             manifestsPath,
 		Region:                    region,
+		Offline:                   opts.Offline,
+		PricingSource:             "bundled-catalog-fallback",
+		CarbonSource:              "static-regional-fallback",
 		CarbonIntensityGCO2PerKWh: intensity.Value,
 		Workloads:                 make([]workloadDiff, 0),
 		Violations:                make([]diffViolation, 0),
@@ -789,6 +838,76 @@ func loadManifestWorkloads(manifestsPath, baseRef string, intensity float64) (ma
 		}
 	}
 	return baseWorkloads, currentWorkloads, warnings, nil
+}
+
+func loadOfflineManifestWorkloads(manifestsPath, baseManifestsPath string, intensity float64) (map[string]manifestWorkload, map[string]manifestWorkload, []string, error) {
+	baseWorkloads := map[string]manifestWorkload{}
+	currentWorkloads := map[string]manifestWorkload{}
+	warnings := []string{}
+	warnedDaemonSet := map[string]bool{}
+
+	if err := readDirOrFileWorkloads(manifestsPath, intensity, currentWorkloads, warnedDaemonSet, &warnings); err != nil {
+		return nil, nil, nil, err
+	}
+	if strings.TrimSpace(baseManifestsPath) != "" {
+		if err := readDirOrFileWorkloads(baseManifestsPath, intensity, baseWorkloads, warnedDaemonSet, &warnings); err != nil {
+			return nil, nil, nil, err
+		}
+	}
+	return baseWorkloads, currentWorkloads, warnings, nil
+}
+
+func readDirOrFileWorkloads(target string, intensity float64, out map[string]manifestWorkload, warned map[string]bool, warnings *[]string) error {
+	absPath, err := filepath.Abs(target)
+	if err != nil {
+		return fmt.Errorf("diff failed: resolve %q: %w", target, err)
+	}
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return fmt.Errorf("diff failed: stat %q: %w", target, err)
+	}
+	var paths []string
+	if info.IsDir() {
+		if err := filepath.WalkDir(absPath, func(p string, d os.DirEntry, wErr error) error {
+			if wErr != nil {
+				return wErr
+			}
+			if d.IsDir() {
+				if d.Name() == ".git" {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if isManifestFile(p) {
+				paths = append(paths, p)
+			}
+			return nil
+		}); err != nil {
+			return fmt.Errorf("diff failed: walk %q: %w", target, err)
+		}
+	} else {
+		if !isManifestFile(absPath) {
+			return fmt.Errorf("diff failed: %q is not a .yaml or .yml file", target)
+		}
+		paths = append(paths, absPath)
+	}
+	sort.Strings(paths)
+	for _, p := range paths {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return fmt.Errorf("diff failed: read %s: %w", p, err)
+		}
+		workloads, err := parseWorkloadFile(p, data)
+		if err != nil {
+			return fmt.Errorf("diff failed: parse %s: %w", p, err)
+		}
+		for _, w := range workloads {
+			priceWorkload(&w, intensity)
+			out[w.Key] = w
+			warnDaemonSet(&w, warned, warnings)
+		}
+	}
+	return nil
 }
 
 func warnDaemonSet(w *manifestWorkload, seen map[string]bool, warnings *[]string) {

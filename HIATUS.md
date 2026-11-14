@@ -100,14 +100,13 @@ No credential, token, API key, or private key belongs in this repository or in e
 ### H-07 — Validate multi-cluster federated rollout
 
 - **Priority:** P1 validation.
-- **Blocked by:** Nothing external — paused by the hiatus decision, not by accounts.
-- **Why it remains open:** The emitter, trimmed-mean aggregator, snapshot, channel selection, and spoke bootstrap are implemented and unit-tested, but no two-cluster rollout has been run. Three gaps make a Helm-only rollout impractical today:
-  1. The Helm chart exposes no `RECONCILYX_HUB_URL`, `RECONCILYX_CLUSTER_NAME`, or `RECONCILYX_MODEL_CHANNEL` values, although `cmd/main.go` reads them.
-  2. The emitter defaults to a 100-delta threshold and a one-hour flush interval; `cmd/main.go` does not override them.
-  3. The Hub compacts snapshots only when the pending delta count is a multiple of 500, so a small validation may never publish a snapshot.
-- **What to do:** Add chart values and deployment env wiring for the three federation variables, make the flush threshold/interval and compaction cadence configurable (with safe defaults), then run a hub cluster and a spoke cluster. Drive learning deltas, confirm aggregation, snapshot publication, version increment, convergence/stability fields, stable/canary selection, and spoke bootstrap from the Hub.
-- **Acceptance evidence:** Two-cluster run log showing deltas accepted, snapshot version and model hash, channel behavior, and a spoke that bootstraps the Hub model; record it in [STATUS.md](STATUS.md) and the Federated Intelligence row.
-- **Notes:** This can be done with two local Kind clusters and does not need cloud spend, but it is not a production-like validation. Keep the row `Partial` afterward.
+- **Blocked by:** Stopped container daemon / Kind clusters required for live multi-cluster execution (`2026-11-13`).
+- **Architectural & code progress (`v4.1.0-rc1`, 2026-11-13):** All three architectural prerequisites listed below are now resolved and covered by local Go unit tests, fuzzing, and Helm template assertions:
+  1. `charts/reconcilyx` now exposes `federation.enabled`, `federation.role`, `federation.hubUrl`, `federation.clusterName`, `federation.modelChannel`, `federation.flushThreshold`, `federation.flushInterval`, `federation.compactThreshold`, and `federation.compactInterval` into the rendered ConfigMap and Deployment environment.
+  2. `cmd/main.go` reads `RECONCILYX_FEDERATION_FLUSH_THRESHOLD` / `RECONCILYX_FEDERATION_FLUSH_INTERVAL` and `RECONCILYX_HUB_COMPACT_THRESHOLD` / `RECONCILYX_HUB_COMPACT_INTERVAL`.
+  3. `internal/federated/aggregator.go` replaces the `pending % 500 == 0` check with dual-trigger watermark + max-age compaction, `VerifyChecksum` SHA-256 verification, and `POST /api/v1/federation/compact` (`internal/api/federated_test.go` + `FuzzTrimmedMeanAggregation` passed).
+- **What remains:** Execute `scripts/validation/federation-e2e.sh` against two live Kind clusters (`hub` and `spoke`) once Docker is running, capture the two-cluster run log, and record it in [STATUS.md](STATUS.md).
+- **Notes:** Keep the Federated Intelligence row `Partial` in [FEATURE_MATRIX.md](FEATURE_MATRIX.md) until a multi-cluster production-like validation completes.
 
 ### H-08 — Run the 66-check e2e harness on a production-like cloud cluster
 

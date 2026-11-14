@@ -33,6 +33,22 @@ func TestScrapeGPUMetrics(t *testing.T) {
 				return model.Vector{
 					{Metric: model.Metric{"container": "trainer"}, Value: 42, Timestamp: 0},
 				}, nil
+			case contains(query, "DCGM_FI_DEV_SM_CLOCK"):
+				return model.Vector{
+					{Metric: model.Metric{"container": "trainer"}, Value: 1410, Timestamp: 0},
+				}, nil
+			case contains(query, "DCGM_FI_DEV_POWER_USAGE"):
+				return model.Vector{
+					{Metric: model.Metric{"container": "trainer"}, Value: 215.5, Timestamp: 0},
+				}, nil
+			case contains(query, "DCGM_FI_PROF_GR_ENGINE_ACTIVE"):
+				return model.Vector{
+					{Metric: model.Metric{"container": "trainer"}, Value: 0.72, Timestamp: 0},
+				}, nil
+			case contains(query, "nvidia"):
+				return model.Vector{
+					{Metric: model.Metric{"container": "trainer", "resource": "nvidia.com/mig-1g.5gb"}, Value: 1, Timestamp: 0},
+				}, nil
 			default:
 				return model.Vector{}, nil
 			}
@@ -51,6 +67,12 @@ func TestScrapeGPUMetrics(t *testing.T) {
 	}
 	if gpu.GPUMemoryUsedBytes != 1536*1024*1024 {
 		t.Errorf("expected used memory in bytes, got %f", gpu.GPUMemoryUsedBytes)
+	}
+	if gpu.SMClockMHz != 1410 || gpu.PowerUsageWatts != 215.5 || gpu.GREngineActivePct != 72.0 {
+		t.Errorf("expected DCGM clock/power/gr-engine telemetry, got %+v", gpu)
+	}
+	if gpu.MIGProfile != "nvidia.com/mig-1g.5gb" || gpu.TelemetryStatus != "monitored" {
+		t.Errorf("expected monitored MIG profile, got %+v", gpu)
 	}
 }
 

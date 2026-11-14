@@ -15,16 +15,19 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: ui/package-lock.json
-      - name: Build embedded UI
+      - name: Typecheck, test, and build embedded UI
         working-directory: ui
         run: |
           npm ci
+          npm run typecheck
+          npm test
           npm run build
-      - name: Test UI ledger math
-        working-directory: ui
-        run: npm test
       - uses: actions/setup-go@v5
         with:
           go-version-file: 'go.mod'
-      - name: Run tests
-        run: make test
+      - name: Run Go unit and envtest suites with race detector
+        run: |
+          make envtest
+          KUBEBUILDER_ASSETS="$(./bin/setup-envtest use 1.31.0 -p path)" go test -race $(go list ./... | grep -v '/e2e$')
+      - name: Run Helm template assertions
+        run: bash charts/reconcilyx/tests/helm_template_test.sh

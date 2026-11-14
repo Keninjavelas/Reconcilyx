@@ -481,6 +481,19 @@ func TestFactory_DisabledProviderOmitted(t *testing.T) {
 	assert.False(t, found, "GCP must not be present when disabled")
 }
 
+func TestProviderSourceProvenanceAndGCPExpandedSpecs(t *testing.T) {
+	awsOffline := cloud.NewAWSPricingProvider()
+	assert.Equal(t, cloud.SourceBundledFallback, awsOffline.Source())
+	awsLive := cloud.NewLiveAWSPricingProvider("AKIDEXAMPLE", "secret", "")
+	assert.Equal(t, cloud.SourceAWSLive, awsLive.Source())
+
+	gcpOffline := cloud.NewGCPPricingProvider()
+	assert.Equal(t, cloud.SourceBundledFallback, gcpOffline.Source())
+	c3Rate, err := gcpOffline.OnDemandPrice(context.Background(), "c3-standard-4", "europe-west4")
+	require.NoError(t, err)
+	assert.InDelta(t, 0.194, c3Rate, 0.0001)
+}
+
 func mustJSON(t *testing.T, v any) []byte {
 	t.Helper()
 	b, err := json.Marshal(v)

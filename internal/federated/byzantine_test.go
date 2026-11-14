@@ -1,6 +1,7 @@
 package federated
 
 import (
+	"math"
 	"testing"
 	"time"
 )
@@ -115,4 +116,98 @@ func TestModelStabilityAndConvergence(t *testing.T) {
 	if !snap2.IsStable {
 		t.Errorf("Expected model to be flagged IS_STABLE=true")
 	}
+}
+
+func TestAggregator_ShouldCompactDualTrigger(t *testing.T) {
+	agg := NewAggregator(100)
+	state := QStateKey{CPUBucket: 1, MemBucket: 2, CPUReqMilli: 100, MemReqMilli: 128}
+	action := QActionKey{CPUAdjPct: -10, MemAdjPct: 0}
+
+	// No pending deltas -> never compact
+	if agg.ShouldCompact(1, time.Millisecond) {
+		t.Fatalf("expected ShouldCompact=false with 0 pending deltas")
+	}
+
+	agg.AddDeltas([]QTableDelta{
+		{ClusterName: "s1", StateKey: state, ActionKey: action, DeltaQ: 0.2, VisitCount: 1},
+		{ClusterName: "s2", StateKey: state, ActionKey: action, DeltaQ: 0.3, VisitCount: 1},
+	})
+
+	// Below threshold and below maxAge -> false
+	if agg.ShouldCompact(5, time.Hour) {
+		t.Fatalf("expected ShouldCompact=false when pending=2 < 5 and interval=1h")
+	}
+	// At/above threshold (even non-500 multiple) -> true
+	if !agg.ShouldCompact(2, time.Hour) {
+		t.Fatalf("expected ShouldCompact=true when pending=2 >= threshold=2")
+	}
+
+	// Simulate aged lastCompact -> true even with pending < threshold
+	agg.mu.Lock()
+	agg.lastCompact = time.Now().UTC().Add(-20 * time.Minute)
+	agg.mu.Unlock()
+	if !agg.ShouldCompact(500, 15*time.Minute) {
+		t.Fatalf("expected ShouldCompact=true when compactMaxAge elapsed")
+	}
+}
+
+func TestAggregator_CanonicalModelHashDeterminism(t *testing.T) {
+	s1 := QStateKey{CPUBucket: 1, MemBucket: 1, CPUReqMilli: 100, MemReqMilli: 128}
+	s2 := QStateKey{CPUBucket: 2, MemBucket: 2, CPUReqMilli: 200, MemReqMilli: 256}
+	a1 := QActionKey{CPUAdjPct: -10, MemAdjPct: -10}
+
+	aggA := NewAggregator(100)
+	aggA.AddDeltas([]QTableDelta{
+		{ClusterName: "c1", StateKey: s1, ActionKey: a1, DeltaQ: 0.25, VisitCount: 5},
+		{ClusterName: "c2", StateKey: s2, ActionKey: a1, DeltaQ: 0.45, VisitCount: 8},
+	})
+	snapA := aggA.CompactAndSnapshot()
+
+	aggB := NewAggregator(100)
+	aggB.AddDeltas([]QTableDelta{
+		{ClusterName: "c2", StateKey: s2, ActionKey: a1, DeltaQ: 0.45, VisitCount: 8},
+		{ClusterName: "c1", StateKey: s1, ActionKey: a1, DeltaQ: 0.25, VisitCount: 5},
+	})
+	snapB := aggB.CompactAndSnapshot()
+
+	if snapA.ModelHash == "" || snapA.ModelHash != snapB.ModelHash {
+		t.Fatalf("expected identical deterministic ModelHash, got %q vs %q", snapA.ModelHash, snapB.ModelHash)
+	}
+}
+
+func FuzzTrimmedMeanAggregation(f *testing.F) {
+	f.Add(0.20, 0.22, 0.25, 0.28, 999.0, uint64(10000))
+	f.Add(-0.30, -0.25, -0.20, -0.15, -500.0, uint64(5000))
+	f.Add(0.10, 0.12, 0.14, 0.16, 4.99, uint64(1))
+
+	state := QStateKey{CPUBucket: 3, MemBucket: 4, CPUReqMilli: 300, MemReqMilli: 512}
+	action := QActionKey{CPUAdjPct: -10, MemAdjPct: -10}
+	key := EntryKey(state, action)
+
+	f.Fuzz(func(t *testing.T, q1, q2, q3, q4, poisonQ float64, poisonVisits uint64) {
+		for _, v := range []float64{q1, q2, q3, q4} {
+			if math.IsNaN(v) || math.IsInf(v, 0) || math.Abs(v) > 1.0 {
+				return
+			}
+		}
+		agg := NewAggregator(1000)
+		agg.AddDeltas([]QTableDelta{
+			{ClusterName: "h1", StateKey: state, ActionKey: action, DeltaQ: q1, VisitCount: 10},
+			{ClusterName: "h2", StateKey: state, ActionKey: action, DeltaQ: q2, VisitCount: 10},
+			{ClusterName: "h3", StateKey: state, ActionKey: action, DeltaQ: q3, VisitCount: 10},
+			{ClusterName: "h4", StateKey: state, ActionKey: action, DeltaQ: q4, VisitCount: 10},
+			{ClusterName: "poison", StateKey: state, ActionKey: action, DeltaQ: poisonQ, VisitCount: poisonVisits},
+		})
+		snap := agg.CompactAndSnapshot()
+		entry, ok := snap.Entries[key]
+		if !ok {
+			t.Fatalf("missing aggregated entry for %s", key)
+		}
+		if math.IsNaN(entry.QValue) || math.IsInf(entry.QValue, 0) {
+			t.Fatalf("aggregated QValue must be finite, got %v", entry.QValue)
+		}
+		if math.Abs(entry.QValue) > DefaultMaxDeltaQ {
+			t.Fatalf("poisoned delta skewed QValue beyond cutoff: %v", entry.QValue)
+		}
+	})
 }

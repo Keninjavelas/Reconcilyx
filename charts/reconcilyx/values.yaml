@@ -5,6 +5,8 @@ image:
   pullPolicy: IfNotPresent
   # Defaults to .Chart.AppVersion when empty. Set this to an image tag you have published.
   tag: ""
+  # Optional immutable sha256 digest pin (recommended for production: "sha256:...")
+  digest: ""
 
 imagePullSecrets: []
 nameOverride: ""
@@ -12,6 +14,9 @@ fullnameOverride: ""
 
 serviceAccount:
   create: true
+  # Annotate for keyless cloud workload identity instead of static cloud API keys:
+  #   AWS IRSA: eks.amazonaws.com/role-arn: "arn:aws:iam::<account>:role/reconcilyx-pricing"
+  #   GCP WI:   iam.gke.io/gcp-service-account: "reconcilyx@<project>.iam.gserviceaccount.com"
   annotations: {}
   name: "reconcilyx-controller-manager"
 
@@ -50,13 +55,20 @@ resources:
 
 config:
   logLevel: "info"
-  enableInPlaceResizing: true
+  enableInPlaceResizing: false
   enableGitOpsPR: true
   enableCarbonAwareness: true
   prometheusUrl: "http://prometheus-k8s.monitoring.svc:9090"
   gridLocation: "us-east-1"
   defaultCostWeight: 0.6
   defaultCarbonWeight: 0.4
+
+# Split-RBAC Actuation Posture (default: read-only / GitOps PR mode)
+actuation:
+  # Set to true only when authorizing ephemeral in-place pods/resize mutations.
+  inPlaceResizeEnabled: false
+  # Namespaces excluded from in-place or workload actuation.
+  excludedNamespaces: "kube-system,kube-public,kube-node-lease,reconcilyx-system,flux-system,argocd"
 
 # BYOK LLM Provider Configuration
 llm:
@@ -111,12 +123,67 @@ pricing:
       # Azure Retail Prices API is public; no credentials or subscription are required.
 
 # Federated Learning Collective Brain Configuration
-federated:
-  enabled: true
-  role: "hub" # Options: hub, spoke
-  hubURL: ""
-  byzantineTrimRatio: 0.10
-  stabilityThreshold: 0.005
+federation:
+  enabled: false
+  role: "standalone" # standalone | hub | spoke
+  hubUrl: ""
+  clusterName: "default-cluster"
+  modelChannel: "stable"
+  flushThreshold: 100
+  flushInterval: "1h"
+  compactThreshold: 500
+  compactInterval: "15m"
+
+# Zero-Trust Multi-Identity Inbound Authentication
+auth:
+  oidc:
+    issuerUrl: ""
+    clientId: ""
+    jwksUrl: ""
+    adminGroups: "reconcilyx-admins,platform-admins"
+    ciGroups: "reconcilyx-ci,ci-auditors"
+    viewerGroups: ""
+    githubRepos: ""
+  tlsClientCA:
+    secretName: ""
+    key: "ca.crt"
+  scopedKeys:
+    secretName: ""
+    key: "RECONCILYX_SCOPED_API_KEYS"
+
+# Outbound Secret Isolation via ExternalSecret / Projected Tmpfs Mounts
+externalSecrets:
+  enabled: false
+  mountPath: "/var/run/secrets/reconcilyx"
+  awsSecretName: ""
+  gcpSecretName: ""
+  githubSecretName: ""
+  electricityMapsSecretName: ""
+  wattTimeSecretName: ""
+
+# High Availability, Network Isolation, and SLO Alerting
+pdb:
+  enabled: false
+  minAvailable: 1
+  maxUnavailable: ""
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 85
+
+networkPolicy:
+  enabled: false
+  ingressFrom: []
+  egressTo: []
+
+monitoring:
+  prometheusRule:
+    enabled: false
+    labels: {}
+    runbookBaseUrl: "https://github.com/keninjavelas/Reconcilyx/blob/main/docs/RUNBOOK.md"
 
 nodeSelector: {}
 tolerations: []

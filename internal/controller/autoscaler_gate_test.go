@@ -22,7 +22,53 @@ func autoscalerTestScheme(t *testing.T) *runtime.Scheme {
 	}
 	s.AddKnownTypeWithName(vpaGVK, &unstructured.Unstructured{})
 	s.AddKnownTypeWithName(vpaGVK.GroupVersion().WithKind(vpaGVK.Kind+"List"), &unstructured.UnstructuredList{})
+	s.AddKnownTypeWithName(kedaScaledObjectGVK, &unstructured.Unstructured{})
+	s.AddKnownTypeWithName(kedaScaledObjectGVK.GroupVersion().WithKind(kedaScaledObjectGVK.Kind+"List"), &unstructured.UnstructuredList{})
 	return s
+}
+
+func newScaledObject(name, target, triggerType string) *unstructured.Unstructured {
+	so := &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "keda.sh/v1alpha1",
+		"kind":       "ScaledObject",
+		"metadata": map[string]interface{}{
+			"name":      name,
+			"namespace": "default",
+		},
+		"spec": map[string]interface{}{
+			"scaleTargetRef": map[string]interface{}{
+				"kind": "Deployment",
+				"name": target,
+			},
+			"triggers": []interface{}{
+				map[string]interface{}{"type": triggerType},
+			},
+		},
+	}}
+	so.SetGroupVersionKind(kedaScaledObjectGVK)
+	return so
+}
+
+func newHPACustomMetric(name string, ref autoscalingv2.CrossVersionObjectReference) *autoscalingv2.HorizontalPodAutoscaler {
+	hpa := newHPA(name, ref)
+	hpa.Spec.Metrics = []autoscalingv2.MetricSpec{{
+		Type: autoscalingv2.ExternalMetricSourceType,
+		External: &autoscalingv2.ExternalMetricSource{
+			Metric: autoscalingv2.MetricIdentifier{Name: "sqs_queue_depth"},
+		},
+	}}
+	return hpa
+}
+
+func newHPACPUResource(name string, ref autoscalingv2.CrossVersionObjectReference) *autoscalingv2.HorizontalPodAutoscaler {
+	hpa := newHPA(name, ref)
+	hpa.Spec.Metrics = []autoscalingv2.MetricSpec{{
+		Type: autoscalingv2.ResourceMetricSourceType,
+		Resource: &autoscalingv2.ResourceMetricSource{
+			Name: corev1.ResourceCPU,
+		},
+	}}
+	return hpa
 }
 
 func testWorkload() corev1.ObjectReference {
@@ -110,6 +156,34 @@ func TestAutoscalerConflictGate(t *testing.T) {
 				newVPA("demo-vpa", "Deployment", "demo", "Recreate"),
 			},
 			wantSubstr: "VerticalPodAutoscaler default/demo-vpa",
+		},
+		{
+			name:    "HPA scaling exclusively on external custom metric is allowed",
+			objects: []runtime.Object{newHPACustomMetric("queue-hpa", deploymentRef)},
+		},
+		{
+			name:       "HPA scaling on CPU resource metric conflicts",
+			objects:    []runtime.Object{newHPACPUResource("cpu-hpa", deploymentRef)},
+			wantSubstr: "HorizontalPodAutoscaler default/cpu-hpa",
+		},
+		{
+			name:       "VPA in Initial mode conflicts",
+			objects:    []runtime.Object{newVPA("init-vpa", "Deployment", "demo", "Initial")},
+			wantSubstr: "VerticalPodAutoscaler default/init-vpa",
+		},
+		{
+			name:       "KEDA ScaledObject with CPU trigger conflicts",
+			objects:    []runtime.Object{newScaledObject("cpu-so", "demo", "cpu")},
+			wantSubstr: "ScaledObject default/cpu-so",
+		},
+		{
+			name:       "KEDA ScaledObject with Memory trigger conflicts",
+			objects:    []runtime.Object{newScaledObject("mem-so", "demo", "memory")},
+			wantSubstr: "ScaledObject default/mem-so",
+		},
+		{
+			name:    "KEDA ScaledObject with Kafka trigger is allowed",
+			objects: []runtime.Object{newScaledObject("kafka-so", "demo", "kafka")},
 		},
 	}
 

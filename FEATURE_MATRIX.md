@@ -6,7 +6,7 @@ Audit baseline as of `2026-07-31`. The P0 remediation on `2026-10-23` did not re
 
 ## Project Status
 
-**On hiatus as of 2026-10-26.** Development and external validation are paused pending cloud accounts, provider credentials, a GPU host, and CI minutes. The counts in this file are unchanged and no feature is being promoted during the hiatus. [HIATUS.md](HIATUS.md) lists the remaining tasks, their blockers, and the evidence required to close them.
+**Release Candidate `v4.1.0-rc1` (hardened 2026-11-13).** Split-RBAC read-only Helm defaults, H-07 federation compaction/wiring fixes, zero-trust inbound/outbound identity delegation, pipeline retry/WAL/backfill resilience, W3C `traceparent` tracing, Terraform EKS/GKE IaC (`deploy/terraform/`), Helm HA/Observability (`PDB`, `HPA`, `NetworkPolicy`, `PrometheusRule`), DevSecOps CI gates (`gitleaks`, `trivy@v0.36.0`, GoReleaser), `docs/RUNBOOK.md`, and UI Read-Only Evidence Replay Mode are implemented and locally verified. Audit counts stay conservative (`0 Verified / 72 Partial / 30 Missing`) until external cloud, GPU, two-cluster Kind, and independent security audit validations in [HIATUS.md](HIATUS.md) are executed against live infrastructure.
 
 | Summary | Count |
 |---|---:|

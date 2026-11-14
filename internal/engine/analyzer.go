@@ -80,6 +80,7 @@ type defaultAnalyzer struct {
 	carbonProvider    carbon.Provider
 	workloadRegion    string
 	carbonWeight      float64
+	omitCPULimits     bool
 }
 
 func defaultCarbonProvider() carbon.Provider {
@@ -97,6 +98,7 @@ func NewAnalyzer(provider telemetry.TelemetryProvider, registry RuleRegistry, sc
 		carbonProvider:    defaultCarbonProvider(),
 		workloadRegion:    defaultRegion,
 		carbonWeight:      defaultCarbonWeight,
+		omitCPULimits:     true,
 	}
 	for _, opt := range opts {
 		opt(a)
@@ -146,7 +148,9 @@ func (a *defaultAnalyzer) Analyze(ctx context.Context, ref corev1.ObjectReferenc
 	confidence, risk := a.scorer.Score(metrics, isPartial)
 
 	var allFindings []*Finding
+	var policyNotes []string
 	proposedReqs := make(map[string]corev1.ResourceList)
+	proposedLimits := make(map[string]corev1.ResourceList)
 
 	for containerName, containerMetrics := range metrics.Containers {
 		currentRes, ok := currentResources[containerName]
@@ -160,6 +164,14 @@ func (a *defaultAnalyzer) Analyze(ctx context.Context, ref corev1.ObjectReferenc
 				containerReqs[k] = v.DeepCopy()
 			}
 		}
+		containerLimits := make(corev1.ResourceList)
+		if currentRes.Limits != nil {
+			for k, v := range currentRes.Limits {
+				containerLimits[k] = v.DeepCopy()
+			}
+		}
+
+		unstableContainer := containerMetrics.Memory.OOMCount > 0 || containerMetrics.Restarts >= 3
 
 		cpuHist, memHist := collectHistoricalSeries(containerMetrics)
 		cpuAnomaly, _ := a.anomalyDetector.Detect(cpuHist, containerMetrics.CPU.UsageCores)
@@ -223,7 +235,7 @@ func (a *defaultAnalyzer) Analyze(ctx context.Context, ref corev1.ObjectReferenc
 		}
 		telemetry.RLRecommendationsTotal.WithLabelValues(workload, ns, actionType).Inc()
 
-		if !hasHighAnomaly && rlErr == nil && rlResult != nil && rlResult.Action != nil {
+		if !hasHighAnomaly && !unstableContainer && rlErr == nil && rlResult != nil && rlResult.Action != nil {
 			for resourceName, adj := range rlResult.Action.Adjustment {
 				resName := corev1.ResourceName(resourceName)
 				if adj.NewRequest.IsZero() && adj.Percentage != 0 {
@@ -238,7 +250,7 @@ func (a *defaultAnalyzer) Analyze(ctx context.Context, ref corev1.ObjectReferenc
 			}
 		}
 
-		if !hasHighAnomaly && prediction != nil && prediction.Confidence > 80 {
+		if !hasHighAnomaly && !unstableContainer && prediction != nil && prediction.Confidence > 80 {
 			if !prediction.MaxCPU.IsZero() {
 				containerReqs[corev1.ResourceCPU] = prediction.MaxCPU.DeepCopy()
 			}
@@ -259,6 +271,23 @@ func (a *defaultAnalyzer) Analyze(ctx context.Context, ref corev1.ObjectReferenc
 						containerReqs[k] = v.DeepCopy()
 					}
 				}
+				if finding.ProposedLimit != nil {
+					for k, v := range *finding.ProposedLimit {
+						containerLimits[k] = v.DeepCopy()
+					}
+				}
+			}
+		}
+
+		if a.omitCPULimits {
+			if _, hadCPULimit := containerLimits[corev1.ResourceCPU]; hadCPULimit {
+				delete(containerLimits, corev1.ResourceCPU)
+				policyNotes = append(policyNotes, fmt.Sprintf("[%s]: Omitted CPU limit per omitCpuLimits policy to prevent CFS throttling", containerName))
+			}
+		}
+		if memReq, ok := containerReqs[corev1.ResourceMemory]; ok {
+			if memLim, hasLim := containerLimits[corev1.ResourceMemory]; !hasLim || memLim.Cmp(memReq) < 0 {
+				containerLimits[corev1.ResourceMemory] = memReq.DeepCopy()
 			}
 		}
 
@@ -275,8 +304,23 @@ func (a *defaultAnalyzer) Analyze(ctx context.Context, ref corev1.ObjectReferenc
 				break
 			}
 		}
+		if !changed {
+			for k, v := range containerLimits {
+				if current, ok := currentRes.Limits[k]; !ok || !current.Equal(v) {
+					changed = true
+					break
+				}
+			}
+			for k := range currentRes.Limits {
+				if _, ok := containerLimits[k]; !ok {
+					changed = true
+					break
+				}
+			}
+		}
 		if changed {
 			proposedReqs[containerName] = containerReqs
+			proposedLimits[containerName] = containerLimits
 		}
 	}
 
@@ -302,6 +346,9 @@ func (a *defaultAnalyzer) Analyze(ctx context.Context, ref corev1.ObjectReferenc
 	}
 
 	monthlySavingsUSD := ComputeCostSavedUSDPerMonth(cpuDeltaMilli, memDeltaBytes, metrics.Replicas)
+	if monthlySavingsUSD < 0 {
+		monthlySavingsUSD = 0
+	}
 
 	telemetry.OptimizationSavingsUSD.WithLabelValues(workload, ns).Set(monthlySavingsUSD)
 
@@ -327,6 +374,7 @@ func (a *defaultAnalyzer) Analyze(ctx context.Context, ref corev1.ObjectReferenc
 		}
 	}
 
+	rationales = append(rationales, policyNotes...)
 	if prediction != nil && prediction.Confidence > 80 {
 		rationales = append(rationales, fmt.Sprintf("Forecasted resource needs (confidence: %d%%)", prediction.Confidence))
 	}
@@ -334,6 +382,7 @@ func (a *defaultAnalyzer) Analyze(ctx context.Context, ref corev1.ObjectReferenc
 	savingsQuantity := resource.MustParse(fmt.Sprintf("%d", int(monthlySavingsUSD)))
 
 	totalProposedReqs := make(corev1.ResourceList)
+	totalProposedLimits := make(corev1.ResourceList)
 	proposedByContainer := make(map[string]corev1.ResourceRequirements, len(proposedReqs))
 	for name, reqs := range proposedReqs {
 		for k, v := range reqs {
@@ -344,7 +393,20 @@ func (a *defaultAnalyzer) Analyze(ctx context.Context, ref corev1.ObjectReferenc
 				totalProposedReqs[k] = v.DeepCopy()
 			}
 		}
-		proposedByContainer[name] = corev1.ResourceRequirements{Requests: reqs.DeepCopy()}
+		lims := proposedLimits[name]
+		for k, v := range lims {
+			if existing, ok := totalProposedLimits[k]; ok {
+				existing.Add(v)
+				totalProposedLimits[k] = existing
+			} else {
+				totalProposedLimits[k] = v.DeepCopy()
+			}
+		}
+		containerSpec := corev1.ResourceRequirements{Requests: reqs.DeepCopy()}
+		if len(lims) > 0 {
+			containerSpec.Limits = lims.DeepCopy()
+		}
+		proposedByContainer[name] = containerSpec
 	}
 
 	resourceDelta := make(corev1.ResourceList)
@@ -373,6 +435,7 @@ func (a *defaultAnalyzer) Analyze(ctx context.Context, ref corev1.ObjectReferenc
 			Recommendation: primaryRec,
 			ProposedResources: corev1.ResourceRequirements{
 				Requests: totalProposedReqs,
+				Limits:   totalProposedLimits,
 			},
 			ProposedResourcesByContainer: proposedByContainer,
 			ExpectedImpact:               expectedImpact,

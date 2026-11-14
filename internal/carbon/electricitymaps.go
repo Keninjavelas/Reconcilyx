@@ -8,6 +8,10 @@ import (
 	"net/http"
 	"net/url"
 	"time"
+
+	"github.com/reconcilyx/operator/pkg/httpretry"
+	"github.com/reconcilyx/operator/pkg/pipelinemetrics"
+	"github.com/reconcilyx/operator/pkg/security/credentials"
 )
 
 const (
@@ -15,23 +19,34 @@ const (
 )
 
 type ElectricityMapsProvider struct {
-	HTTPClient *http.Client
-	BaseURL    string
-	APIKey     string
-	Fallback   Provider
+	HTTPClient   *http.Client
+	BaseURL      string
+	APIKey       string
+	SecretSource func() credentials.SecretString
+	Fallback     Provider
 }
 
 func NewElectricityMapsProvider(apiKey string) *ElectricityMapsProvider {
 	return &ElectricityMapsProvider{
-		HTTPClient: &http.Client{Timeout: 15 * time.Second},
+		HTTPClient: httpretry.WrapClient(&http.Client{Timeout: 15 * time.Second}, "carbon_electricitymaps"),
 		BaseURL:    emDefaultBaseURL,
 		APIKey:     apiKey,
 		Fallback:   NewStaticProvider(),
 	}
 }
 
+func (e *ElectricityMapsProvider) resolveAPIKey() string {
+	if e.SecretSource != nil {
+		if sec := e.SecretSource(); !sec.IsEmpty() {
+			return sec.Expose()
+		}
+	}
+	return e.APIKey
+}
+
 func (e *ElectricityMapsProvider) IntensityForRegion(ctx context.Context, region string) (Intensity, error) {
-	if e.HTTPClient == nil || e.BaseURL == "" || e.APIKey == "" {
+	apiKey := e.resolveAPIKey()
+	if e.HTTPClient == nil || e.BaseURL == "" || apiKey == "" {
 		if e.Fallback != nil {
 			return e.Fallback.IntensityForRegion(ctx, region)
 		}
@@ -45,8 +60,8 @@ func (e *ElectricityMapsProvider) IntensityForRegion(ctx context.Context, region
 	if err != nil {
 		return e.fallbackOrErr(ctx, region, err)
 	}
-	req.Header.Set("auth-token", e.APIKey)
-	resp, err := e.HTTPClient.Do(req)
+	req.Header.Set("auth-token", apiKey)
+	resp, err := httpretry.WrapClient(e.HTTPClient, "carbon_electricitymaps").Do(req)
 	if err != nil {
 		return e.fallbackOrErr(ctx, region, err)
 	}
@@ -68,6 +83,7 @@ func (e *ElectricityMapsProvider) IntensityForRegion(ctx context.Context, region
 	if doc.CarbonIntensity <= 0 {
 		return e.fallbackOrErr(ctx, region, fmt.Errorf("invalid intensity response"))
 	}
+	pipelinemetrics.FallbackActive.WithLabelValues("carbon", "electricitymaps").Set(0)
 	return Intensity{
 		Value:  doc.CarbonIntensity,
 		Source: "electricitymaps",
@@ -76,6 +92,7 @@ func (e *ElectricityMapsProvider) IntensityForRegion(ctx context.Context, region
 }
 
 func (e *ElectricityMapsProvider) fallbackOrErr(ctx context.Context, region string, err error) (Intensity, error) {
+	pipelinemetrics.FallbackActive.WithLabelValues("carbon", "electricitymaps").Set(1)
 	if e.Fallback != nil {
 		return e.Fallback.IntensityForRegion(ctx, region)
 	}

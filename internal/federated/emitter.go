@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/reconcilyx/operator/pkg/httpretry"
 )
 
 type DeltaObserver func(delta QTableDelta)
@@ -21,6 +23,8 @@ type EmitterConfig struct {
 	FlushInterval  time.Duration
 	FlushThreshold int
 	HTTPClient     *http.Client
+	SpoolDir       string
+	MaxSpoolBytes  int64
 }
 
 func (c EmitterConfig) withDefaults() EmitterConfig {
@@ -45,13 +49,21 @@ type Emitter struct {
 	buffer   []QTableDelta
 	epoch    int64
 	observer DeltaObserver
+	spool    *DiskSpool
 }
 
 func NewEmitter(cfg EmitterConfig) *Emitter {
 	cfg = cfg.withDefaults()
+	var spool *DiskSpool
+	if cfg.SpoolDir != "" {
+		if sp, err := NewDiskSpool(cfg.SpoolDir, cfg.MaxSpoolBytes); err == nil {
+			spool = sp
+		}
+	}
 	return &Emitter{
 		cfg:    cfg,
 		buffer: make([]QTableDelta, 0, cfg.BufferCapacity),
+		spool:  spool,
 	}
 }
 
@@ -91,21 +103,61 @@ func (e *Emitter) takeBatch() []QTableDelta {
 }
 
 func (e *Emitter) Flush(ctx context.Context) error {
+	var spoolErr error
+	if e.spool != nil && e.cfg.HubBaseURL != "" {
+		spoolErr = e.drainSpool(ctx)
+	}
 	batch := e.takeBatch()
 	if len(batch) == 0 {
-		return nil
+		return spoolErr
 	}
-	return e.sendBatch(ctx, batch)
-}
-
-func (e *Emitter) sendBatch(ctx context.Context, deltas []QTableDelta) error {
 	if e.cfg.HubBaseURL == "" {
-		return errors.New("federated: HubBaseURL is not configured; dropping batch silently (size=" + itoa(len(deltas)) + ")")
+		return errors.New("federated: HubBaseURL is not configured; dropping batch silently (size=" + itoa(len(batch)) + ")")
 	}
 	body := DeltaBatch{
+		BatchID:     ComputeBatchID(e.cfg.ClusterName, batch),
 		ClusterName: e.cfg.ClusterName,
-		Epoch:       e.epoch,
-		Deltas:      deltas,
+		Epoch:       e.epochSnapshot(),
+		Deltas:      batch,
+	}
+	if spoolErr != nil {
+		if e.spool != nil {
+			_ = e.spool.Enqueue(body)
+		}
+		return spoolErr
+	}
+	if err := e.postBatch(ctx, body); err != nil {
+		if e.spool != nil {
+			_ = e.spool.Enqueue(body)
+		}
+		return err
+	}
+	return nil
+}
+
+func (e *Emitter) epochSnapshot() int64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.epoch
+}
+
+func (e *Emitter) drainSpool(ctx context.Context) error {
+	entries, err := e.spool.List()
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if err := e.postBatch(ctx, entry.Batch); err != nil {
+			return err
+		}
+		_ = e.spool.Ack(entry.Path, entry.Batch.ClusterName)
+	}
+	return nil
+}
+
+func (e *Emitter) postBatch(ctx context.Context, body DeltaBatch) error {
+	if body.BatchID == "" {
+		body.BatchID = ComputeBatchID(body.ClusterName, body.Deltas)
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {
@@ -116,10 +168,13 @@ func (e *Emitter) sendBatch(ctx context.Context, deltas []QTableDelta) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if body.BatchID != "" {
+		req.Header.Set("X-Reconcilyx-Idempotency-Key", body.BatchID)
+	}
 	if e.cfg.APIKey != "" {
 		req.Header.Set("X-API-Key", e.cfg.APIKey)
 	}
-	resp, err := e.cfg.HTTPClient.Do(req)
+	resp, err := httpretry.WrapClient(e.cfg.HTTPClient, "federated_emitter").Do(req)
 	if err != nil {
 		return err
 	}

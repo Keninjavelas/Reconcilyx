@@ -1,0 +1,18 @@
+title = "Reconcilyx Secret Detection Configuration"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Allowlist synthetic test tokens, documentation examples, and Go/Helm fixture paths"
+paths = [
+  '''^\.gitleaks\.toml$''',
+  '''^deploy/terraform/README\.md$''',
+  '''^docs/RUNBOOK\.md$''',
+  '''^docs/THREAT_MODEL\.md$''',
+  '''^scripts/validation/federation-e2e\.sh$''',
+]
+regexes = [
+  '''rcx_(viewer|ci|spoke|admin)_[a-zA-Z0-9._-]+''',
+  '''sha256:0123456789abcdef[0-9a-f]+''',
+]

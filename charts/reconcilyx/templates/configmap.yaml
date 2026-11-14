@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "reconcilyx.fullname" . }}-federation
+  labels:
+    {{- include "reconcilyx.labels" . | nindent 4 }}
+data:
+  RECONCILYX_FEDERATION_ENABLED: {{ .Values.federation.enabled | quote }}
+  RECONCILYX_FEDERATION_ROLE: {{ .Values.federation.role | quote }}
+  RECONCILYX_HUB_URL: {{- if and .Values.federation.enabled .Values.federation.hubUrl }} {{ .Values.federation.hubUrl | quote }}{{- else }} ""{{- end }}
+  RECONCILYX_CLUSTER_NAME: {{ .Values.federation.clusterName | quote }}
+  RECONCILYX_MODEL_CHANNEL: {{ .Values.federation.modelChannel | quote }}
+  RECONCILYX_FEDERATION_FLUSH_THRESHOLD: {{ .Values.federation.flushThreshold | quote }}
+  RECONCILYX_FEDERATION_FLUSH_INTERVAL: {{ .Values.federation.flushInterval | quote }}
+  RECONCILYX_HUB_COMPACT_THRESHOLD: {{ .Values.federation.compactThreshold | quote }}
+  RECONCILYX_HUB_COMPACT_INTERVAL: {{ .Values.federation.compactInterval | quote }}

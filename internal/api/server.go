@@ -9,15 +9,21 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	optimizationv1alpha1 "github.com/reconcilyx/operator/api/v1alpha1"
+	"github.com/reconcilyx/operator/internal/carbon"
+	"github.com/reconcilyx/operator/internal/cloud"
 	"github.com/reconcilyx/operator/internal/engine"
 	"github.com/reconcilyx/operator/internal/federated"
 	"github.com/reconcilyx/operator/internal/notifiers"
+	"github.com/reconcilyx/operator/internal/telemetry"
+	secauth "github.com/reconcilyx/operator/pkg/security/auth"
 )
 
 type ServerDeps struct {
@@ -31,25 +37,106 @@ type ServerDeps struct {
 	FederatedAggregator *federated.Aggregator
 	FederatedNamespace  string
 	FederatedModelName  string
+	HubCompactThreshold int
+	HubCompactInterval  time.Duration
+	Authenticator       *secauth.Authenticator
+	AuthConfig          *secauth.Config
+	K8sTokenReviewer    secauth.K8sTokenReviewer
+	BackfillEngine      *telemetry.BackfillEngine
 }
 
 type Server struct {
-	addr    string
-	logger  *slog.Logger
-	mux     *http.ServeMux
-	handler http.Handler
-	deps    ServerDeps
-	apiKey  string
-	srv     *http.Server
+	addr          string
+	logger        *slog.Logger
+	mux           *http.ServeMux
+	handler       http.Handler
+	deps          ServerDeps
+	apiKey        string
+	authenticator *secauth.Authenticator
+	srv           *http.Server
 
-	fedAggregator *federated.Aggregator
-	fedNamespace  string
-	fedModelName  string
-	modelRegistry *federated.ModelRegistry
+	fedAggregator    *federated.Aggregator
+	fedNamespace     string
+	fedModelName     string
+	compactThreshold int
+	compactInterval  time.Duration
+	compactMu        sync.Mutex
+	modelRegistry    *federated.ModelRegistry
+	backfillEngine   *telemetry.BackfillEngine
+}
+
+const (
+	defaultHubCompactThreshold = 500
+	defaultHubCompactInterval  = 15 * time.Minute
+	minHubCompactInterval      = 5 * time.Second
+)
+
+func resolveCompactConfig(deps ServerDeps) (int, time.Duration) {
+	threshold := deps.HubCompactThreshold
+	if threshold <= 0 {
+		if raw := strings.TrimSpace(os.Getenv("RECONCILYX_HUB_COMPACT_THRESHOLD")); raw != "" {
+			if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+				threshold = n
+			}
+		}
+	}
+	if threshold <= 0 {
+		threshold = defaultHubCompactThreshold
+	}
+
+	interval := deps.HubCompactInterval
+	if interval <= 0 {
+		if raw := strings.TrimSpace(os.Getenv("RECONCILYX_HUB_COMPACT_INTERVAL")); raw != "" {
+			if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+				interval = d
+			}
+		}
+	}
+	if interval <= 0 {
+		interval = defaultHubCompactInterval
+	}
+	if deps.HubCompactInterval <= 0 && interval < minHubCompactInterval {
+		interval = minHubCompactInterval
+	}
+	return threshold, interval
+}
+
+func initServerAuthenticator(apiKey string, deps ServerDeps, logger *slog.Logger) *secauth.Authenticator {
+	if deps.Authenticator != nil {
+		if deps.Authenticator.HasDeprecatedLegacyKey() && logger != nil {
+			logger.Warn("Deprecated static RECONCILYX_API_KEY configured; migrate to scoped keys, Kubernetes TokenReview, OIDC, or mTLS")
+		}
+		return deps.Authenticator
+	}
+	cfg := secauth.ConfigFromEnv(apiKey)
+	if deps.AuthConfig != nil {
+		cfg = *deps.AuthConfig
+		if cfg.LegacyAPIKey == "" {
+			cfg.LegacyAPIKey = apiKey
+		}
+	}
+	if deps.K8sTokenReviewer != nil {
+		cfg.K8sReviewer = deps.K8sTokenReviewer
+	}
+	cfg.AllowUnauthDev = true
+	auth, err := secauth.NewAuthenticator(cfg)
+	if err != nil {
+		if logger != nil {
+			logger.Error("Failed to initialize multi-strategy authenticator, failing closed", "error", err)
+		}
+		cfg.AllowUnauthDev = false
+		auth, _ = secauth.NewAuthenticator(cfg)
+		return auth
+	}
+	if auth.HasDeprecatedLegacyKey() && logger != nil {
+		logger.Warn("Deprecated static RECONCILYX_API_KEY configured; migrate to scoped keys, Kubernetes TokenReview, OIDC, or mTLS")
+	}
+	return auth
 }
 
 func NewServer(addr, apiKey string, deps ServerDeps) *Server {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{AddSource: false})).With("component", "api-server")
+	authenticator := initServerAuthenticator(apiKey, deps, logger)
 	agg := deps.FederatedAggregator
 	if agg == nil {
 		agg = federated.NewAggregator(0)
@@ -62,26 +149,37 @@ func NewServer(addr, apiKey string, deps ServerDeps) *Server {
 	if modelName == "" {
 		modelName = federated.DefaultConfigMapName
 	}
+	compactThreshold, compactInterval := resolveCompactConfig(deps)
 	s := &Server{
-		addr:          addr,
-		logger:        logger,
-		mux:           http.NewServeMux(),
-		deps:          deps,
-		apiKey:        apiKey,
-		fedAggregator: agg,
-		fedNamespace:  ns,
-		fedModelName:  modelName,
-		modelRegistry: federated.NewModelRegistry(),
+		addr:             addr,
+		logger:           logger,
+		mux:              http.NewServeMux(),
+		deps:             deps,
+		apiKey:           apiKey,
+		fedAggregator:    agg,
+		fedNamespace:     ns,
+		fedModelName:     modelName,
+		compactThreshold: compactThreshold,
+		compactInterval:  compactInterval,
+		modelRegistry:    federated.NewModelRegistry(),
+		backfillEngine:   deps.BackfillEngine,
 	}
 	if snap := agg.CurrentSnapshot(); snap != nil {
 		s.registerSnapshot(snap)
 	}
 	s.routes()
-	s.handler = RecoverMiddleware(
-		LoggingMiddleware(logger,
-			CORSMiddleware(parseCORSOrigins(os.Getenv("RECONCILYX_CORS_ORIGINS")),
-				RequestIDMiddleware(
-					APIKeyAuthMiddleware(apiKey, publicRoutes(), s.mux),
+	limiter := NewRateLimiter(30, 60, 60)
+	s.handler = SecurityHeadersMiddleware(
+		RecoverMiddleware(
+			LoggingMiddleware(logger,
+				CORSMiddleware(parseCORSOrigins(os.Getenv("RECONCILYX_CORS_ORIGINS")),
+					RequestIDMiddleware(
+						limiter.Middleware(
+							BodyLimitMiddleware(1<<20,
+								MultiAuthMiddleware(authenticator, logger)(s.mux),
+							),
+						),
+					),
 				),
 			),
 		),
@@ -107,18 +205,61 @@ func parseCORSOrigins(raw string) []string {
 
 func publicRoutes() map[string]struct{} {
 	return map[string]struct{}{
-		"/healthz":     {},
-		"/":            {},
-		"/index.html":  {},
-		"/favicon.svg": {},
+		"/healthz":        {},
+		"/api/v1/healthz": {},
+		"/api/health":     {},
+		"/":               {},
+		"/index.html":     {},
+		"/favicon.svg":    {},
 	}
 }
 
-func (s *Server) routes() {
-	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "time": time.Now().UTC().Format(time.RFC3339)})
+func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
+	carbonCfg := carbon.CarbonConfigFromEnv()
+	carbonSource := "static-regional-fallback"
+	switch carbonCfg.Provider {
+	case "electricitymaps", "em":
+		if carbonCfg.ElectricityMaps.APIKey != "" {
+			carbonSource = "electricitymaps-live"
+		}
+	case "watttime", "wt":
+		if carbonCfg.WattTime.APIKey != "" || (carbonCfg.WattTime.Username != "" && carbonCfg.WattTime.Password != "") {
+			carbonSource = "watttime-live"
+		}
+	}
+
+	pricingCfg := cloud.PricingConfigFromEnv()
+	awsSource := cloud.SourceBundledFallback
+	if pricingCfg.AWSEnabled && ((pricingCfg.AWSRoleARN != "" && pricingCfg.AWSWebIdentityTokenFile != "") || (pricingCfg.AWSAccessKeyID != "" && pricingCfg.AWSSecretKey != "")) {
+		awsSource = cloud.SourceAWSLive
+	}
+	gcpSource := cloud.SourceBundledFallback
+	if pricingCfg.GCPEnabled && (pricingCfg.GCPWorkloadIdentity || pricingCfg.GCPAPIKey != "") {
+		gcpSource = cloud.SourceGCPLive
+	}
+	azureSource := cloud.SourceBundledFallback
+	if pricingCfg.AzureEnabled {
+		azureSource = cloud.SourceAzureLive
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"status":       "ok",
+		"version":      "v4.1.0-rc1",
+		"time":         time.Now().UTC().Format(time.RFC3339),
+		"carbonSource": carbonSource,
+		"pricingSources": map[string]string{
+			"aws":   awsSource,
+			"gcp":   gcpSource,
+			"azure": azureSource,
+		},
 	})
+}
+
+func (s *Server) routes() {
+	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
+	s.mux.HandleFunc("GET /api/v1/healthz", s.handleHealthz)
+	s.mux.HandleFunc("GET /api/health", s.handleHealthz)
 
 	s.mux.HandleFunc("GET /api/proposals", s.handleListProposals)
 	s.mux.HandleFunc("GET /api/proposals/{name}", s.handleGetProposal)
@@ -136,13 +277,20 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/clusters", s.handleListClusters)
 
 	s.mux.HandleFunc("POST /api/what-if", s.handleWhatIf)
+	s.mux.HandleFunc("POST /api/v1/what-if", s.handleWhatIf)
+	s.mux.HandleFunc("POST /api/v1/telemetry/backfill", s.handleBackfill)
+	s.mux.HandleFunc("POST /api/v1/backfill", s.handleBackfill)
+	s.mux.HandleFunc("POST /api/backfill", s.handleBackfill)
 
 	s.mux.HandleFunc("GET /api/audit", s.handleAuditTail)
 
 	s.mux.HandleFunc("POST /api/federated/deltas", s.handleFederatedDeltas)
+	s.mux.HandleFunc("POST /api/v1/federation/deltas", s.handleFederatedDeltas)
 	s.mux.HandleFunc("GET /api/federated/global-model", s.handleFederatedGlobalModel)
+	s.mux.HandleFunc("GET /api/v1/federation/snapshots", s.handleFederatedGlobalModel)
 	s.mux.HandleFunc("GET /api/federated/releases", s.handleFederatedReleases)
 	s.mux.HandleFunc("DELETE /api/federated/releases/canary", s.handleFederatedCanaryRollback)
+	s.mux.HandleFunc("POST /api/v1/federation/compact", s.handleFederationCompact)
 
 	s.mux.HandleFunc("POST /api/chat", s.handleChat)
 
@@ -185,7 +333,14 @@ func (s *Server) Start(ctx context.Context) error {
 }
 
 func (s *Server) runFederatedLoop(ctx context.Context) {
-	t := time.NewTicker(10 * time.Minute)
+	tickInterval := s.compactInterval / 3
+	if tickInterval > 30*time.Second {
+		tickInterval = 30 * time.Second
+	}
+	if tickInterval < 500*time.Millisecond {
+		tickInterval = 500 * time.Millisecond
+	}
+	t := time.NewTicker(tickInterval)
 	defer t.Stop()
 	snapshot := s.fedAggregator.CurrentSnapshot()
 	if snapshot != nil && len(snapshot.Entries) == 0 && s.deps.Client != nil {
@@ -199,27 +354,39 @@ func (s *Server) runFederatedLoop(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			_ = s.compactAndPersist(context.Background())
+			if s.fedAggregator.PendingDeltaCount() > 0 {
+				_ = s.compactAndPersist(context.Background())
+			}
 			return
 		case <-t.C:
-			_ = s.compactAndPersist(ctx)
+			if s.fedAggregator.ShouldCompact(s.compactThreshold, s.compactInterval) {
+				_ = s.compactAndPersist(ctx)
+			}
 		}
 	}
 }
 
 func (s *Server) compactAndPersist(ctx context.Context) error {
+	_, err := s.compactAndPersistSnapshot(ctx)
+	return err
+}
+
+func (s *Server) compactAndPersistSnapshot(ctx context.Context) (*federated.GlobalQTable, error) {
+	s.compactMu.Lock()
+	defer s.compactMu.Unlock()
+
 	snap := s.fedAggregator.CompactAndSnapshot()
 	s.registerSnapshot(snap)
 	syncGauges(s.fedAggregator)
 	if s.deps.Client == nil || snap == nil {
-		return nil
+		return snap, nil
 	}
 	if err := federated.SaveGlobalModel(ctx, s.deps.Client, s.fedNamespace, s.fedModelName, snap); err != nil {
 		s.logger.Error("Failed to persist global Q-table", "error", err.Error())
-		return err
+		return snap, err
 	}
-	s.logger.Info("Persisted global Q-table snapshot", "version", snap.Version, "entries", len(snap.Entries))
-	return nil
+	s.logger.Info("Persisted global Q-table snapshot", "version", snap.Version, "entries", len(snap.Entries), "hash", snap.ModelHash)
+	return snap, nil
 }
 
 // registerSnapshot publishes an aggregated snapshot onto the matching rollout

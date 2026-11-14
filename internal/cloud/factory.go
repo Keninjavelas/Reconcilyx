@@ -4,17 +4,23 @@ import (
 	"os"
 	"strconv"
 	"time"
+
+	"github.com/reconcilyx/operator/pkg/security/credentials"
 )
 
 type PricingConfig struct {
-	CacheTTL        time.Duration
-	AWSEnabled      bool
-	AWSAccessKeyID  string
-	AWSSecretKey    string
-	AWSSessionToken string
-	GCPEnabled      bool
-	GCPAPIKey       string
-	AzureEnabled    bool
+	CacheTTL                time.Duration
+	MountDir                string
+	AWSEnabled              bool
+	AWSRoleARN              string
+	AWSWebIdentityTokenFile string
+	AWSAccessKeyID          string
+	AWSSecretKey            string
+	AWSSessionToken         string
+	GCPEnabled              bool
+	GCPWorkloadIdentity     bool
+	GCPAPIKey               string
+	AzureEnabled            bool
 }
 
 func PricingConfigFromEnv() PricingConfig {
@@ -29,19 +35,20 @@ func PricingConfigFromEnv() PricingConfig {
 			cfg.CacheTTL = time.Duration(h) * time.Hour
 		}
 	}
+	cfg.MountDir = os.Getenv("RECONCILYX_SECRETS_DIR")
 	if v := os.Getenv("RECONCILYX_PRICING_AWS_ENABLED"); v != "" {
 		cfg.AWSEnabled = parseBoolEnv(v, true)
 	}
-	cfg.AWSAccessKeyID = os.Getenv("AWS_ACCESS_KEY_ID")
-	cfg.AWSSecretKey = os.Getenv("AWS_SECRET_ACCESS_KEY")
-	cfg.AWSSessionToken = os.Getenv("AWS_SESSION_TOKEN")
+	cfg.AWSRoleARN = os.Getenv("AWS_ROLE_ARN")
+	cfg.AWSWebIdentityTokenFile = os.Getenv("AWS_WEB_IDENTITY_TOKEN_FILE")
+	cfg.AWSAccessKeyID = credentials.LoadFromFileOrEnv(cfg.MountDir, "aws", "access_key_id", "AWS_ACCESS_KEY_ID").Secret.Expose()
+	cfg.AWSSecretKey = credentials.LoadFromFileOrEnv(cfg.MountDir, "aws", "secret_access_key", "AWS_SECRET_ACCESS_KEY").Secret.Expose()
+	cfg.AWSSessionToken = credentials.LoadFromFileOrEnv(cfg.MountDir, "aws", "session_token", "AWS_SESSION_TOKEN").Secret.Expose()
 	if v := os.Getenv("RECONCILYX_PRICING_GCP_ENABLED"); v != "" {
 		cfg.GCPEnabled = parseBoolEnv(v, true)
 	}
-	cfg.GCPAPIKey = os.Getenv("RECONCILYX_PRICING_GCP_API_KEY")
-	if cfg.GCPAPIKey == "" {
-		cfg.GCPAPIKey = os.Getenv("GCP_BILLING_API_KEY")
-	}
+	cfg.GCPWorkloadIdentity = parseBoolEnv(os.Getenv("RECONCILYX_GCP_WORKLOAD_IDENTITY"), false)
+	cfg.GCPAPIKey = credentials.LoadFromFileOrEnv(cfg.MountDir, "gcp", "api_key", "RECONCILYX_PRICING_GCP_API_KEY", "GCP_BILLING_API_KEY").Secret.Expose()
 	if v := os.Getenv("RECONCILYX_PRICING_AZURE_ENABLED"); v != "" {
 		cfg.AzureEnabled = parseBoolEnv(v, true)
 	}
@@ -65,7 +72,9 @@ func NewPricingProvider(name ProviderName, cfg PricingConfig) *CachedPricingProv
 		if !cfg.AWSEnabled {
 			return nil
 		}
-		if cfg.AWSAccessKeyID != "" && cfg.AWSSecretKey != "" {
+		if cfg.AWSRoleARN != "" && cfg.AWSWebIdentityTokenFile != "" {
+			raw = NewWebIdentityAWSPricingProvider(cfg.AWSRoleARN, cfg.AWSWebIdentityTokenFile, "")
+		} else if cfg.AWSAccessKeyID != "" && cfg.AWSSecretKey != "" {
 			raw = NewLiveAWSPricingProvider(cfg.AWSAccessKeyID, cfg.AWSSecretKey, cfg.AWSSessionToken)
 		} else {
 			raw = NewAWSPricingProvider()
@@ -74,7 +83,9 @@ func NewPricingProvider(name ProviderName, cfg PricingConfig) *CachedPricingProv
 		if !cfg.GCPEnabled {
 			return nil
 		}
-		if cfg.GCPAPIKey != "" {
+		if cfg.GCPWorkloadIdentity {
+			raw = NewWorkloadIdentityGCPPricingProvider("")
+		} else if cfg.GCPAPIKey != "" {
 			raw = NewLiveGCPPricingProvider(cfg.GCPAPIKey)
 		} else {
 			raw = NewGCPPricingProvider()

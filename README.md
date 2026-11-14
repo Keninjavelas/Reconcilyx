@@ -1,6 +1,6 @@
-# Reconcilyx v4.0.0-beta
+# Reconcilyx `v4.1.0-rc1`
 
-> **Project status: on hiatus (2026-10-26).** Development and external validation are paused until cloud accounts, provider credentials, a GPU host, and CI minutes are available. [HIATUS.md](HIATUS.md) lists every remaining task, its blocker, and the evidence required to close it. No production-readiness claim is made.
+> **Release posture:** Hardened release candidate (`v4.1.0-rc1`) with default read-only RBAC, shift-left CI SARIF/Markdown gates, split-RBAC actuation safety, zero-trust inbound/outbound identity delegation, pipeline retry/WAL/backfill resilience, Terraform EKS/GKE IaC (`deploy/terraform/`), Helm HA/Observability (`PDB`, `HPA`, `NetworkPolicy`, `PrometheusRule`), W3C `traceparent` propagation, and Read-Only Evidence Replay UI mode. External cloud, GPU, multi-cluster Kind (`scripts/validation/federation-e2e.sh`), and independent security audit items tracked in [HIATUS.md](HIATUS.md) remain `Partial` until executed against live external environments. No production-readiness SLA is implied.
 
 Reconcilyx is an open-source Kubernetes optimization platform for evaluating cost, carbon, and workload right-sizing decisions.
 
@@ -32,24 +32,24 @@ The conservative inventory is [FEATURE_MATRIX.md](FEATURE_MATRIX.md). [STATUS.md
 
 See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for step-by-step instructions for each deployment model.
 
-## CLI
+## CLI & GitHub Action
 
-`kubectl-reconcilyx` talks to the Hub API and never substitutes demo data when the Hub fails.
+`kubectl-reconcilyx` talks to the Hub API (or runs deterministically with `--offline` against bundled catalogs in `diff`) and never fabricates demo metrics when the Hub fails.
 
 ```bash
-kubectl-reconcilyx scan -n production                 # real proposals, savings, and carbon
-kubectl-reconcilyx explain web-rightsize-7f2c -n production
+kubectl-reconcilyx scan -n production -o markdown     # Hub proposals as PR table
+kubectl-reconcilyx explain web-rightsize-7f2c -n production -o markdown
 kubectl-reconcilyx what-if --current-cpu 500m --current-memory 256Mi \
   --proposed-cpu 250m --proposed-memory 128Mi
-kubectl-reconcilyx diff --manifests deploy/ --base origin/main
+kubectl-reconcilyx diff --manifests deploy/ --base origin/main --offline -o sarif
 ```
 
 - `scan` reports the Hub's proposals, approval/phase state, estimated savings, and carbon.
 - `explain` reconciles predicted savings and carbon against the realized `status.learning` receipt and prints the policy/gate path and recent events.
 - `what-if` returns the risk/confidence verdict plus a signed monthly cost delta (positive means increased spend).
-- `diff` compares Deployments, StatefulSets, and DaemonSets at a git base ref, estimates monthly cost and carbon, and flags guardrail violations in the working tree.
+- `diff` compares Deployments, StatefulSets, and DaemonSets at a git base ref (or `--base-manifests`), estimates monthly cost and carbon with provenance tags (`bundled-catalog-fallback` / `static-regional-fallback`), and flags guardrail violations.
 
-All four commands accept `-o json`. `what-if` and `diff` accept `--fail-on` for CI (`cost-increase`, `carbon-increase`, `guardrail`, `not-allowed`, `risk>=N`, `confidence<N`, `savings-below:N`); a triggered condition exits `2`, while transport or validation errors exit `1`. See [docs/user-guide.md](docs/user-guide.md) and [docs/gitops.md](docs/gitops.md).
+All four commands support `-o table|json|markdown|sarif`. `what-if` and `diff` accept `--fail-on` for CI (`cost-increase`, `carbon-increase`, `guardrail`, `not-allowed`, `risk>=N`, `confidence<N`, `savings-below:N`); a triggered gate returns exit code `2` (see [action.yml](action.yml) and [.github/actions/reconcilyx-gate/action.yml](.github/actions/reconcilyx-gate/action.yml)). Security architecture, IaC provisioning, and 3:00 AM incident procedures are documented in [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md), [deploy/terraform/README.md](deploy/terraform/README.md), and [docs/RUNBOOK.md](docs/RUNBOOK.md).
 
 ## v5.0 Planned
 

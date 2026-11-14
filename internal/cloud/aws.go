@@ -15,6 +15,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/reconcilyx/operator/pkg/pipelinemetrics"
 )
 
 const (
@@ -24,14 +26,15 @@ const (
 )
 
 type AWSPricingProvider struct {
-	HTTPClient   *http.Client
-	BaseURL      string
-	Retry        RetryPolicy
-	accessKeyID  string
-	secretKey    string
-	sessionToken string
-	enableLive   bool
-	fallback     *staticAWSCatalog
+	HTTPClient         *http.Client
+	BaseURL            string
+	Retry              RetryPolicy
+	accessKeyID        string
+	secretKey          string
+	sessionToken       string
+	credentialResolver func(ctx context.Context) (string, string, string, error)
+	enableLive         bool
+	fallback           *staticAWSCatalog
 }
 
 type staticAWSCatalog struct {
@@ -46,6 +49,7 @@ func newStaticAWSCatalog() *staticAWSCatalog {
 			"c6i.xlarge": 0.170,
 			"m6i.large":  0.096,
 			"m6i.xlarge": 0.192,
+			"r6i.large":  0.126,
 			"t4g.medium": 0.0336,
 			"t4g.large":  0.0672,
 		},
@@ -53,18 +57,28 @@ func newStaticAWSCatalog() *staticAWSCatalog {
 			"us-east-1":      385.0,
 			"us-west-2":      110.0,
 			"eu-west-1":      260.0,
+			"eu-central-1":   338.0,
 			"ap-southeast-1": 420.0,
+			"ap-south-1":     632.0,
 		},
 	}
 }
 
 func NewAWSPricingProvider() *AWSPricingProvider {
 	return &AWSPricingProvider{
-		HTTPClient: &http.Client{Timeout: 15 * time.Second},
+		HTTPClient: newHTTPClientWithCustomCA(15 * time.Second),
 		BaseURL:    awsPricingEndpoint,
 		enableLive: false,
 		fallback:   newStaticAWSCatalog(),
 	}
+}
+
+// Source returns the active pricing data provenance (never fabricating live rates).
+func (a *AWSPricingProvider) Source() string {
+	if a.enableLive {
+		return SourceAWSLive
+	}
+	return SourceBundledFallback
 }
 
 // NewLiveAWSPricingProvider enables the AWS Price List Query API. Live lookups
@@ -77,6 +91,33 @@ func NewLiveAWSPricingProvider(accessKeyID, secretKey, sessionToken string) *AWS
 	p.secretKey = secretKey
 	p.sessionToken = sessionToken
 	return p
+}
+
+// NewWebIdentityAWSPricingProvider enables AWS Pricing API using an IRSA / OIDC
+// projected token file exchanged dynamically via STS AssumeRoleWithWebIdentity.
+func NewWebIdentityAWSPricingProvider(roleARN, tokenFile, stsEndpoint string) *AWSPricingProvider {
+	p := NewAWSPricingProvider()
+	if strings.TrimSpace(roleARN) != "" && strings.TrimSpace(tokenFile) != "" {
+		wi := &AWSWebIdentityProvider{
+			RoleARN:     roleARN,
+			TokenFile:   tokenFile,
+			STSEndpoint: stsEndpoint,
+			HTTPClient:  p.HTTPClient,
+		}
+		p.credentialResolver = wi.Resolve
+		p.enableLive = true
+	}
+	return p
+}
+
+func (a *AWSPricingProvider) resolveCredentials(ctx context.Context) (string, string, string, error) {
+	if a.credentialResolver != nil {
+		return a.credentialResolver(ctx)
+	}
+	if a.accessKeyID == "" || a.secretKey == "" {
+		return "", "", "", fmt.Errorf("missing AWS credentials")
+	}
+	return a.accessKeyID, a.secretKey, a.sessionToken, nil
 }
 
 func (a *AWSPricingProvider) Name() ProviderName { return ProviderAWS }
@@ -110,6 +151,11 @@ func (a *AWSPricingProvider) fetchOnDemandLive(ctx context.Context, instanceType
 		return 0, err
 	}
 
+	accessKeyID, secretKey, sessionToken, err := a.resolveCredentials(ctx)
+	if err != nil {
+		return 0, err
+	}
+
 	resp, err := doWithRetry(ctx, a.HTTPClient, func() (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.BaseURL, bytes.NewReader(payload))
 		if err != nil {
@@ -117,7 +163,7 @@ func (a *AWSPricingProvider) fetchOnDemandLive(ctx context.Context, instanceType
 		}
 		req.Header.Set("Content-Type", "application/x-amz-json-1.1")
 		req.Header.Set("X-Amz-Target", "AWSPriceListService.GetProducts")
-		signAWSRequest(req, payload, a.accessKeyID, a.secretKey, a.sessionToken, awsPricingRegion, awsPricingService, time.Now().UTC())
+		signAWSRequest(req, payload, accessKeyID, secretKey, sessionToken, awsPricingRegion, awsPricingService, time.Now().UTC())
 		return req, nil
 	}, a.Retry)
 	if err != nil {
@@ -178,13 +224,18 @@ func (a *AWSPricingProvider) fetchOnDemandLive(ctx context.Context, instanceType
 func (a *AWSPricingProvider) OnDemandPrice(ctx context.Context, instanceType, region string) (float64, error) {
 	if a.enableLive {
 		if v, err := a.fetchOnDemandLive(ctx, instanceType, region); err == nil && v > 0 {
+			pipelinemetrics.FallbackActive.WithLabelValues("cloud_pricing", "aws").Set(0)
 			return v, nil
 		} else if err != nil {
+			pipelinemetrics.FallbackActive.WithLabelValues("cloud_pricing", "aws").Set(1)
 			slog.Warn("Live AWS pricing unavailable; using bundled fallback",
 				"instance", instanceType, "region", region, "error", err.Error())
 		}
 	}
 	if rate, ok := a.fallback.rates[instanceType]; ok {
+		if !a.enableLive {
+			pipelinemetrics.FallbackActive.WithLabelValues("cloud_pricing", "aws").Set(1)
+		}
 		return rate, nil
 	}
 	return 0, fmt.Errorf("no AWS price for %s in %s and no local fallback", instanceType, region)

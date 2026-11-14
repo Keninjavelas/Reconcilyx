@@ -1,0 +1,59 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "reconcilyx.fullname" . }}-test-connection
+  labels:
+    {{- include "reconcilyx.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: wget
+      image: busybox:1.36.1
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+      command: ["wget"]
+      args:
+        - "-qO-"
+        - "http://{{ include "reconcilyx.fullname" . }}:{{ .Values.service.apiPort }}/healthz"
+{{- if .Values.federation.enabled }}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "reconcilyx.fullname" . }}-test-healthz-v1
+  labels:
+    {{- include "reconcilyx.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: wget-v1
+      image: busybox:1.36.1
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+      command: ["wget"]
+      args:
+        - "-qO-"
+        - "http://{{ include "reconcilyx.fullname" . }}:{{ .Values.service.apiPort }}/api/v1/healthz"
+{{- end }}

@@ -59,9 +59,7 @@ Ask questions about cluster costs, carbon footprint, workload forecasts, and cro
 				continue
 			}
 			req.Header.Set("Content-Type", "application/json")
-			if apiToken != "" {
-				req.Header.Set("X-API-Key", apiToken)
-			}
+			applyHubAuthHeaders(req)
 
 			resp, err := client.Do(req)
 			var res struct {
@@ -103,9 +101,7 @@ Ask questions about cluster costs, carbon footprint, workload forecasts, and cro
 							continue
 						}
 						cReq.Header.Set("Content-Type", "application/json")
-						if apiToken != "" {
-							cReq.Header.Set("X-API-Key", apiToken)
-						}
+						applyHubAuthHeaders(cReq)
 						cResp, cErr := client.Do(cReq)
 						if cErr != nil {
 							fmt.Printf("⚠️ Confirmation execution failed: %v\n\n", cErr)

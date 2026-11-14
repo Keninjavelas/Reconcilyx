@@ -85,11 +85,18 @@ exit with code 1.`,
 			return fmt.Errorf("what-if failed: Hub returned invalid savings %q: %w", resp.SavingsUSDPerMonth, err)
 		}
 
-		if format == "json" {
+		switch format {
+		case "json":
 			if err := writeJSONOutput(cmd.OutOrStdout(), resp); err != nil {
 				return err
 			}
-		} else {
+		case "markdown":
+			writeWhatIfMarkdown(cmd.OutOrStdout(), payload, resp)
+		case "sarif":
+			if err := writeWhatIfSARIF(cmd.OutOrStdout(), payload, resp); err != nil {
+				return err
+			}
+		default:
 			writeWhatIfTable(cmd, payload, resp)
 		}
 

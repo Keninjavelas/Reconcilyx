@@ -33,6 +33,7 @@ type QTableDelta struct {
 }
 
 type DeltaBatch struct {
+	BatchID     string        `json:"batchId,omitempty"`
 	ClusterName string        `json:"clusterName"`
 	Epoch       int64         `json:"epoch"`
 	Deltas      []QTableDelta `json:"deltas"`

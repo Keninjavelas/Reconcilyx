@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/reconcilyx/operator/pkg/tracing"
 	"github.com/spf13/cobra"
 )
 
@@ -199,9 +200,8 @@ func doAPI(method, path string, payload any) ([]byte, int, error) {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Accept", "application/json")
-	if apiToken != "" {
-		req.Header.Set("X-API-Key", apiToken)
-	}
+	applyHubAuthHeaders(req)
+	tracing.InjectRequest(req)
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {

@@ -12,6 +12,8 @@ import (
 
 	"github.com/google/go-github/v63/github"
 	"github.com/reconcilyx/operator/internal/telemetry"
+	"github.com/reconcilyx/operator/pkg/httpretry"
+	"github.com/reconcilyx/operator/pkg/security/credentials"
 	"golang.org/x/oauth2"
 )
 
@@ -27,16 +29,40 @@ func NewGitHubProvider(token, owner, repo string) *GitHubProvider {
 		ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})
 		httpClient = oauth2.NewClient(context.Background(), ts)
 	}
+	httpClient = httpretry.WrapClient(httpClient, "gitops_github")
 	client := github.NewClient(httpClient)
 	return &GitHubProvider{client: client, owner: owner, repo: repo}
 }
 
 func NewGitHubProviderFromEnv(owner, repo string) (*GitHubProvider, error) {
-	token := os.Getenv("GITHUB_TOKEN")
-	if token == "" {
-		return nil, fmt.Errorf("GITHUB_TOKEN environment variable is not set")
+	mountDir := os.Getenv("RECONCILYX_SECRETS_DIR")
+
+	// Prefer ephemeral GitHub App installation tokens when AppID + InstallationID are configured.
+	appIDRaw := strings.TrimSpace(os.Getenv("RECONCILYX_GITOPS_GITHUB_APP_ID"))
+	instIDRaw := strings.TrimSpace(os.Getenv("RECONCILYX_GITOPS_GITHUB_INSTALLATION_ID"))
+	if appIDRaw != "" && instIDRaw != "" {
+		appID, err1 := strconv.ParseInt(appIDRaw, 10, 64)
+		instID, err2 := strconv.ParseInt(instIDRaw, 10, 64)
+		if err1 != nil || err2 != nil {
+			return nil, fmt.Errorf("invalid RECONCILYX_GITOPS_GITHUB_APP_ID or RECONCILYX_GITOPS_GITHUB_INSTALLATION_ID")
+		}
+		pemEntry := credentials.LoadFromFileOrEnv(mountDir, "github", "app_private_key.pem", "RECONCILYX_GITOPS_GITHUB_APP_PRIVATE_KEY")
+		if pemEntry.Secret.IsEmpty() {
+			return nil, fmt.Errorf("GitHub App private key missing (expected mounted app_private_key.pem or RECONCILYX_GITOPS_GITHUB_APP_PRIVATE_KEY)")
+		}
+		apiBase := os.Getenv("RECONCILYX_GITOPS_GITHUB_API_URL")
+		return NewGitHubProviderWithApp(appID, instID, []byte(pemEntry.Secret.Expose()), apiBase, owner, repo)
 	}
-	return NewGitHubProvider(token, owner, repo), nil
+
+	// Next prefer file-mounted token (/var/run/secrets/reconcilyx/github/token) over env GITHUB_TOKEN.
+	tokEntry := credentials.LoadFromFileOrEnv(mountDir, "github", "token", "GITHUB_TOKEN")
+	if tokEntry.Secret.IsEmpty() {
+		tokEntry = credentials.LoadFromFileOrEnv(mountDir, "github", "api_key", "GITHUB_TOKEN")
+	}
+	if tokEntry.Secret.IsEmpty() {
+		return nil, fmt.Errorf("GitHub credentials not configured (set GitHub App env/mount or GITHUB_TOKEN)")
+	}
+	return NewGitHubProvider(tokEntry.Secret.Expose(), owner, repo), nil
 }
 
 func (g *GitHubProvider) CreatePullRequest(ctx context.Context, pr *PullRequest) (string, error) {

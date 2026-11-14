@@ -20,6 +20,12 @@ type MetricsClient interface {
 	HealthCheck(ctx context.Context) error
 }
 
+// WindowedMetricsClient extends MetricsClient with explicit [start, end] range queries
+// for deterministic historical telemetry backfill without changing MetricsClient mocks.
+type WindowedMetricsClient interface {
+	QueryRangeWindow(ctx context.Context, query string, start, end time.Time, step time.Duration) (model.Value, error)
+}
+
 // WorkloadInspector abstracts the translation of a K8s object into its real-world telemetry state.
 type WorkloadInspector interface {
 	InspectCPU(ctx context.Context, ref corev1.ObjectReference) (map[string]CPUMetrics, error)

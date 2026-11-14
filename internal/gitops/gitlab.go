@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/reconcilyx/operator/internal/telemetry"
+	"github.com/reconcilyx/operator/pkg/httpretry"
 	"github.com/xanzy/go-gitlab"
 )
 
@@ -23,7 +24,9 @@ type GitLabProvider struct {
 }
 
 func NewGitLabProvider(token, baseURL, owner, repo string) (*GitLabProvider, error) {
-	var opts []gitlab.ClientOptionFunc
+	opts := []gitlab.ClientOptionFunc{
+		gitlab.WithHTTPClient(httpretry.WrapClient(nil, "gitops_gitlab")),
+	}
 	if baseURL != "" {
 		opts = append(opts, gitlab.WithBaseURL(baseURL))
 	}

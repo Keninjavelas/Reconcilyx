@@ -11,6 +11,8 @@ import clsx from "clsx";
 import Toasts from "./components/Toasts";
 import AiChatDrawer from "./components/AiChatDrawer";
 import KeyboardShortcutsModal from "./components/KeyboardShortcutsModal";
+import HubConnectionModal from "./components/HubConnectionModal";
+import { EVIDENCE_BANNER_TEXT } from "./lib/evidenceReplay";
 import Icon, { type IconName } from "./components/Icon";
 import { useAppStore } from "./store/app";
 import { getApiBaseUrl, api } from "./lib/api";
@@ -40,12 +42,21 @@ export default function App() {
   const location = useLocation();
 
   const setShortcutsOpen = useAppStore((s) => s.setShortcutsOpen);
+  const setHubGateOpen = useAppStore((s) => s.setHubGateOpen);
+  const replayMode = useAppStore((s) => s.replayMode);
+  const setReplayMode = useAppStore((s) => s.setReplayMode);
   const autoRefresh = useAppStore((s) => s.autoRefresh);
   const refresh = useAppStore((s) => s.refresh);
 
   const { data: health, error: healthError, fetchedAt } = useApi(api.healthz.get);
-  const apiOnline = health?.status === "ok";
-  const healthLabel = apiOnline ? "API online" : healthError ? "API unreachable" : "Checking API";
+  const apiOnline = !replayMode && health?.status === "ok";
+  const healthLabel = replayMode
+    ? "Replay snapshot"
+    : apiOnline
+      ? "API online"
+      : healthError
+        ? "API unreachable"
+        : "Checking API";
 
   useEffect(() => {
     const updateApiBaseUrl = () => setConfiguredApiBaseUrl(getApiBaseUrl());
@@ -78,6 +89,7 @@ export default function App() {
       if (event.key === "Escape") {
         setChatOpen(false);
         setShortcutsOpen(false);
+        setHubGateOpen(false);
         setMenuOpen(false);
         pendingG = false;
         return;
@@ -132,7 +144,7 @@ export default function App() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [navigate, setShortcutsOpen]);
+  }, [navigate, setShortcutsOpen, setHubGateOpen]);
 
   return (
     <div className="relative min-h-screen">
@@ -193,23 +205,33 @@ export default function App() {
           </nav>
 
           <div className="flex items-center gap-2">
-            <span
-              className="hidden items-center gap-2 rounded-full border border-white/[0.12] px-3 py-1.5 font-mono text-[9px] uppercase tracking-[0.14em] text-ink-300 md:inline-flex"
+            <button
+              type="button"
+              onClick={() => setHubGateOpen(true)}
+              className="hidden items-center gap-2 rounded-full border border-white/[0.12] px-3 py-1.5 font-mono text-[9px] uppercase tracking-[0.14em] text-ink-300 transition hover:border-mint-500/40 hover:text-ink-100 md:inline-flex"
               title={
-                fetchedAt
-                  ? `Last health check ${new Date(fetchedAt).toLocaleTimeString()}`
-                  : "Waiting for the first health check"
+                replayMode
+                  ? EVIDENCE_BANNER_TEXT
+                  : fetchedAt
+                    ? `Last health check ${new Date(fetchedAt).toLocaleTimeString()} — click to configure Hub`
+                    : "Click to configure Control Plane connection"
               }
             >
               <span
                 className={clsx(
                   "status-dot",
-                  apiOnline ? "bg-mint-500 text-mint-500" : healthError ? "bg-ember-500 text-ember-500" : "bg-amber-500 text-amber-500",
+                  replayMode
+                    ? "bg-amber-400 text-amber-400"
+                    : apiOnline
+                      ? "bg-mint-500 text-mint-500"
+                      : healthError
+                        ? "bg-ember-500 text-ember-500"
+                        : "bg-amber-500 text-amber-500",
                 )}
                 aria-hidden
               />
               {healthLabel}
-            </span>
+            </button>
             <button
               onClick={() => setChatOpen(true)}
               className="btn-ghost hidden h-9 gap-2 px-3.5 text-[11px] sm:inline-flex"
@@ -276,6 +298,66 @@ export default function App() {
         ) : null}
       </header>
 
+      {replayMode ? (
+        <div
+          role="status"
+          className="border-b border-amber-500/35 bg-amber-500/[0.08] px-5 py-2.5 text-[11px] text-amber-200 lg:px-10"
+        >
+          <div className="mx-auto flex max-w-[1440px] flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2 font-mono tracking-[0.04em]">
+              <span className="status-dot bg-amber-400 text-amber-400" aria-hidden />
+              <span>{EVIDENCE_BANNER_TEXT}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className="rounded-md border border-amber-400/40 px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.1em] text-amber-100 hover:bg-amber-400/15"
+                onClick={() => setHubGateOpen(true)}
+              >
+                Connect live Hub
+              </button>
+              <button
+                type="button"
+                className="rounded-md border border-white/15 px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.1em] text-ink-300 hover:text-ink-100"
+                onClick={() => setReplayMode(false)}
+              >
+                Exit replay
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : !apiOnline && healthError ? (
+        <div
+          role="alert"
+          className="border-b border-ember-500/35 bg-ember-500/[0.08] px-5 py-3 text-[12px] text-ember-200 lg:px-10"
+        >
+          <div className="mx-auto flex max-w-[1440px] flex-wrap items-center justify-between gap-3">
+            <div>
+              <span className="font-medium text-ember-100">Control plane unreachable: </span>
+              <span className="text-ink-300">
+                No telemetry is fabricated. Connect a live Reconcilyx Hub API or switch to read-only verified evidence replay.
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className="btn-primary h-8 px-3 text-[11px]"
+                onClick={() => setHubGateOpen(true)}
+              >
+                Configure Hub connection
+              </button>
+              <button
+                type="button"
+                className="btn-ghost h-8 px-3 text-[11px]"
+                onClick={() => setReplayMode(true)}
+              >
+                Inspect Run #20261026055631 Replay
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <main className="mx-auto w-full max-w-[1440px] px-5 pb-20 pt-9 lg:px-10 lg:pt-14">
         <Routes>
           <Route path="/" element={<Overview />} />
@@ -300,7 +382,7 @@ export default function App() {
               resizing.
             </p>
             <div className="mt-4 font-mono text-[9px] uppercase tracking-[0.16em] text-ink-600">
-              Apache-2.0 · v4.0.0-beta
+              Apache-2.0 · v4.1.0-rc1
             </div>
           </div>
           <div>
@@ -338,6 +420,7 @@ export default function App() {
       <Toasts />
       <AiChatDrawer isOpen={chatOpen} onClose={() => setChatOpen(false)} />
       <KeyboardShortcutsModal />
+      <HubConnectionModal />
     </div>
   );
 }

@@ -349,3 +349,39 @@ func actuatorSnapshotProposal() *v1alpha1.OptimizationProposal {
 		},
 	}
 }
+
+func TestInPlaceMemoryShrinkGuard(t *testing.T) {
+	snapshot := &v1alpha1.ExecutionSnapshot{
+		ContainerResources: map[string]v1alpha1.ContainerResourceState{
+			"app": {Resources: snapshotResources("500m", "512Mi")},
+		},
+	}
+	proposal := &v1alpha1.OptimizationProposal{
+		Spec: v1alpha1.OptimizationProposalSpec{
+			Recommendation: v1alpha1.RecommendationRightSize,
+			ProposedResourcesByContainer: map[string]corev1.ResourceRequirements{
+				"app": snapshotResources("250m", "256Mi"),
+			},
+		},
+		Status: v1alpha1.OptimizationProposalStatus{
+			Learning: &v1alpha1.LearningRecord{
+				Pre: map[string]v1alpha1.LearningContainerState{
+					"app": {MemoryWorkingSetBytes: 150 * 1024 * 1024}, // 150Mi -> 1.35x = 202.5Mi (< 256Mi)
+				},
+			},
+		},
+	}
+
+	if err := checkInPlaceMemoryShrinkGuard(proposal, snapshot, false); err == nil {
+		t.Fatal("expected in-place memory shrink to be blocked when flag is false")
+	}
+
+	if err := checkInPlaceMemoryShrinkGuard(proposal, snapshot, true); err != nil {
+		t.Fatalf("expected 256Mi (>= 1.35 * 150Mi) to pass when opted in, got %v", err)
+	}
+
+	proposal.Status.Learning.Pre["app"] = v1alpha1.LearningContainerState{MemoryWorkingSetBytes: 220 * 1024 * 1024} // 220Mi * 1.35 = 297Mi (> 256Mi)
+	if err := checkInPlaceMemoryShrinkGuard(proposal, snapshot, true); err == nil {
+		t.Fatal("expected insufficient headroom (< 1.35x working set) to be blocked")
+	}
+}

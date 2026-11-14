@@ -1,6 +1,7 @@
 package webhook
 
 import (
+	"container/list"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -13,17 +14,34 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/reconcilyx/operator/internal/gitops"
 )
 
+const (
+	maxWebhookBodyBytes  = 1 << 20 // 1 MiB
+	webhookReplayWindow  = 10 * time.Minute
+	webhookTimestampSkew = 5 * time.Minute
+	maxReplayEntries     = 10000
+)
+
+type replayEntry struct {
+	id     string
+	seenAt time.Time
+}
+
 type AutoMergeWebhookServer struct {
-	logger      logr.Logger
-	providers   *gitops.ProviderFactory
-	secretToken string
-	addr        string
+	logger         logr.Logger
+	providers      *gitops.ProviderFactory
+	secretToken    string
+	addr           string
+	replayMu       sync.Mutex
+	seenDeliveries map[string]*list.Element
+	replayOrder    *list.List
+	maxReplayCap   int
 }
 
 type GitHubWebhookPush struct {
@@ -80,10 +98,13 @@ type GitLabMRNoteEvent struct {
 
 func NewAutoMergeWebhookServer(logger logr.Logger, providers *gitops.ProviderFactory, addr, secretToken string) *AutoMergeWebhookServer {
 	return &AutoMergeWebhookServer{
-		logger:      logger,
-		providers:   providers,
-		secretToken: secretToken,
-		addr:        addr,
+		logger:         logger,
+		providers:      providers,
+		secretToken:    secretToken,
+		addr:           addr,
+		seenDeliveries: make(map[string]*list.Element),
+		replayOrder:    list.New(),
+		maxReplayCap:   maxReplayEntries,
 	}
 }
 
@@ -119,11 +140,84 @@ func (s *AutoMergeWebhookServer) verifyGitLab(r *http.Request, body []byte) bool
 		return true
 	}
 	token := r.Header.Get("X-Gitlab-Token")
-	return subtle.ConstantTimeCompare([]byte(token), []byte(s.secretToken)) == 1
+	sumA := sha256.Sum256([]byte(token))
+	sumB := sha256.Sum256([]byte(s.secretToken))
+	return subtle.ConstantTimeCompare(sumA[:], sumB[:]) == 1 &&
+		subtle.ConstantTimeCompare([]byte(token), []byte(s.secretToken)) == 1
+}
+
+// verifyReplayWindow rejects duplicate delivery IDs (when supplied) and stale timestamps.
+func (s *AutoMergeWebhookServer) verifyReplayWindow(r *http.Request, deliveryID string) bool {
+	if tsRaw := strings.TrimSpace(r.Header.Get("X-Reconcilyx-Timestamp")); tsRaw != "" {
+		sec, err := strconv.ParseInt(tsRaw, 10, 64)
+		if err != nil {
+			return false
+		}
+		ts := time.Unix(sec, 0)
+		skew := time.Since(ts)
+		if skew < 0 {
+			skew = -skew
+		}
+		if skew > webhookTimestampSkew {
+			return false
+		}
+	}
+
+	deliveryID = strings.TrimSpace(deliveryID)
+	if deliveryID == "" {
+		return true
+	}
+
+	now := time.Now()
+	s.replayMu.Lock()
+	defer s.replayMu.Unlock()
+	if s.seenDeliveries == nil {
+		s.seenDeliveries = make(map[string]*list.Element)
+	}
+	if s.replayOrder == nil {
+		s.replayOrder = list.New()
+	}
+	capLimit := s.maxReplayCap
+	if capLimit <= 0 {
+		capLimit = maxReplayEntries
+	}
+
+	// Evict TTL-expired entries from oldest-first list tail.
+	for elem := s.replayOrder.Back(); elem != nil; {
+		prev := elem.Prev()
+		entry := elem.Value.(*replayEntry)
+		if now.Sub(entry.seenAt) > webhookReplayWindow {
+			s.replayOrder.Remove(elem)
+			delete(s.seenDeliveries, entry.id)
+			elem = prev
+			continue
+		}
+		break
+	}
+
+	if _, exists := s.seenDeliveries[deliveryID]; exists {
+		return false
+	}
+
+	// Enforce hard capacity bound so bursts of unique delivery IDs never OOM the server.
+	for len(s.seenDeliveries) >= capLimit {
+		oldest := s.replayOrder.Back()
+		if oldest == nil {
+			break
+		}
+		entry := oldest.Value.(*replayEntry)
+		s.replayOrder.Remove(oldest)
+		delete(s.seenDeliveries, entry.id)
+	}
+
+	elem := s.replayOrder.PushFront(&replayEntry{id: deliveryID, seenAt: now})
+	s.seenDeliveries[deliveryID] = elem
+	return true
 }
 
 func (s *AutoMergeWebhookServer) handleGitHub(w http.ResponseWriter, r *http.Request) {
 	event := r.Header.Get("X-GitHub-Event")
+	r.Body = http.MaxBytesReader(w, r.Body, maxWebhookBodyBytes)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "read body", http.StatusBadRequest)
@@ -132,6 +226,10 @@ func (s *AutoMergeWebhookServer) handleGitHub(w http.ResponseWriter, r *http.Req
 	defer r.Body.Close()
 	if !s.verifyGitHub(r, body) {
 		http.Error(w, "invalid signature", http.StatusForbidden)
+		return
+	}
+	if !s.verifyReplayWindow(r, r.Header.Get("X-GitHub-Delivery")) {
+		http.Error(w, "replay or stale timestamp rejected", http.StatusForbidden)
 		return
 	}
 	switch event {
@@ -152,6 +250,7 @@ func (s *AutoMergeWebhookServer) handleGitHub(w http.ResponseWriter, r *http.Req
 
 func (s *AutoMergeWebhookServer) handleGitLab(w http.ResponseWriter, r *http.Request) {
 	event := r.Header.Get("X-Gitlab-Event")
+	r.Body = http.MaxBytesReader(w, r.Body, maxWebhookBodyBytes)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "read body", http.StatusBadRequest)
@@ -160,6 +259,10 @@ func (s *AutoMergeWebhookServer) handleGitLab(w http.ResponseWriter, r *http.Req
 	defer r.Body.Close()
 	if !s.verifyGitLab(r, body) {
 		http.Error(w, "invalid token", http.StatusForbidden)
+		return
+	}
+	if !s.verifyReplayWindow(r, r.Header.Get("X-Gitlab-Event-UUID")) {
+		http.Error(w, "replay or stale timestamp rejected", http.StatusForbidden)
 		return
 	}
 	if strings.HasPrefix(event, "Merge Request Hook") {

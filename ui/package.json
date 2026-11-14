@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test tests/ledger.test.ts"
+    "test": "node --experimental-strip-types --test tests/ledger.test.ts tests/evidenceReplay.test.ts"
   },
   "dependencies": {
     "@babel/runtime": "^8.0.0",
