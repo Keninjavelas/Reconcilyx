@@ -1,8 +1,8 @@
 # Reconcilyx — Project Hiatus and Remaining Work
 
-**Status:** ON HIATUS as of **2026-10-26**.
-**Last code commit before the hiatus:** `9cbcad2` (`fix(cloud): ignore non-on-demand Azure meters`).
-**Current release posture:** `v4.0.0-beta`, not production-ready. The audit baseline is unchanged at **0 Verified / 72 Partial / 30 Missing**.
+**Status:** PARTIAL HIATUS as of **2026-10-26** (`H-01`, `H-06`, `H-07`, and `H-10` closed **2026-11-14**; `v4.1.0-rc1` tagged **2026-11-15**).
+**Latest release / CI commit:** `01fa68a` (`v4.1.0-rc1`, 14 published release assets, 9/9 GitHub Actions workflows passing; last pre-hiatus baseline commit was `9cbcad2`).
+**Current release posture:** `v4.1.0-rc1` (pre-release), not production-ready. Partial external hiatus gates (`H-02`, `H-03`, `H-04`, `H-05`, `H-08`, `H-09`, `H-11`, `H-12`) remain open; the formal audit baseline stays conservative at **0 Verified / 72 Partial / 30 Missing**.
 
 This file is the single list of work that remains. It is deliberately conservative: an item is complete only when dated, reproducible evidence exists in [STATUS.md](STATUS.md), not when code compiles or a unit test passes.
 
@@ -164,7 +164,7 @@ No credential, token, API key, or private key belongs in this repository or in e
 2. **CI:** H-01 unblocks H-06's required-check path.
 3. **Cloud cluster:** H-04 and H-08 share an environment; H-04 also needs DNS and a public certificate.
 4. **Repository settings:** H-06 needs repo admin consent and CI capacity.
-5. **Local-only:** H-07 can run without cloud spend but is paused by the hiatus decision.
+5. **Local / CI multi-cluster (`H-07` — closed 2026-11-14):** Executed and closed without cloud spend via two-cluster Kind CI in `.github/workflows/validate-federation.yml` (run [`43610765983`](https://github.com/Keninjavelas/Reconcilyx/actions/runs/43610765983) on `2026-11-14`, re-verified on `01fa68a` in run [`43679357532`](https://github.com/Keninjavelas/Reconcilyx/actions/runs/43679357532)).
 6. **Hardware:** H-09 needs a GPU host.
 7. **External party:** H-11 should follow the cloud and repository validations so the auditor sees the real deployment.
 8. **Close-out:** H-12 is last.

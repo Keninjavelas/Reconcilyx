@@ -2,7 +2,7 @@
 
 This file stands in for a GitHub Project and is the current planning tracker.
 
-**Project status: on hiatus as of 2026-10-26.** Open items are deferred until the required external accounts, credentials, hardware, and CI minutes are available. [HIATUS.md](HIATUS.md) consolidates the remaining work, explains each blocker, and defines the evidence required to close it. No open item is being worked during the hiatus.
+**Project status: partial hiatus as of 2026-10-26 (`v4.1.0-rc1` tagged `2026-11-15` on `01fa68a`; `H-01`, `H-06`, `H-07`, and `H-10` closed `2026-11-14`).** External items requiring cloud accounts, provider credentials, GPU hosts, or independent audit (`H-02`–`H-05`, `H-08`, `H-09`, `H-11`, `H-12`) remain deferred in [HIATUS.md](HIATUS.md), which defines each blocker and acceptance evidence.
 
 Legend:
 
@@ -106,14 +106,14 @@ Decision: eBPF telemetry and node consolidation/Karpenter actuation are deferred
 - `[x]` `P1 Wiring` Allow a hosted UI user to configure a backend API URL locally
 - `[x]` `P1 Security` Allow a hosted UI user to configure the control-plane API key locally
 - `[x]` `P1 Docs` Document Kind + ngrok as an evaluation-only backend option
-- `[x]` `P1 Docs` Remove dead Vercel/Pages demo claims and name the embedded console as the supported path
+- `[x]` `P1 Docs` Clarify Vercel Evidence Replay hosting (`https://reconcilyx.vercel.app/`) vs embedded Hub console (`:8082`)
 - `[x]` `P1 Security` Validate CORS and authentication against a deployed user-managed backend
 
 Local pre-deploy rehearsal complete (2026-10-23): `internal/api/security_test.go` starts a real `httptest` listener on the production middleware chain and verifies missing/wrong/header/cookie API keys, public routes, dev mode, allowed/denied CORS origins, trailing-slash normalization, and preflight behavior without credentials.
 
 Live check complete (2026-10-23): the release manager binary ran in a container against a Kind cluster with `RECONCILYX_API_KEY` and `RECONCILYX_CORS_ORIGINS=https://console.example.test/`. Over the published port, `/healthz` returned 200 without credentials, `/api/proposals` returned 401 without a key and 401 with a wrong key, 200 with `X-API-Key`, no `Access-Control-Allow-Origin` for a disallowed origin, and `Access-Control-Allow-Origin: https://console.example.test` for the trailing-slash-normalized configured origin. A preflight `OPTIONS` without an API key returned 204 with CORS headers. The embedded console at `/` returned the `Reconcilyx · Operator Console` document. Scope note: the manager spoke plain HTTP behind Docker's published port; a TLS-terminating reverse proxy (Caddy/Nginx) was not part of this check, so the VPS packaging path still needs its own run.
 
-Decision: no GitHub Pages or Vercel deployment URL is claimed. `.github/workflows/deploy-ui.yml` remains an optional, unverified static-hosting path.
+Decision (`v4.1.0-rc1`): [`https://reconcilyx.vercel.app/`](https://reconcilyx.vercel.app/) is live (`HTTP 200`), serving the `v4.1.0-rc1` static console in transparent **Read-Only Evidence Replay Mode** (replaying verified runs `#20261026055631`, `#43612195251`, `#43612195323`, and `PR #4`) with an interactive **Connect Live Hub** modal, while no public mutating backend Hub or GitHub Pages deployment URL is operated. `.github/workflows/deploy-ui.yml` remains an optional `workflow_dispatch` static-hosting path.
 
 ## Phase 11
 
@@ -214,7 +214,7 @@ The first real GitOps attempt exposed two defects. The distroless manager did no
 
 ## Phase 19 — Hiatus: Deferred External Validation (2026-10-26)
 
-The project is on hiatus. These items consolidate the still-open checks from Phases 7, 15, 16, 17, and 18; nothing here is in progress. Each item maps to a task in [HIATUS.md](HIATUS.md) with its blocker, prerequisites, and acceptance evidence.
+The project is on partial hiatus as of `2026-10-26` (`H-01`, `H-06`, `H-07`, and `H-10` closed `2026-11-14`; `v4.1.0-rc1` tagged `2026-11-15` on `01fa68a`). These items consolidate the remaining checks from Phases 7, 15, 16, 17, and 18; items requiring external accounts, credentials, GPU hardware, or audit remain open in [HIATUS.md](HIATUS.md). Each item maps to its blocker, prerequisites, and acceptance evidence.
 
 - `[x]` `P0 CI` Observe a GitHub-hosted workflow pass once Actions minutes or a spending limit are available (H-01) — closed on `2026-11-14` (`38373ac1d309f542c7d2fd4270043df9d3380e00`):
   - `Build` [`43606567760`](https://github.com/Keninjavelas/Reconcilyx/actions/runs/43606567760) (`2026-11-14T14:46:02Z` → `14:47:08Z`, `success`)
