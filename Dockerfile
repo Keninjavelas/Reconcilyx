@@ -1,6 +1,6 @@
 # Build the embedded dashboard
 # Pin major Node LTS release; supply immutable @sha256 digest via CI build args for air-gapped builds.
-FROM node:20.19.0-alpine AS ui-builder
+FROM --platform=$BUILDPLATFORM node:20.19.0-alpine AS ui-builder
 WORKDIR /workspace/ui
 COPY ui/package.json ui/package-lock.json ./
 RUN npm ci
@@ -8,7 +8,7 @@ COPY ui/ ./
 RUN npm run build
 
 # Build the manager binary
-FROM golang:1.26.11-bookworm AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26.11-bookworm AS builder
 ARG TARGETOS
 ARG TARGETARCH
 
