@@ -13,8 +13,19 @@ import type {
 } from "./types.ts";
 
 export const EVIDENCE_RUN_ID = "20261026055631";
+export const EVIDENCE_VERIFIED_RUNS = {
+  kindTlsRunId: "20261026055631",
+  ciE2ERunId: "43612195251",
+  federationRunId: "43612195323",
+  federationSnapshotVersion: 2,
+  federationModelHash: "b3277814cf4dbbfe",
+  federationOutlierRejectedCount: 1,
+  gitOpsRejectedPR: "Keninjavelas/Reconcilyx#4",
+  verifiedCommit: "0ff1e80",
+  verifiedDate: "2026-11-14",
+} as const;
 export const EVIDENCE_BANNER_TEXT =
-  "EVIDENCE REPLAY MODE — Read-Only Snapshot from Verified Run #20261026055631 (Not Connected to Live Cluster)";
+  "EVIDENCE REPLAY MODE — Read-Only Snapshot from Verified Run #20261026055631 + 2026-11-14 CI (#43612195251), 2-Cluster Federation (#43612195323) & GitOps PR #4 (Not Connected to Live Cluster)";
 
 const REPLAY_STORAGE_KEY = "reconcilyx_evidence_replay_mode";
 
@@ -59,7 +70,15 @@ export const REPLAY_CLUSTERS: ClusterItem[] = [
     clusterName: "hub",
     apiEndpoint: "https://reconcilyx.test",
     status: "Ready",
-    lastHeartbeat: "2026-10-26T05:56:31Z",
+    lastHeartbeat: "2026-11-14T22:15:00Z",
+  },
+  {
+    name: "reconcilyx-spoke-control-plane",
+    type: "Spoke (Kind Federation E2E #43612195323 · snapshot v2 · hash b3277814cf4dbbfe)",
+    clusterName: "spoke-kind-1",
+    apiEndpoint: "https://reconcilyx-hub.reconcilyx-system.svc",
+    status: "Ready",
+    lastHeartbeat: "2026-11-14T22:15:00Z",
   },
 ];
 
@@ -133,6 +152,30 @@ export const REPLAY_PROPOSALS: ProposalListItem[] = [
     memoryAfter: "96Mi",
     createdAt: "2026-10-26T06:40:00Z",
     externalPRID: "Keninjavelas/Reconcilyx#1",
+  },
+  {
+    name: "cpu-burner-gitops-pr-4",
+    namespace: "reconcilyx-system",
+    cluster: "hub",
+    workloadKind: "Deployment",
+    workloadName: "cpu-burner",
+    recommendation: "RightSize",
+    approvalState: "Rejected",
+    phase: "Rejected",
+    executionState: "Pending",
+    riskScore: 18,
+    confidenceScore: 92,
+    rationale:
+      "2026-11-14 branch-protected GitOps PR #4 (Keninjavelas/Reconcilyx#4, mergeable_state=blocked): direct merge rejected with HTTP 405 and closed unmerged; controller failed closed (ApprovalRejected -> Rejected) while cpu-burner stayed unchanged at 500m/128Mi.",
+    estimatedSavings: "0",
+    carbonSavedGrams: 0,
+    carbonSavedHuman: "0 g CO2",
+    cpuBefore: "500m",
+    cpuAfter: "250m",
+    memoryBefore: "128Mi",
+    memoryAfter: "96Mi",
+    createdAt: "2026-11-14T21:40:00Z",
+    externalPRID: "Keninjavelas/Reconcilyx#4",
   },
   {
     name: "hpa-conflict-demo-web",
@@ -265,6 +308,32 @@ export const REPLAY_ANOMALIES: AnomalyItem[] = [
 
 export const REPLAY_AUDIT: AuditEntry[] = [
   {
+    time: "2026-11-14T22:15:00Z",
+    actor: "reconcilyx-federation-hub",
+    action:
+      "aggregated 2-cluster Kind rollout (#43612195323): trimmed Byzantine outlier (outlierRejectedCount=1), promoted global Q-table snapshotVersion=2 (modelHash=b3277814cf4dbbfe, isStable=true), bootstrapped spoke-kind-1",
+    proposal: "federation-rollout-43612195323",
+    namespace: "reconcilyx-system",
+    reason: "FederationSnapshotPromoted",
+  },
+  {
+    time: "2026-11-14T22:08:00Z",
+    actor: "github-actions-ci",
+    action:
+      "verified 6/6 workflows on commit 0ff1e80 including Kind E2E harness (#43612195251)",
+    namespace: "reconcilyx-system",
+    reason: "CIGatesVerified",
+  },
+  {
+    time: "2026-11-14T21:42:00Z",
+    actor: "reconcilyx-gitops",
+    action:
+      "closed unmerged GitOps PR #4 on branch-protected main (HTTP 405, mergeable_state=blocked) -> ApprovalRejected; cpu-burner unchanged at 500m/128Mi",
+    proposal: "cpu-burner-gitops-pr-4",
+    namespace: "reconcilyx-system",
+    reason: "ApprovalRejected",
+  },
+  {
     time: "2026-10-26T05:56:45Z",
     actor: "reconcilyx-controller",
     action: "completed: workload stabilized (reward=1.0205, costSavedUSD=4106m, carbon=11097g)",
@@ -312,9 +381,14 @@ export function getReplayProposalDetail(name: string): ProposalDetail | undefine
     events: [
       {
         at: item.createdAt,
-        reason: item.phase === "Failed" ? "AutoscalerConflictDetected" : "ExecutionCompleted",
+        reason:
+          item.phase === "Failed"
+            ? "AutoscalerConflictDetected"
+            : item.phase === "Rejected"
+              ? "ApprovalRejected"
+              : "ExecutionCompleted",
         message: item.rationale ?? "Recorded from verified cluster run",
-        type: item.phase === "Failed" ? "Warning" : "Normal",
+        type: item.phase === "Failed" || item.phase === "Rejected" ? "Warning" : "Normal",
         count: 1,
       },
     ],

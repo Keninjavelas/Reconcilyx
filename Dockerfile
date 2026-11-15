@@ -8,7 +8,7 @@ COPY ui/ ./
 RUN npm run build
 
 # Build the manager binary
-FROM golang:1.26.0-bookworm AS builder
+FROM golang:1.26.11-bookworm AS builder
 ARG TARGETOS
 ARG TARGETARCH
 

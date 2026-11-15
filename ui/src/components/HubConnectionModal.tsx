@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { getApiBaseUrl, getApiKey, setApiBaseUrl, setApiKey, api } from "@/lib/api";
-import { EVIDENCE_RUN_ID } from "@/lib/evidenceReplay";
+import { EVIDENCE_RUN_ID, EVIDENCE_VERIFIED_RUNS } from "@/lib/evidenceReplay";
 import { useAppStore } from "@/store/app";
 import Icon from "@/components/Icon";
 
@@ -149,7 +149,7 @@ export default function HubConnectionModal() {
           </div>
 
           <div className="rounded-xl border border-white/[0.08] bg-white/[0.02] px-4 py-3 text-[11px] leading-relaxed text-ink-400">
-            <span className="font-medium text-ink-200">Zero-fabrication guarantee:</span> Reconcilyx never generates synthetic live cluster metrics. When no live Hub is reachable, you can explicitly inspect immutable snapshots captured from verified Kind TLS run <span className="font-mono text-ink-200">#{EVIDENCE_RUN_ID}</span> in read-only Evidence Replay Mode.
+            <span className="font-medium text-ink-200">Zero-fabrication guarantee:</span> Reconcilyx never generates synthetic live cluster metrics. When no live Hub is reachable, you can explicitly inspect immutable snapshots captured from verified Kind TLS run <span className="font-mono text-ink-200">#{EVIDENCE_RUN_ID}</span> and {EVIDENCE_VERIFIED_RUNS.verifiedDate} CI E2E (<span className="font-mono text-ink-200">#{EVIDENCE_VERIFIED_RUNS.ciE2ERunId}</span>), 2-cluster federation (<span className="font-mono text-ink-200">#{EVIDENCE_VERIFIED_RUNS.federationRunId}</span>), and GitOps PR #4 in read-only Evidence Replay Mode.
           </div>
         </form>
       </div>

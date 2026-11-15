@@ -60,6 +60,9 @@ checksum:
 sboms:
   - artifacts: archive
 
+release:
+  prerelease: auto
+
 changelog:
   sort: asc
   filters:
